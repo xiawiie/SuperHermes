@@ -111,6 +111,23 @@ def retrieve_initial(state: RAGState) -> RAGState:
     results = retrieved.get("docs", [])
     retrieve_meta = retrieved.get("meta", {})
     context = _format_docs(results)
+    emit_rag_step(
+        "🧱",
+        "三级分块检索",
+        (
+            f"叶子层 L{retrieve_meta.get('leaf_retrieve_level', 3)} 召回，"
+            f"候选 {retrieve_meta.get('candidate_k', 0)}"
+        ),
+    )
+    emit_rag_step(
+        "🧩",
+        "Auto-merging 合并",
+        (
+            f"启用: {bool(retrieve_meta.get('auto_merge_enabled'))}，"
+            f"应用: {bool(retrieve_meta.get('auto_merge_applied'))}，"
+            f"替换片段: {retrieve_meta.get('auto_merge_replaced_chunks', 0)}"
+        ),
+    )
     emit_rag_step("✅", f"检索完成，找到 {len(results)} 个片段", f"模式: {retrieve_meta.get('retrieval_mode', 'hybrid')}")
     rag_trace = {
         "tool_used": True,
@@ -127,6 +144,12 @@ def retrieve_initial(state: RAGState) -> RAGState:
         "rerank_error": retrieve_meta.get("rerank_error"),
         "retrieval_mode": retrieve_meta.get("retrieval_mode"),
         "candidate_k": retrieve_meta.get("candidate_k"),
+        "leaf_retrieve_level": retrieve_meta.get("leaf_retrieve_level"),
+        "auto_merge_enabled": retrieve_meta.get("auto_merge_enabled"),
+        "auto_merge_applied": retrieve_meta.get("auto_merge_applied"),
+        "auto_merge_threshold": retrieve_meta.get("auto_merge_threshold"),
+        "auto_merge_replaced_chunks": retrieve_meta.get("auto_merge_replaced_chunks"),
+        "auto_merge_steps": retrieve_meta.get("auto_merge_steps"),
     }
     return {
         "query": query,
@@ -234,12 +257,27 @@ def retrieve_expanded(state: RAGState) -> RAGState:
     rerank_errors = []
     retrieval_mode = None
     candidate_k = None
+    leaf_retrieve_level = None
+    auto_merge_enabled = None
+    auto_merge_applied = False
+    auto_merge_threshold = None
+    auto_merge_replaced_chunks = 0
+    auto_merge_steps = 0
 
     if strategy in ("hyde", "complex"):
         hypothetical_doc = state.get("hypothetical_doc") or generate_hypothetical_document(state["question"])
         retrieved_hyde = retrieve_documents(hypothetical_doc, top_k=5)
         results.extend(retrieved_hyde.get("docs", []))
         hyde_meta = retrieved_hyde.get("meta", {})
+        emit_rag_step(
+            "🧱",
+            "HyDE 三级检索",
+            (
+                f"L{hyde_meta.get('leaf_retrieve_level', 3)} 召回，"
+                f"候选 {hyde_meta.get('candidate_k', 0)}，"
+                f"合并替换 {hyde_meta.get('auto_merge_replaced_chunks', 0)}"
+            ),
+        )
         rerank_applied_any = rerank_applied_any or bool(hyde_meta.get("rerank_applied"))
         rerank_enabled_any = rerank_enabled_any or bool(hyde_meta.get("rerank_enabled"))
         rerank_model = rerank_model or hyde_meta.get("rerank_model")
@@ -248,12 +286,27 @@ def retrieve_expanded(state: RAGState) -> RAGState:
             rerank_errors.append(f"hyde:{hyde_meta.get('rerank_error')}")
         retrieval_mode = retrieval_mode or hyde_meta.get("retrieval_mode")
         candidate_k = candidate_k or hyde_meta.get("candidate_k")
+        leaf_retrieve_level = leaf_retrieve_level or hyde_meta.get("leaf_retrieve_level")
+        auto_merge_enabled = auto_merge_enabled if auto_merge_enabled is not None else hyde_meta.get("auto_merge_enabled")
+        auto_merge_applied = auto_merge_applied or bool(hyde_meta.get("auto_merge_applied"))
+        auto_merge_threshold = auto_merge_threshold or hyde_meta.get("auto_merge_threshold")
+        auto_merge_replaced_chunks += int(hyde_meta.get("auto_merge_replaced_chunks") or 0)
+        auto_merge_steps += int(hyde_meta.get("auto_merge_steps") or 0)
 
     if strategy in ("step_back", "complex"):
         expanded_query = state.get("expanded_query") or state["question"]
         retrieved_stepback = retrieve_documents(expanded_query, top_k=5)
         results.extend(retrieved_stepback.get("docs", []))
         step_meta = retrieved_stepback.get("meta", {})
+        emit_rag_step(
+            "🧱",
+            "Step-back 三级检索",
+            (
+                f"L{step_meta.get('leaf_retrieve_level', 3)} 召回，"
+                f"候选 {step_meta.get('candidate_k', 0)}，"
+                f"合并替换 {step_meta.get('auto_merge_replaced_chunks', 0)}"
+            ),
+        )
         rerank_applied_any = rerank_applied_any or bool(step_meta.get("rerank_applied"))
         rerank_enabled_any = rerank_enabled_any or bool(step_meta.get("rerank_enabled"))
         rerank_model = rerank_model or step_meta.get("rerank_model")
@@ -262,6 +315,12 @@ def retrieve_expanded(state: RAGState) -> RAGState:
             rerank_errors.append(f"step_back:{step_meta.get('rerank_error')}")
         retrieval_mode = retrieval_mode or step_meta.get("retrieval_mode")
         candidate_k = candidate_k or step_meta.get("candidate_k")
+        leaf_retrieve_level = leaf_retrieve_level or step_meta.get("leaf_retrieve_level")
+        auto_merge_enabled = auto_merge_enabled if auto_merge_enabled is not None else step_meta.get("auto_merge_enabled")
+        auto_merge_applied = auto_merge_applied or bool(step_meta.get("auto_merge_applied"))
+        auto_merge_threshold = auto_merge_threshold or step_meta.get("auto_merge_threshold")
+        auto_merge_replaced_chunks += int(step_meta.get("auto_merge_replaced_chunks") or 0)
+        auto_merge_steps += int(step_meta.get("auto_merge_steps") or 0)
 
     deduped = []
     seen = set()
@@ -296,6 +355,12 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         "rerank_error": "; ".join(rerank_errors) if rerank_errors else None,
         "retrieval_mode": retrieval_mode,
         "candidate_k": candidate_k,
+        "leaf_retrieve_level": leaf_retrieve_level,
+        "auto_merge_enabled": auto_merge_enabled,
+        "auto_merge_applied": auto_merge_applied,
+        "auto_merge_threshold": auto_merge_threshold,
+        "auto_merge_replaced_chunks": auto_merge_replaced_chunks,
+        "auto_merge_steps": auto_merge_steps,
     })
     return {"docs": deduped, "context": context, "rag_trace": rag_trace}
 

@@ -36,7 +36,15 @@ class MilvusManager:
             schema.add_field("text", DataType.VARCHAR, max_length=2000)
             schema.add_field("filename", DataType.VARCHAR, max_length=255)
             schema.add_field("file_type", DataType.VARCHAR, max_length=50)
+            schema.add_field("file_path", DataType.VARCHAR, max_length=1024)
             schema.add_field("page_number", DataType.INT64)
+            schema.add_field("chunk_idx", DataType.INT64)
+
+            # Auto-merging 所需层级字段
+            schema.add_field("chunk_id", DataType.VARCHAR, max_length=512)
+            schema.add_field("parent_chunk_id", DataType.VARCHAR, max_length=512)
+            schema.add_field("root_chunk_id", DataType.VARCHAR, max_length=512)
+            schema.add_field("chunk_level", DataType.INT64)
 
             # 为两种向量分别创建索引
             index_params = self.client.prepare_index_params()
@@ -76,12 +84,36 @@ class MilvusManager:
             limit=limit
         )
 
+    def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[dict]:
+        """根据 chunk_id 批量查询分块（用于 Auto-merging 拉取父块）"""
+        ids = [item for item in chunk_ids if item]
+        if not ids:
+            return []
+        quoted_ids = ", ".join([f'"{item}"' for item in ids])
+        filter_expr = f"chunk_id in [{quoted_ids}]"
+        return self.query(
+            filter_expr=filter_expr,
+            output_fields=[
+                "text",
+                "filename",
+                "file_type",
+                "page_number",
+                "chunk_id",
+                "parent_chunk_id",
+                "root_chunk_id",
+                "chunk_level",
+                "chunk_idx",
+            ],
+            limit=len(ids),
+        )
+
     def hybrid_retrieve(
         self,
         dense_embedding: list[float],
         sparse_embedding: dict,
         top_k: int = 5,
-        rrf_k: int = 60     #可调节
+        rrf_k: int = 60,     #可调节
+        filter_expr: str = "",
     ) -> list[dict]:
         """
         混合检索 - 使用 RRF 融合密集向量和稀疏向量的检索结果
@@ -92,14 +124,25 @@ class MilvusManager:
         :param rrf_k: RRF 算法参数 k，默认60
         :return: 检索结果列表
         """
-        output_fields = ["text", "filename", "file_type", "page_number"]
+        output_fields = [
+            "text",
+            "filename",
+            "file_type",
+            "page_number",
+            "chunk_id",
+            "parent_chunk_id",
+            "root_chunk_id",
+            "chunk_level",
+            "chunk_idx",
+        ]
         
         # 密集向量搜索请求
         dense_search = AnnSearchRequest(
             data=[dense_embedding],
             anns_field="dense_embedding",
             param={"metric_type": "IP", "params": {"ef": 64}},
-            limit=top_k * 2  # 多取一些用于融合
+            limit=top_k * 2,  # 多取一些用于融合
+            expr=filter_expr,
         )
         
         # 稀疏向量搜索请求
@@ -107,7 +150,8 @@ class MilvusManager:
             data=[sparse_embedding],
             anns_field="sparse_embedding",
             param={"metric_type": "IP", "params": {"drop_ratio_search": 0.2}},
-            limit=top_k * 2
+            limit=top_k * 2,
+            expr=filter_expr,
         )
         
         # 使用 RRF 排序算法融合结果
@@ -131,12 +175,17 @@ class MilvusManager:
                     "filename": hit.get("filename", ""),
                     "file_type": hit.get("file_type", ""),
                     "page_number": hit.get("page_number", 0),
+                    "chunk_id": hit.get("chunk_id", ""),
+                    "parent_chunk_id": hit.get("parent_chunk_id", ""),
+                    "root_chunk_id": hit.get("root_chunk_id", ""),
+                    "chunk_level": hit.get("chunk_level", 0),
+                    "chunk_idx": hit.get("chunk_idx", 0),
                     "score": hit.get("distance", 0.0)
                 })
         
         return formatted_results
 
-    def dense_retrieve(self, dense_embedding: list[float], top_k: int = 5) -> list[dict]:
+    def dense_retrieve(self, dense_embedding: list[float], top_k: int = 5, filter_expr: str = "") -> list[dict]:
         """
         仅使用密集向量检索（降级模式，用于稀疏向量不可用时）
         """
@@ -146,7 +195,18 @@ class MilvusManager:
             anns_field="dense_embedding",
             search_params={"metric_type": "IP", "params": {"ef": 64}},
             limit=top_k,
-            output_fields=["text", "filename", "file_type", "page_number"]
+            output_fields=[
+                "text",
+                "filename",
+                "file_type",
+                "page_number",
+                "chunk_id",
+                "parent_chunk_id",
+                "root_chunk_id",
+                "chunk_level",
+                "chunk_idx",
+            ],
+            filter=filter_expr,
         )
         
         formatted_results = []
@@ -158,6 +218,11 @@ class MilvusManager:
                     "filename": hit.get("entity", {}).get("filename", ""),
                     "file_type": hit.get("entity", {}).get("file_type", ""),
                     "page_number": hit.get("entity", {}).get("page_number", 0),
+                    "chunk_id": hit.get("entity", {}).get("chunk_id", ""),
+                    "parent_chunk_id": hit.get("entity", {}).get("parent_chunk_id", ""),
+                    "root_chunk_id": hit.get("entity", {}).get("root_chunk_id", ""),
+                    "chunk_level": hit.get("entity", {}).get("chunk_level", 0),
+                    "chunk_idx": hit.get("entity", {}).get("chunk_idx", 0),
                     "score": hit.get("distance", 0.0)
                 })
         

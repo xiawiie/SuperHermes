@@ -39,6 +39,12 @@ class RagTrace(BaseModel):
     rerank_error: Optional[str] = None
     retrieval_mode: Optional[str] = None
     candidate_k: Optional[int] = None
+    leaf_retrieve_level: Optional[int] = None
+    auto_merge_enabled: Optional[bool] = None
+    auto_merge_applied: Optional[bool] = None
+    auto_merge_threshold: Optional[int] = None
+    auto_merge_replaced_chunks: Optional[int] = None
+    auto_merge_steps: Optional[int] = None
     retrieved_chunks: Optional[List[RetrievedChunk]] = None
     initial_retrieved_chunks: Optional[List[RetrievedChunk]] = None
     expanded_retrieved_chunks: Optional[List[RetrievedChunk]] = None

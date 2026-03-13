@@ -46,7 +46,11 @@ class MilvusWriter:
                     "file_type": doc["file_type"],
                     "file_path": doc.get("file_path", ""),
                     "page_number": doc.get("page_number", 0),
-                    "chunk_idx": doc.get("chunk_idx", 0)
+                    "chunk_idx": doc.get("chunk_idx", 0),
+                    "chunk_id": doc.get("chunk_id", ""),
+                    "parent_chunk_id": doc.get("parent_chunk_id", ""),
+                    "root_chunk_id": doc.get("root_chunk_id", ""),
+                    "chunk_level": doc.get("chunk_level", 0),
                 }
                 for doc, dense_emb, sparse_emb in zip(batch, dense_embeddings, sparse_embeddings)
             ]

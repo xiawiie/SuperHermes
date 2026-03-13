@@ -5,7 +5,7 @@ Agent的项目记录，方便后续持续更新与展示。
 ## 项目概览
 - **核心能力**：
   - LangChain Agent + 自定义工具。
-  - 文档上传、切分、向量化后写入 Milvus，支持混合检索（稠密+稀疏）。
+  - 文档上传后执行三级滑动窗口分块，叶子分块向量化写入 Milvus，父级分块写入本地 DocStore。
   - 会话记忆与摘要，保持长对话上下文。
 - **运行形态**：FastAPI 后端 + 纯前端（Vue 3 CDN 单页）+ Milvus 向量库。
 
@@ -18,6 +18,8 @@ Agent的项目记录，方便后续持续更新与展示。
 - **回答终止功能**：前端 `AbortController` + 后端 `StreamingResponse` 支持用户随时中断正在生成的回答。
 - **会话摘要记忆**：自动摘要旧消息并注入系统提示，维持上下文且控制 token。
 - **文档处理链路**：上传 → 切分 → 稠密/稀疏向量同步生成 → Milvus 入库，支持重复上传自动清理旧 chunk。
+- **三级分块 + Auto-merging**：L1/L2/L3 三层滑窗切分；检索时优先召回 L3，满足阈值后自动合并到父块（L3->L2->L1）。
+- **Leaf-only 向量化存储**：仅叶子分块写入 Milvus，父块写入 DocStore，减少向量冗余并保留上下文聚合能力。
 - **工具可扩展**：天气查询示例 + 知识库检索，便于按需增添第三方 API 或企业数据源。
 - **RAG 过程可观测**：记录检索、评分、重写与来源信息，前端可展开查看每一步细节。
 - **查询重写体系**：Step-Back 与 HyDE 两种扩展方式 + 路由选择，必要时触发重写检索。
@@ -32,7 +34,7 @@ Agent的项目记录，方便后续持续更新与展示。
 
 1. 先做文档结构解析，按文档结构做粗拆分，再用递归字符分块兜底，保证打的主题单元不被拆分（2000-3000token）；再用语义分块做精细化拆分，控制单块大小（512-1024token）
 2. 代码块、表格、图片特殊处理
-3. 实现 ParentDocument/Auto-merging Retriever 策略
+3. 实现 ParentDocument/Auto-merging Retriever 策略 --done
 
 #### 召回层
 
@@ -55,7 +57,7 @@ Agent的项目记录，方便后续持续更新与展示。
 ### 其他能力拓展
 
 1. 开发 SQL assistant Skill
-2. 实现暂停功能与人工介入机制
+2. 实现暂停功能与人工介入机制 --done
 3. 新增问题类型判断，简单问题跳过复杂处理流程
 4. 扩展网络搜索能力
 5. 支持多步骤规划与任务并行执行
@@ -78,6 +80,7 @@ Agent的项目记录，方便后续持续更新与展示。
   - [tools.py](backend/tools.py)：天气查询、知识库检索工具。
   - [embedding.py](backend/embedding.py)：稠密向量 API 调用 + BM25 稀疏向量生成。
   - [document_loader.py](backend/document_loader.py)：PDF/Word 加载与分片。
+  - [parent_chunk_store.py](backend/parent_chunk_store.py)：父级分块 DocStore（用于 Auto-merging 回取父块）。
   - [milvus_writer.py](backend/milvus_writer.py)：向量写入（稠密+稀疏）。
   - [milvus_client.py](backend/milvus_client.py)：Milvus 集合定义、混合检索。
   - [schemas.py](backend/schemas.py)：Pydantic 请求/响应模型。
@@ -85,6 +88,7 @@ Agent的项目记录，方便后续持续更新与展示。
   - [index.html](frontend/index.html) + [script.js](frontend/script.js) + [style.css](frontend/style.css)：Vue 3 + marked + highlight.js，提供聊天、历史会话、文档上传/删除界面。
 - 数据：`SuperAgent/data/`
   - `customer_service_history.json`：会话落盘存储。
+  - `parent_chunks.json`：父级分块存储（L1/L2）。
   - `documents/`：上传文档原文件。
 - 向量库：Milvus（可由 `docker-compose` 或自建服务提供）。
 
@@ -104,8 +108,9 @@ Agent的项目记录，方便后续持续更新与展示。
 ### 2) RAG 全链路（重点）
 1. **初次召回**：`retrieve_initial`
   - 调用 `retrieve_documents`。
-  - 先做 Milvus Hybrid 检索（Dense + Sparse + RRF）。
+  - 先按 `chunk_level == 3` 执行 Milvus Hybrid 检索（Dense + Sparse + RRF）。
   - 取更大候选集后走 Jina Rerank 精排。
+  - 对召回叶子块执行 Auto-merging（L3->L2->L1），父块从 DocStore 读取。
 2. **相关性打分门控**：`grade_documents`
   - 使用结构化输出打分 `yes/no`。
   - `yes` 直接进入生成回答；`no` 进入重写阶段。
@@ -114,19 +119,21 @@ Agent的项目记录，方便后续持续更新与展示。
   - 生成 `rewrite_query`、`step_back_question`、`hypothetical_doc` 等中间结果。
 4. **二次召回**：`retrieve_expanded`
   - 对重写后的查询（或 HyDE 文档）再次检索。
-  - 结果去重后返回上下文。
+  - 同样执行 L3 召回 + Auto-merging，结果去重后返回上下文。
 5. **答案生成**：Agent 结合上下文生成最终回答。
 6. **可观测追踪**：返回 `rag_trace`，包括
   - 评分结果与路由决策
   - 重写策略与重写内容
   - 初次/二次检索结果
+  - 三级检索与合并信息（`leaf_retrieve_level`、`auto_merge_*`）
   - 检索分数 `score` 与精排分数 `rerank_score`
 
 ### 3) 文档入库链路
 1. 前端上传 PDF/Word 到 `POST /documents/upload`。
-2. `document_loader.py` 解析文档并切分 chunk。
-3. `embedding.py` 生成 Dense 向量与 BM25 Sparse 向量。
-4. `milvus_writer.py` 将向量 + 元数据写入 Milvus。
+2. `document_loader.py` 执行三级滑动窗口分块并写入层级元数据（chunk_id / parent_chunk_id / root_chunk_id / chunk_level）。
+3. L1/L2 父级分块写入 `parent_chunk_store.py`（DocStore）。
+4. L3 叶子分块进入 `embedding.py` 生成 Dense 向量与 BM25 Sparse 向量。
+5. `milvus_writer.py` 仅将叶子块向量 + 元数据写入 Milvus。
 5. 后续检索可直接利用新文档参与召回。
 
 ### 4) 会话记忆链路
@@ -146,6 +153,7 @@ Agent的项目记录，方便后续持续更新与展示。
 - 模型相关：`ARK_API_KEY`、`MODEL`、`BASE_URL`、`EMBEDDER`
 - Rerank 相关：`RERANK_MODEL`、`RERANK_BINDING_HOST`、`RERANK_API_KEY`
 - Milvus：`MILVUS_HOST`、`MILVUS_PORT`、`MILVUS_COLLECTION`
+- Auto-merging：`AUTO_MERGE_ENABLED`、`AUTO_MERGE_THRESHOLD`、`LEAF_RETRIEVE_LEVEL`
 - 工具：`AMAP_WEATHER_API`、`AMAP_API_KEY`
 
 ## API 速览
@@ -313,6 +321,13 @@ StreamingResponse(
 - **即时止损原理**：`agent_task.cancel()` 会立即在任务挂起点注入 `asyncio.CancelledError`。对于流式 LLM 请求，这会触发 `httpx` 关闭 TCP 连接。服务端（OpenAI 等）检测到 client 掉线后会立即停止推理，从而实现**真正的 Token 节省**。
 
 ## 更新日志
+
+### 2026-03-13 三级分块与 Auto-merging 升级
+- 新增三级滑动窗口分块（L1/L2/L3），并为分块写入层级元数据。
+- 存储策略调整为 Leaf-only：仅 L3 叶子块写入 Milvus，L1/L2 写入本地 DocStore。
+- Auto-merging 改为从 DocStore 拉取父块，减少向量冗余存储。
+- 思考链路新增三级检索与自动合并步骤事件。
+- `rag_trace` 新增 `leaf_retrieve_level` 与 `auto_merge_*` 字段，且历史会话读取同样保留这些字段。
 
 ### 2026-02-19 RAG 实时思考链路修复
 - **问题**：Agent 在执行同步工具（如 `search_knowledge_base`）时，由于运行在线程池中，无法正确获取主线程的 asyncio 事件循环，导致 `emit_rag_step` 事件丢失，前端"思考中"气泡一直静止。

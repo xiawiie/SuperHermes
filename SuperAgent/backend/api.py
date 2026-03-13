@@ -21,6 +21,7 @@ try:
     )
     from .agent import chat_with_agent, chat_with_agent_stream, storage
     from .document_loader import DocumentLoader
+    from .parent_chunk_store import ParentChunkStore
     from .milvus_writer import MilvusWriter
     from .milvus_client import MilvusManager
     from .embedding import EmbeddingService
@@ -40,6 +41,7 @@ except ImportError:
     )
     from agent import chat_with_agent, chat_with_agent_stream, storage
     from document_loader import DocumentLoader
+    from parent_chunk_store import ParentChunkStore
     from milvus_writer import MilvusWriter
     from milvus_client import MilvusManager
     from embedding import EmbeddingService
@@ -49,6 +51,7 @@ DATA_DIR = BASE_DIR.parent / "data"
 UPLOAD_DIR = DATA_DIR / "documents"
 
 loader = DocumentLoader()
+parent_chunk_store = ParentChunkStore()
 milvus_manager = MilvusManager()
 embedding_service = EmbeddingService()
 milvus_writer = MilvusWriter(embedding_service=embedding_service, milvus_manager=milvus_manager)
@@ -217,6 +220,10 @@ async def upload_document(file: UploadFile = File(...)):
             milvus_manager.delete(delete_expr)
         except Exception:
             pass
+        try:
+            parent_chunk_store.delete_by_filename(filename)
+        except Exception:
+            pass
 
         file_path = UPLOAD_DIR / filename
         with open(file_path, "wb") as f:
@@ -231,12 +238,21 @@ async def upload_document(file: UploadFile = File(...)):
         if not new_docs:
             raise HTTPException(status_code=500, detail="文档处理失败，未能提取内容")
 
-        milvus_writer.write_documents(new_docs)
+        parent_docs = [doc for doc in new_docs if int(doc.get("chunk_level", 0) or 0) in (1, 2)]
+        leaf_docs = [doc for doc in new_docs if int(doc.get("chunk_level", 0) or 0) == 3]
+        if not leaf_docs:
+            raise HTTPException(status_code=500, detail="文档处理失败，未生成可检索叶子分块")
+
+        parent_chunk_store.upsert_documents(parent_docs)
+        milvus_writer.write_documents(leaf_docs)
 
         return DocumentUploadResponse(
             filename=filename,
-            chunks_processed=len(new_docs),
-            message=f"成功上传并处理 {filename}，生成 {len(new_docs)} 个文本片段",
+            chunks_processed=len(leaf_docs),
+            message=(
+                f"成功上传并处理 {filename}，叶子分块 {len(leaf_docs)} 个，"
+                f"父级分块 {len(parent_docs)} 个（存入docstore）"
+            ),
         )
     except HTTPException:
         raise
@@ -252,6 +268,7 @@ async def delete_document(filename: str):
 
         delete_expr = f'filename == "{filename}"'
         result = milvus_manager.delete(delete_expr)
+        parent_chunk_store.delete_by_filename(filename)
 
         return DocumentDeleteResponse(
             filename=filename,

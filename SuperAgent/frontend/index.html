@@ -234,6 +234,24 @@
                                 <div v-if="msg.ragTrace.candidate_k" class="trace-line">
                                     候选召回数：{{ msg.ragTrace.candidate_k }}
                                 </div>
+                                <div v-if="msg.ragTrace.leaf_retrieve_level" class="trace-line">
+                                    叶子召回层级：L{{ msg.ragTrace.leaf_retrieve_level }}
+                                </div>
+                                <div v-if="msg.ragTrace.auto_merge_enabled !== null && msg.ragTrace.auto_merge_enabled !== undefined" class="trace-line">
+                                    Auto-merging启用：{{ msg.ragTrace.auto_merge_enabled ? '是' : '否' }}
+                                </div>
+                                <div v-if="msg.ragTrace.auto_merge_applied !== null && msg.ragTrace.auto_merge_applied !== undefined" class="trace-line">
+                                    Auto-merging应用：{{ msg.ragTrace.auto_merge_applied ? '是' : '否' }}
+                                </div>
+                                <div v-if="msg.ragTrace.auto_merge_threshold" class="trace-line">
+                                    合并阈值：{{ msg.ragTrace.auto_merge_threshold }}
+                                </div>
+                                <div v-if="msg.ragTrace.auto_merge_replaced_chunks" class="trace-line">
+                                    合并替换片段：{{ msg.ragTrace.auto_merge_replaced_chunks }}
+                                </div>
+                                <div v-if="msg.ragTrace.auto_merge_steps" class="trace-line">
+                                    合并轮次：{{ msg.ragTrace.auto_merge_steps }}
+                                </div>
                                 <div v-if="msg.ragTrace.rerank_enabled !== null && msg.ragTrace.rerank_enabled !== undefined" class="trace-line">
                                     Rerank已配置：{{ msg.ragTrace.rerank_enabled ? '是' : '否' }}
                                 </div>
