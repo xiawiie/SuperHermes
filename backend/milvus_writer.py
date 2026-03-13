@@ -1,10 +1,6 @@
 """文档向量化并写入 Milvus - 支持密集+稀疏向量"""
-try:
-    from .embedding import EmbeddingService
-    from .milvus_client import MilvusManager
-except ImportError:
-    from embedding import EmbeddingService
-    from milvus_client import MilvusManager
+from embedding import EmbeddingService
+from milvus_client import MilvusManager
 
 
 class MilvusWriter:

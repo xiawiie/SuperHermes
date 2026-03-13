@@ -137,10 +137,7 @@ def search_knowledge_base(query: str) -> str:
         )
     _KNOWLEDGE_TOOL_CALLS_THIS_TURN += 1
 
-    try:
-        from .rag_pipeline import run_rag_graph
-    except ImportError:
-        from rag_pipeline import run_rag_graph
+    from rag_pipeline import run_rag_graph
 
     # 在同步工具中获取当前的 Loop 可能不可靠，但我们之前是通过 call_soon_threadsafe 调度的。
     # 这里 _RAG_STEP_QUEUE 是在主线程/Loop 设置的全局变量。
