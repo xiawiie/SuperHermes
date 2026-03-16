@@ -2,6 +2,96 @@
 
 Agent的项目记录，方便后续持续更新与展示。
 
+## 本地部署
+
+### 1) 环境准备
+- Python `3.12+`
+- 包管理建议：`uv`（也支持 `pip`）
+- Docker / Docker Compose（用于启动 Milvus 依赖）
+
+### 2) 使用 pyproject 安装依赖
+在项目根目录执行：
+
+```bash
+# 方式 A：推荐（uv）
+uv sync
+
+# 运行服务
+uv run python backend/app.py
+# 或
+uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
+```
+
+```bash
+# 方式 B：pip
+python -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -e .
+
+# 运行服务
+python backend/app.py
+# 或
+uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### 3) 创建 `.env` 文件
+在项目根目录新建 `.env`，可直接使用下面模板：
+
+```env
+# ===== Model =====
+ARK_API_KEY=your_ark_api_key
+MODEL=your_model_name
+BASE_URL=https://your-llm-endpoint/v1
+EMBEDDER=your_embedding_model
+
+# ===== Rerank (可选，不配则自动降级) =====
+RERANK_MODEL=your_rerank_model
+RERANK_BINDING_HOST=https://your-rerank-host
+RERANK_API_KEY=your_rerank_api_key
+
+# ===== Milvus =====
+MILVUS_HOST=127.0.0.1
+MILVUS_PORT=19530
+
+# ===== Tools （可选）=====
+AMAP_WEATHER_API=https://restapi.amap.com/v3/weather/weatherInfo
+AMAP_API_KEY=your_amap_api_key
+
+```
+
+### 4) Docker 部署（Milvus 向量库）
+当前仓库的 `docker-compose.yml` 主要用于启动 Milvus 相关组件（`etcd` / `minio` / `standalone` / `attu`）：
+
+```bash
+# 启动向量库依赖
+docker compose up -d
+
+# 查看服务状态
+docker compose ps
+
+# 查看日志（可选）
+docker compose logs -f standalone
+```
+
+端口说明：
+- Milvus：`19530`
+- Milvus 健康检查：`9091`
+- MinIO API：`9000`
+- MinIO Console：`9001`
+- Attu：`8080`
+
+### 5) 启动应用并访问
+在 Milvus 启动后，运行后端应用：
+
+```bash
+uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
+```
+
+浏览器访问：
+- 前端页面：`http://127.0.0.1:8000/`
+- API 文档：`http://127.0.0.1:8000/docs`
+
 ## 项目概览
 - **核心能力**：
   - LangChain Agent + 自定义工具。
