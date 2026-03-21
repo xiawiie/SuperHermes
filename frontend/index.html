@@ -50,7 +50,7 @@
             <div v-if="activeNav === 'settings'" class="settings-panel">
                 <div class="settings-header">
                     <h2><i class="fas fa-cog"></i> 文档管理</h2>
-                    <p>上传文档进行向量化处理，支持 PDF 和 Word 格式</p>
+                    <p>上传文档进行向量化处理，支持 PDF 和 Word 、Excel 格式</p>
                 </div>
 
                 <div class="upload-section">
@@ -60,7 +60,7 @@
                             type="file" 
                             ref="fileInput" 
                             @change="handleFileSelect"
-                            accept=".pdf,.doc,.docx"
+                            accept=".pdf,.doc,.docx,.xls,.xlsx"
                             style="display: none"
                         />
                         <button @click="$refs.fileInput.click()" class="upload-btn">

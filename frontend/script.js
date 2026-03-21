@@ -411,6 +411,8 @@ createApp({
                 return 'fas fa-file-pdf';
             } else if (fileType === 'Word') {
                 return 'fas fa-file-word';
+            } else if (fileType === 'Excel') {
+                return 'fas fa-file-excel';
             }
             return 'fas fa-file';
         }

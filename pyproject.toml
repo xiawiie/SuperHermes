@@ -1,5 +1,5 @@
 [project]
-name = "langchain"
+name = "SuperMew"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -21,6 +21,10 @@ dependencies = [
     "langgraph>=0.2.31",
     "pypdf>=4.3.1",
     "docx2txt>=0.8",
+    "unstructured",
+    "openpyxl",
+    "tabulate",
+    "msoffcrypto-tool",
 ]
 
 [project.optional-dependencies]

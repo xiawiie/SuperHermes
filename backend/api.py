@@ -188,8 +188,8 @@ async def upload_document(file: UploadFile = File(...)):
     try:
         filename = file.filename
         file_lower = filename.lower()
-        if not (file_lower.endswith(".pdf") or file_lower.endswith((".docx", ".doc"))):
-            raise HTTPException(status_code=400, detail="仅支持 PDF 和 Word 文档")
+        if not (file_lower.endswith(".pdf") or file_lower.endswith((".docx", ".doc")) or file_lower.endswith((".xlsx", ".xls"))):
+            raise HTTPException(status_code=400, detail="仅支持 PDF、Word 和 Excel 文档")
 
         os.makedirs(UPLOAD_DIR, exist_ok=True)
         milvus_manager.init_collection()
