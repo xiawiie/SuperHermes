@@ -53,6 +53,18 @@ RERANK_API_KEY=your_rerank_api_key
 # ===== Milvus =====
 MILVUS_HOST=127.0.0.1
 MILVUS_PORT=19530
+MILVUS_COLLECTION=embeddings_collection
+
+# ===== Database / Cache =====
+DATABASE_URL=postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/langchain_app
+REDIS_URL=redis://127.0.0.1:6379/0
+
+# ===== Auth =====
+JWT_SECRET_KEY=replace-with-strong-random-secret
+ADMIN_INVITE_CODE=supermew-admin-2026
+JWT_ALGORITHM=HS256
+JWT_EXPIRE_MINUTES=1440
+PASSWORD_PBKDF2_ROUNDS=310000
 
 # ===== Tools （可选）=====
 AMAP_WEATHER_API=https://restapi.amap.com/v3/weather/weatherInfo
@@ -60,8 +72,10 @@ AMAP_API_KEY=your_amap_api_key
 
 ```
 
-### 4) Docker 部署（Milvus 向量库）
-当前仓库的 `docker-compose.yml` 主要用于启动 Milvus 相关组件（`etcd` / `minio` / `standalone` / `attu`）：
+### 4) Docker 部署（数据库 + 缓存 + 向量库）
+当前仓库的 `docker-compose.yml` 同时承载业务依赖与 Milvus 依赖：
+- 业务依赖：`postgres`、`redis`
+- 向量依赖：`etcd`、`minio`、`standalone`、`attu`
 
 ```bash
 # 启动向量库依赖
@@ -75,6 +89,8 @@ docker compose logs -f standalone
 ```
 
 端口说明：
+- PostgreSQL：`5432`
+- Redis：`6379`
 - Milvus：`19530`
 - Milvus 健康检查：`9091`
 - MinIO API：`9000`
@@ -95,8 +111,9 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 ## 项目概览
 - **核心能力**：
   - LangChain Agent + 自定义工具。
-  - 文档上传后执行三级滑动窗口分块，叶子分块向量化写入 Milvus，父级分块写入本地 DocStore。
-  - 会话记忆与摘要，保持长对话上下文。
+  - 文档上传后执行三级滑动窗口分块，叶子分块向量化写入 Milvus，父级分块写入 PostgreSQL。
+  - 用户注册/登录、JWT 鉴权、基于角色的 RBAC 权限控制（admin/user）。
+  - 会话记忆与摘要，聊天与历史记录落地 PostgreSQL，并引入 Redis 缓存热点会话与父文档。
 - **运行形态**：FastAPI 后端 + 纯前端（Vue 3 CDN 单页）+ Milvus 向量库。
 
 ## 关键创新点
@@ -157,28 +174,50 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 9. 历史记录会话名称可修改
 10. 死循环检测与恢复：_is_stuck + attempt_loop_recovery
 
-### 后端服务建设
+### 后端服务建设（本轮已完成）
 
-1. 实现用户注册登录、密码加密、权限管理，基于 sqlalchemy 搭建 ORM 数据库
-2. 聊天记录落地数据库，引入 redis 做缓存优化
+1. 账号体系与权限体系
+- 新增注册登录接口：`/auth/register`、`/auth/login`。
+- 新增用户信息接口：`/auth/me`。
+- 引入 JWT 鉴权中间能力：请求通过 Bearer Token 识别当前用户。
+- 权限隔离：
+  - `admin`：可执行文档上传、删除、文档列表查询。
+  - `user`：仅可聊天、查询和删除自己的会话历史。
+
+2. 数据库建模与持久化迁移
+- 使用 SQLAlchemy 建立核心模型：`User`、`ChatSession`、`ChatMessage`、`ParentChunk`。
+- 聊天历史由本地 JSON 迁移到 PostgreSQL。
+- 父级分块文档（L1/L2）由本地 JSON 迁移到 PostgreSQL。
+
+3. Redis 缓存策略
+- 会话消息缓存：按 `user + session` 维度缓存消息列表。
+- 会话列表缓存：按 `user` 维度缓存会话摘要列表。
+- 父文档缓存：按 `chunk_id` 缓存父级分块内容。
+- 写入/删除后执行缓存失效，保证一致性。
+
+4. 密码安全与兼容
+- 新注册用户采用 PBKDF2-SHA256 存储密码哈希（避免 bcrypt 后端兼容问题）。
+- 登录校验兼容历史 bcrypt 哈希，支持平滑迁移。
 
 ## 目录与架构
 - 后端：`backend/`
   - [app.py](backend/app.py)：FastAPI 入口、CORS、静态资源挂载。
   - [api.py](backend/api.py)：聊天、会话管理、文档管理接口。
+  - [auth.py](backend/auth.py)：注册登录、JWT 鉴权、权限检查、密码哈希与校验。
+  - [database.py](backend/database.py)：数据库引擎与会话工厂、建表入口。
+  - [models.py](backend/models.py)：ORM 模型定义（用户、会话、消息、父文档）。
+  - [cache.py](backend/cache.py)：Redis JSON 缓存封装。
   - [agent.py](backend/agent.py)：LangChain Agent、会话存储、摘要逻辑。
   - [tools.py](backend/tools.py)：天气查询、知识库检索工具。
   - [embedding.py](backend/embedding.py)：稠密向量 API 调用 + BM25 稀疏向量生成。
   - [document_loader.py](backend/document_loader.py)：PDF/Word 加载与分片。
-  - [parent_chunk_store.py](backend/parent_chunk_store.py)：父级分块 DocStore（用于 Auto-merging 回取父块）。
+  - [parent_chunk_store.py](backend/parent_chunk_store.py)：父级分块仓储（PostgreSQL + Redis，用于 Auto-merging 回取父块）。
   - [milvus_writer.py](backend/milvus_writer.py)：向量写入（稠密+稀疏）。
   - [milvus_client.py](backend/milvus_client.py)：Milvus 集合定义、混合检索。
   - [schemas.py](backend/schemas.py)：Pydantic 请求/响应模型。
 - 前端：`frontend/`
   - [index.html](frontend/index.html) + [script.js](frontend/script.js) + [style.css](frontend/style.css)：Vue 3 + marked + highlight.js，提供聊天、历史会话、文档上传/删除界面。
 - 数据：`data/`
-  - `customer_service_history.json`：会话落盘存储。
-  - `parent_chunks.json`：父级分块存储（L1/L2）。
   - `documents/`：上传文档原文件。
 - 向量库：Milvus（可由 `docker-compose` 或自建服务提供）。
 
@@ -193,7 +232,7 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 4. 若命中知识库工具，进入 `rag_pipeline.py` 执行检索工作流，各阶段通过 `emit_rag_step()` 实时推送到前端。
 5. 检索结果与 RAG Trace 一起返回，Agent 流式生成最终回答（逐 token 推送）。
 6. 前端 ReadableStream 逐块解析 SSE，打字机效果实时渲染。
-7. 同时消息落盘到 `customer_service_history.json`，支持历史会话回放。
+7. 同时消息持久化到 PostgreSQL，并通过 Redis 缓存加速历史会话回放。
 
 ### 2) RAG 全链路（重点）
 1. **初次召回**：`retrieve_initial`
@@ -227,12 +266,13 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 5. 后续检索可直接利用新文档参与召回。
 
 ### 4) 会话记忆链路
-1. 每轮问答按 `user_id/session_id` 写入本地存储。
+1. 每轮问答按当前登录用户 + `session_id` 写入 PostgreSQL。
 2. 当消息过长时触发摘要压缩，保留长期上下文。
-3. 前端可通过会话接口读取、删除历史对话。
+3. Redis 缓存会话列表与会话消息，减少高频读取数据库压力。
+4. 前端可通过会话接口读取、删除当前用户自己的历史对话。
 
 ## 技术栈
-- 后端：FastAPI、LangChain Agents、Pydantic、Uvicorn。
+- 后端：FastAPI、LangChain Agents、Pydantic、Uvicorn、SQLAlchemy、PostgreSQL、Redis。
 - 向量与检索：Milvus（HNSW 稠密索引 + SPARSE_INVERTED_INDEX 稀疏索引）、RRF 融合、Jina Rerank 精排。
 - 嵌入与稀疏：自定义 API 调用获取稠密向量；BM25 手写稀疏向量；同时输出双塔特征。
 - 前端：Vue 3 (CDN)、marked、highlight.js、纯静态部署。
@@ -243,18 +283,28 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 - 模型相关：`ARK_API_KEY`、`MODEL`、`BASE_URL`、`EMBEDDER`
 - Rerank 相关：`RERANK_MODEL`、`RERANK_BINDING_HOST`、`RERANK_API_KEY`
 - Milvus：`MILVUS_HOST`、`MILVUS_PORT`、`MILVUS_COLLECTION`
+- 数据库缓存：`DATABASE_URL`、`REDIS_URL`
+- 鉴权相关：`JWT_SECRET_KEY`、`ADMIN_INVITE_CODE`、`JWT_ALGORITHM`、`JWT_EXPIRE_MINUTES`
+- 密码参数：`PASSWORD_PBKDF2_ROUNDS`
 - Auto-merging：`AUTO_MERGE_ENABLED`、`AUTO_MERGE_THRESHOLD`、`LEAF_RETRIEVE_LEVEL`
 - 工具：`AMAP_WEATHER_API`、`AMAP_API_KEY`
 
 ## API 速览
-- `POST /chat`：聊天（非流式），入参 `message`、`user_id`、`session_id`。
-- `POST /chat/stream`：聊天（流式 SSE），入参同上，返回 `text/event-stream`。
-- `GET /sessions/{user_id}`：列出会话。
-- `GET /sessions/{user_id}/{session_id}`：拉取某会话消息。
-- `DELETE /sessions/{user_id}/{session_id}`：删除会话。
-- `GET /documents`：列出已入库文档及 chunk 数。
-- `POST /documents/upload`：上传并向量化 PDF/Word。
-- `DELETE /documents/{filename}`：删除指定文档的向量数据。
+- 鉴权
+  - `POST /auth/register`：注册（支持普通用户/管理员邀请码模式）。
+  - `POST /auth/login`：登录，返回 Bearer Token。
+  - `GET /auth/me`：获取当前登录用户信息。
+- 聊天
+  - `POST /chat`：聊天（非流式），入参 `message`、`session_id`。
+  - `POST /chat/stream`：聊天（流式 SSE），入参同上，返回 `text/event-stream`。
+- 会话（用户隔离）
+  - `GET /sessions`：列出当前用户会话。
+  - `GET /sessions/{session_id}`：拉取当前用户某会话消息。
+  - `DELETE /sessions/{session_id}`：删除当前用户会话。
+- 文档（管理员权限）
+  - `GET /documents`：列出已入库文档及 chunk 数。
+  - `POST /documents/upload`：上传并向量化 PDF/Word/Excel。
+  - `DELETE /documents/{filename}`：删除指定文档向量数据。
 
 ## 流式输出与实时检索过程 — 技术细节
 
@@ -411,6 +461,15 @@ StreamingResponse(
 - **即时止损原理**：`agent_task.cancel()` 会立即在任务挂起点注入 `asyncio.CancelledError`。对于流式 LLM 请求，这会触发 `httpx` 关闭 TCP 连接。服务端（OpenAI 等）检测到 client 掉线后会立即停止推理，从而实现**真正的 Token 节省**。
 
 ## 更新日志
+
+### 2026-03-21 后端服务建设升级（认证 + 数据库 + 缓存）
+- 新增认证与权限模块：注册、登录、JWT、管理员权限控制。
+- 聊天历史从本地 JSON 迁移到 PostgreSQL，按用户隔离会话数据。
+- 父级分块存储从本地 JSON 迁移到 PostgreSQL。
+- 引入 Redis 缓存会话与父文档，提高读取性能并降低数据库压力。
+- API 升级为 Token 驱动，移除前端直接传 `user_id` 的历史模式。
+- 文档管理接口收敛到管理员角色，避免普通用户误操作知识库。
+- 密码哈希方案升级为 PBKDF2-SHA256，兼容历史 bcrypt 校验。
 
 ### 2026-03-13 三级分块与 Auto-merging 升级
 - 新增三级滑动窗口分块（L1/L2/L3），并为分块写入层级元数据。

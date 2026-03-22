@@ -33,7 +33,7 @@
                 <button @click="handleHistory" :class="['nav-btn', {active: activeNav === 'history'}]">
                     <i class="fas fa-history"></i> 历史记录
                 </button>
-                <button @click="handleSettings" :class="['nav-btn', {active: activeNav === 'settings'}]">
+                <button v-if="isAdmin" @click="handleSettings" :class="['nav-btn', {active: activeNav === 'settings'}]">
                     <i class="fas fa-cog"></i> 设置
                 </button>
             </nav>
@@ -41,13 +41,40 @@
                 <button @click="handleClearChat" class="danger-btn">
                     <i class="fas fa-trash-alt"></i> 清空当前对话
                 </button>
+                <div v-if="isAuthenticated" class="user-badge">
+                    <span>{{ currentUser.username }}</span>
+                    <small>{{ currentUser.role }}</small>
+                </div>
+                <button v-if="isAuthenticated" @click="handleLogout" class="danger-btn logout-btn">
+                    <i class="fas fa-right-from-bracket"></i> 退出登录
+                </button>
             </div>
         </aside>
 
         <!-- Main Chat Area -->
         <main class="main-content">
+            <div v-if="!isAuthenticated" class="auth-panel">
+                <h2>{{ authMode === 'login' ? '登录 SuperMew' : '注册 SuperMew' }}</h2>
+                <p>登录后即可使用聊天和历史记录；管理员可管理文档知识库。</p>
+                <div class="auth-form">
+                    <input v-model="authForm.username" type="text" placeholder="用户名" />
+                    <input v-model="authForm.password" type="password" placeholder="密码" />
+                    <select v-if="authMode === 'register'" v-model="authForm.role">
+                        <option value="user">普通用户</option>
+                        <option value="admin">管理员</option>
+                    </select>
+                    <input v-if="authMode === 'register' && authForm.role === 'admin'" v-model="authForm.admin_code" type="password" placeholder="管理员邀请码" />
+                    <button class="send-btn auth-submit" :disabled="authLoading" @click="handleAuthSubmit">
+                        {{ authLoading ? '提交中...' : (authMode === 'login' ? '登录' : '注册') }}
+                    </button>
+                    <button class="auth-switch" @click="authMode = authMode === 'login' ? 'register' : 'login'">
+                        {{ authMode === 'login' ? '没有账号？去注册' : '已有账号？去登录' }}
+                    </button>
+                </div>
+            </div>
+
             <!-- Settings Panel -->
-            <div v-if="activeNav === 'settings'" class="settings-panel">
+            <div v-if="isAuthenticated && activeNav === 'settings'" class="settings-panel">
                 <div class="settings-header">
                     <h2><i class="fas fa-cog"></i> 文档管理</h2>
                     <p>上传文档进行向量化处理，支持 PDF 和 Word 、Excel 格式</p>
@@ -124,7 +151,7 @@
             </div>
 
             <!-- History Sidebar -->
-            <div v-if="showHistorySidebar" class="history-sidebar">
+            <div v-if="isAuthenticated && showHistorySidebar" class="history-sidebar">
                 <div class="history-header">
                     <h3>历史会话</h3>
                     <button @click="showHistorySidebar = false" class="close-btn">
@@ -162,7 +189,7 @@
             </div>
 
             <!-- Chat Area (hidden when settings is active) -->
-            <div v-show="activeNav !== 'settings'" class="chat-area">
+            <div v-show="isAuthenticated && activeNav !== 'settings'" class="chat-area">
                 <header class="chat-header">
                     <div class="header-info">
                         <div class="status-dot"></div>

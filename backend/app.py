@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 
 import api as api_module
+from database import init_db
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -12,6 +13,10 @@ FRONTEND_DIR = BASE_DIR / "frontend"
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Cute Cat Bot API")
+
+    @app.on_event("startup")
+    async def _startup_init_db():
+        init_db()
 
     app.add_middleware(
         CORSMiddleware,

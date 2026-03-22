@@ -13,15 +13,23 @@ class MilvusManager:
         self.host = os.getenv("MILVUS_HOST", "localhost")
         self.port = os.getenv("MILVUS_PORT", "19530")
         self.collection_name = os.getenv("MILVUS_COLLECTION", "embeddings_collection")
-        self.client = MilvusClient(uri=f"http://{self.host}:{self.port}")
+        self.uri = f"http://{self.host}:{self.port}"
+        self.client = None
+
+    def _get_client(self) -> MilvusClient:
+        # Lazy-create client to avoid blocking app import/startup when Milvus is temporarily unavailable.
+        if self.client is None:
+            self.client = MilvusClient(uri=self.uri)
+        return self.client
 
     def init_collection(self, dense_dim: int = 2560):
         """
         初始化 Milvus 集合 - 同时支持密集向量和稀疏向量
         :param dense_dim: 密集向量维度
         """
-        if not self.client.has_collection(self.collection_name):
-            schema = self.client.create_schema(auto_id=True, enable_dynamic_field=True)
+        client = self._get_client()
+        if not client.has_collection(self.collection_name):
+            schema = client.create_schema(auto_id=True, enable_dynamic_field=True)
             
             # 主键
             schema.add_field("id", DataType.INT64, is_primary=True, auto_id=True)
@@ -47,7 +55,7 @@ class MilvusManager:
             schema.add_field("chunk_level", DataType.INT64)
 
             # 为两种向量分别创建索引
-            index_params = self.client.prepare_index_params()
+            index_params = client.prepare_index_params()
             
             # 密集向量索引 - 使用 HNSW（更适合混合检索）
             index_params.add_index(
@@ -65,7 +73,7 @@ class MilvusManager:
                 params={"drop_ratio_build": 0.2}
             )
 
-            self.client.create_collection(
+            client.create_collection(
                 collection_name=self.collection_name,
                 schema=schema,
                 index_params=index_params
@@ -73,11 +81,11 @@ class MilvusManager:
 
     def insert(self, data: list[dict]):
         """插入数据到 Milvus"""
-        return self.client.insert(self.collection_name, data)
+        return self._get_client().insert(self.collection_name, data)
 
     def query(self, filter_expr: str = "", output_fields: list[str] = None, limit: int = 10000):
         """查询数据"""
-        return self.client.query(
+        return self._get_client().query(
             collection_name=self.collection_name,
             filter=filter_expr,
             output_fields=output_fields or ["filename", "file_type"],
@@ -157,7 +165,7 @@ class MilvusManager:
         # 使用 RRF 排序算法融合结果
         reranker = RRFRanker(k=rrf_k)
         
-        results = self.client.hybrid_search(
+        results = self._get_client().hybrid_search(
             collection_name=self.collection_name,
             reqs=[dense_search, sparse_search],
             ranker=reranker,
@@ -189,7 +197,7 @@ class MilvusManager:
         """
         仅使用密集向量检索（降级模式，用于稀疏向量不可用时）
         """
-        results = self.client.search(
+        results = self._get_client().search(
             collection_name=self.collection_name,
             data=[dense_embedding],
             anns_field="dense_embedding",
@@ -230,16 +238,17 @@ class MilvusManager:
 
     def delete(self, filter_expr: str):
         """删除数据"""
-        return self.client.delete(
+        return self._get_client().delete(
             collection_name=self.collection_name,
             filter=filter_expr
         )
 
     def has_collection(self) -> bool:
         """检查集合是否存在"""
-        return self.client.has_collection(self.collection_name)
+        return self._get_client().has_collection(self.collection_name)
 
     def drop_collection(self):
         """删除集合（用于重建 schema）"""
-        if self.client.has_collection(self.collection_name):
-            self.client.drop_collection(self.collection_name)
+        client = self._get_client()
+        if client.has_collection(self.collection_name):
+            client.drop_collection(self.collection_name)

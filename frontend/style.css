@@ -151,6 +151,28 @@ body {
     background-color: #ffcccc;
 }
 
+.logout-btn {
+    margin-top: 10px;
+}
+
+.user-badge {
+    margin-top: 12px;
+    background: rgba(255, 255, 255, 0.85);
+    border-radius: 12px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    color: var(--text-color);
+    font-weight: 600;
+}
+
+.user-badge small {
+    color: var(--text-light);
+    font-weight: 600;
+    text-transform: uppercase;
+    margin-top: 2px;
+}
+
 /* Main Content */
 .main-content {
     flex: 1;
@@ -158,6 +180,63 @@ body {
     flex-direction: column;
     background-color: var(--white);
     position: relative;
+}
+
+.auth-panel {
+    margin: auto;
+    width: min(440px, 88%);
+    background: var(--white);
+    border-radius: 24px;
+    padding: 28px;
+    box-shadow: var(--shadow);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.auth-panel h2 {
+    color: var(--primary-color);
+    margin-bottom: 8px;
+}
+
+.auth-panel p {
+    color: var(--text-light);
+    font-size: 0.92rem;
+    margin-bottom: 16px;
+}
+
+.auth-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.auth-form input,
+.auth-form select {
+    width: 100%;
+    border: 1px solid #e6e6e6;
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 0.95rem;
+    outline: none;
+}
+
+.auth-form input:focus,
+.auth-form select:focus {
+    border-color: var(--primary-light);
+}
+
+.auth-submit {
+    border-radius: 12px !important;
+    width: 100% !important;
+    height: 44px !important;
+}
+
+.auth-switch {
+    border: none;
+    background: none;
+    color: var(--primary-color);
+    cursor: pointer;
+    font-weight: 700;
+    padding-top: 4px;
 }
 
 .chat-header {

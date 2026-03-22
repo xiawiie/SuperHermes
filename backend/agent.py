@@ -7,6 +7,9 @@ from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk, SystemMessage
 from tools import get_current_weather, search_knowledge_base, get_last_rag_context, reset_tool_call_guards, set_rag_step_queue
 from datetime import datetime
+from cache import cache
+from database import SessionLocal
+from models import User, ChatSession, ChatMessage
 
 load_dotenv()
 
@@ -15,96 +18,192 @@ MODEL = os.getenv("MODEL")
 BASE_URL = os.getenv("BASE_URL")
 
 class ConversationStorage:
-    """对话存储"""
+    """对话存储（PostgreSQL + Redis）。"""
 
-    def __init__(self, storage_file: str = None):
-        if storage_file:
-            storage_path = os.path.abspath(storage_file)
-        else:
-            package_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-            data_dir = os.path.join(package_root, "data")
-            os.makedirs(data_dir, exist_ok=True)
-            storage_path = os.path.join(data_dir, "customer_service_history.json")
+    @staticmethod
+    def _messages_cache_key(user_id: str, session_id: str) -> str:
+        return f"chat_messages:{user_id}:{session_id}"
 
-        self.storage_file = storage_path
+    @staticmethod
+    def _sessions_cache_key(user_id: str) -> str:
+        return f"chat_sessions:{user_id}"
+
+    @staticmethod
+    def _to_langchain_messages(records: list[dict]) -> list:
+        messages = []
+        for msg_data in records:
+            msg_type = msg_data.get("type")
+            content = msg_data.get("content", "")
+            if msg_type == "human":
+                messages.append(HumanMessage(content=content))
+            elif msg_type == "ai":
+                messages.append(AIMessage(content=content))
+            elif msg_type == "system":
+                messages.append(SystemMessage(content=content))
+        return messages
 
     def save(self, user_id: str, session_id: str, messages: list, metadata: dict = None, extra_message_data: list = None):
         """保存对话"""
-        data = self._load()
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.username == user_id).first()
+            if not user:
+                return
 
-        if user_id not in data:
-            data[user_id] = {}
+            session = (
+                db.query(ChatSession)
+                .filter(ChatSession.user_id == user.id, ChatSession.session_id == session_id)
+                .first()
+            )
+            if not session:
+                session = ChatSession(user_id=user.id, session_id=session_id, metadata_json=metadata or {})
+                db.add(session)
+                db.flush()
+            else:
+                session.metadata_json = metadata or {}
 
-        serialized = []
-        for idx, msg in enumerate(messages):
-            record = {
-                "type": msg.type,
-                "content": msg.content,
-                "timestamp": datetime.now().isoformat()
-            }
-            if extra_message_data and idx < len(extra_message_data):
-                extra = extra_message_data[idx] or {}
-                if "rag_trace" in extra:
-                    record["rag_trace"] = extra["rag_trace"]
-            serialized.append(record)
+            db.query(ChatMessage).filter(ChatMessage.session_ref_id == session.id).delete(synchronize_session=False)
 
-        data[user_id][session_id] = {
-            "messages": serialized,
-            "metadata": metadata or {},
-            "updated_at": datetime.now().isoformat()
-        }
+            serialized = []
+            now = datetime.utcnow()
+            for idx, msg in enumerate(messages):
+                rag_trace = None
+                if extra_message_data and idx < len(extra_message_data):
+                    extra = extra_message_data[idx] or {}
+                    rag_trace = extra.get("rag_trace")
 
-        with open(self.storage_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+                db.add(
+                    ChatMessage(
+                        session_ref_id=session.id,
+                        message_type=msg.type,
+                        content=str(msg.content),
+                        timestamp=now,
+                        rag_trace=rag_trace,
+                    )
+                )
+                serialized.append(
+                    {
+                        "type": msg.type,
+                        "content": str(msg.content),
+                        "timestamp": now.isoformat(),
+                        "rag_trace": rag_trace,
+                    }
+                )
+
+            session.updated_at = now
+            db.commit()
+
+            cache.set_json(self._messages_cache_key(user_id, session_id), serialized)
+            cache.delete(self._sessions_cache_key(user_id))
+        finally:
+            db.close()
 
     def load(self, user_id: str, session_id: str) -> list:
         """加载对话"""
-        data = self._load()
+        cached = cache.get_json(self._messages_cache_key(user_id, session_id))
+        if cached is not None:
+            return self._to_langchain_messages(cached)
 
-        if user_id not in data or session_id not in data[user_id]:
-            return []
-
-        messages = []
-        for msg_data in data[user_id][session_id]["messages"]:
-            if msg_data["type"] == "human":
-                messages.append(HumanMessage(content=msg_data["content"]))
-            elif msg_data["type"] == "ai":
-                messages.append(AIMessage(content=msg_data["content"]))
-            elif msg_data["type"] == "system":
-                messages.append(SystemMessage(content=msg_data["content"]))
-
-        return messages
+        records = self.get_session_messages(user_id, session_id)
+        cache.set_json(self._messages_cache_key(user_id, session_id), records)
+        return self._to_langchain_messages(records)
 
     def list_sessions(self, user_id: str) -> list:
         """列出用户的所有会话"""
-        data = self._load()
-        if user_id not in data:
-            return []
-        return list(data[user_id].keys())
+        return [item["session_id"] for item in self.list_session_infos(user_id)]
+
+    def list_session_infos(self, user_id: str) -> list[dict]:
+        cached = cache.get_json(self._sessions_cache_key(user_id))
+        if cached is not None:
+            return cached
+
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.username == user_id).first()
+            if not user:
+                return []
+
+            sessions = (
+                db.query(ChatSession)
+                .filter(ChatSession.user_id == user.id)
+                .order_by(ChatSession.updated_at.desc())
+                .all()
+            )
+            result = []
+            for s in sessions:
+                count = db.query(ChatMessage).filter(ChatMessage.session_ref_id == s.id).count()
+                result.append(
+                    {
+                        "session_id": s.session_id,
+                        "updated_at": s.updated_at.isoformat(),
+                        "message_count": count,
+                    }
+                )
+            cache.set_json(self._sessions_cache_key(user_id), result)
+            return result
+        finally:
+            db.close()
+
+    def get_session_messages(self, user_id: str, session_id: str) -> list[dict]:
+        cached = cache.get_json(self._messages_cache_key(user_id, session_id))
+        if cached is not None:
+            return cached
+
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.username == user_id).first()
+            if not user:
+                return []
+            session = (
+                db.query(ChatSession)
+                .filter(ChatSession.user_id == user.id, ChatSession.session_id == session_id)
+                .first()
+            )
+            if not session:
+                return []
+
+            rows = (
+                db.query(ChatMessage)
+                .filter(ChatMessage.session_ref_id == session.id)
+                .order_by(ChatMessage.id.asc())
+                .all()
+            )
+            result = [
+                {
+                    "type": row.message_type,
+                    "content": row.content,
+                    "timestamp": row.timestamp.isoformat(),
+                    "rag_trace": row.rag_trace,
+                }
+                for row in rows
+            ]
+            cache.set_json(self._messages_cache_key(user_id, session_id), result)
+            return result
+        finally:
+            db.close()
 
     def delete_session(self, user_id: str, session_id: str) -> bool:
         """删除指定用户的会话，返回是否删除成功"""
-        data = self._load()
-        if user_id not in data or session_id not in data[user_id]:
-            return False
-
-        del data[user_id][session_id]
-        if not data[user_id]:
-            del data[user_id]
-
-        with open(self.storage_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        return True
-
-    def _load(self) -> dict:
-        """加载数据"""
-        if not os.path.exists(self.storage_file):
-            return {}
+        db = SessionLocal()
         try:
-            with open(self.storage_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            return {}
+            user = db.query(User).filter(User.username == user_id).first()
+            if not user:
+                return False
+            session = (
+                db.query(ChatSession)
+                .filter(ChatSession.user_id == user.id, ChatSession.session_id == session_id)
+                .first()
+            )
+            if not session:
+                return False
+
+            db.delete(session)
+            db.commit()
+            cache.delete(self._messages_cache_key(user_id, session_id))
+            cache.delete(self._sessions_cache_key(user_id))
+            return True
+        finally:
+            db.close()
 
 
 
