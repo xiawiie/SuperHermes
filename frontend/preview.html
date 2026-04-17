@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SuperHermes — Design Preview</title>
+    <link rel="icon" href="logo-horse.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700;900&family=Noto+Sans+SC:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --ink-bg: #F4ECD8;
+            --ink-bg-soft: #ECE0C4;
+            --ink-surface: rgba(255, 249, 235, 0.86);
+            --ink-surface-solid: #FBF5E3;
+            --ink-panel: rgba(42, 32, 26, 0.055);
+            --paper: #1F1B16;
+            --paper-soft: #3F362C;
+            --paper-muted: #6E6054;
+            --paper-faint: rgba(42, 32, 26, 0.08);
+            --cinnabar: #C2402C;
+            --cinnabar-strong: #D95E3B;
+            --cinnabar-soft: rgba(194, 64, 44, 0.16);
+            --seal-red: #8E2A1D;
+            --gamboge: #D9A441;
+            --gamboge-soft: rgba(217, 164, 65, 0.18);
+            --indigo-ink: #425A78;
+            --indigo-soft: rgba(66, 90, 120, 0.14);
+            --bamboo: #6B8F73;
+            --bamboo-soft: rgba(107, 143, 115, 0.14);
+            --line: rgba(42, 32, 26, 0.1);
+            --line-strong: rgba(42, 32, 26, 0.18);
+            --line-brush: rgba(42, 32, 26, 0.28);
+            --shadow-soft: 0 18px 50px rgba(60, 42, 32, 0.14);
+            --shadow-tight: 0 8px 24px rgba(42, 32, 26, 0.08);
+            --shadow-brush: 0 2px 0 rgba(42, 32, 26, 0.05);
+            --radius-sm: 8px;
+            --radius-md: 12px;
+            --radius-lg: 16px;
+            --nav-height: 52px;
+            --content-max: 920px;
+            --composer-max: 920px;
+            --transition: 160ms ease;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        html, body {
+            width: 100%; height: 100%;
+            overflow-x: hidden;
+        }
+
+        body {
+            font-family: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+            background:
+                radial-gradient(ellipse 42rem 30rem at 12% 6%, rgba(194, 64, 44, 0.09), transparent 60%),
+                radial-gradient(ellipse 38rem 26rem at 90% 10%, rgba(217, 164, 65, 0.12), transparent 58%),
+                radial-gradient(ellipse 48rem 34rem at 18% 102%, rgba(66, 90, 120, 0.09), transparent 60%),
+                radial-gradient(ellipse 34rem 22rem at 92% 96%, rgba(107, 143, 115, 0.08), transparent 60%),
+                repeating-linear-gradient(95deg, rgba(42, 32, 26, 0.022) 0 1px, transparent 1px 9px),
+                repeating-linear-gradient(6deg, rgba(42, 32, 26, 0.012) 0 1px, transparent 1px 14px),
+                linear-gradient(135deg, #FBF5E3 0%, #F4ECD8 42%, #EDDFBC 100%);
+            color: var(--paper);
+            min-height: 100vh;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            background:
+                linear-gradient(rgba(194, 64, 44, 0.025), rgba(42, 32, 26, 0)),
+                radial-gradient(circle at 50% 100%, rgba(42, 32, 26, 0.06), transparent 36rem);
+            mix-blend-mode: multiply;
+        }
+
+        button:focus-visible, input:focus-visible, textarea:focus-visible {
+            outline: 2px solid rgba(198, 80, 58, 0.72);
+            outline-offset: 2px;
+        }
+
+        button { border: 0; cursor: pointer; }
+
+        /* ── Nav ── */
+        .top-nav {
+            position: fixed;
+            top: 18px;
+            left: 50%;
+            z-index: 40;
+            width: min(980px, calc(100vw - 32px));
+            height: var(--nav-height);
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            padding: 6px;
+            border: 1px solid var(--line-strong);
+            border-radius: 14px;
+            background: rgba(255, 249, 235, 0.82);
+            box-shadow: var(--shadow-tight);
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
+            animation: nav-in 420ms ease both;
+        }
+
+        .brand-lockup {
+            display: inline-flex;
+            align-items: center;
+            gap: 9px;
+            padding: 6px 10px;
+            border-radius: 10px;
+            color: var(--paper);
+            background: transparent;
+        }
+        .brand-lockup:hover { background: var(--paper-faint); }
+
+        .brand-mark {
+            display: block;
+            object-fit: contain;
+            flex-shrink: 0;
+        }
+        .brand-mark-sm {
+            width: 34px;
+            height: 34px;
+        }
+
+        .brand-name {
+            font-family: "Noto Serif SC", "Songti SC", serif;
+            letter-spacing: 0.02em;
+            font-weight: 700;
+        }
+
+        .nav-actions {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 3px;
+            border-radius: 11px;
+            background: rgba(42, 32, 26, 0.035);
+        }
+
+        .nav-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 8px 13px;
+            border-radius: 9px;
+            color: var(--paper-muted);
+            background: transparent;
+            transition: background var(--transition), color var(--transition);
+            white-space: nowrap;
+        }
+        .nav-pill:hover { background: var(--paper-faint); color: var(--paper); }
+        .nav-pill.active { color: var(--paper); background: var(--cinnabar-soft); }
+
+        .user-cluster { display: flex; align-items: center; gap: 8px; }
+
+        .user-chip {
+            display: flex; align-items: center; gap: 8px;
+            padding: 5px 8px;
+            border: 1px solid var(--line);
+            border-radius: 11px;
+            color: var(--paper-soft);
+        }
+
+        .user-avatar {
+            width: 28px; height: 28px;
+            display: inline-flex; align-items: center; justify-content: center;
+            border-radius: 8px;
+            background: rgba(42, 32, 26, 0.1);
+            color: var(--paper);
+            font-weight: 700; font-size: 12px;
+        }
+
+        .user-meta { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.05; }
+        .user-meta strong { font-size: 0.85rem; }
+        .user-meta small { margin-top: 3px; color: var(--paper-muted); font-size: 0.68rem; text-transform: uppercase; }
+
+        /* ── Workspace ── */
+        .workspace {
+            position: relative; z-index: 1;
+            padding: 92px 20px 132px;
+            min-height: 100vh;
+        }
+
+        .chat-scroll {
+            width: min(var(--content-max), calc(100vw - 40px));
+            margin: 0 auto;
+        }
+
+        /* ── Welcome ── */
+        .welcome-screen {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 55vh;
+            text-align: center;
+            gap: 12px;
+            animation: panel-in 420ms ease both;
+        }
+
+        .eyebrow {
+            color: var(--cinnabar-strong);
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+        }
+
+        .welcome-screen h1 {
+            font-family: "Noto Serif SC", "Songti SC", serif;
+            font-size: clamp(2rem, 5vw, 3.4rem);
+            color: var(--paper);
+            letter-spacing: 0;
+        }
+
+        .welcome-screen p {
+            max-width: 620px;
+            line-height: 1.75;
+            color: var(--paper-muted);
+        }
+
+        .prompt-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            width: min(760px, 100%);
+            margin-top: 16px;
+        }
+
+        .prompt-grid button {
+            min-height: 58px;
+            border: 1px solid var(--line);
+            border-radius: var(--radius-md);
+            color: var(--paper-soft);
+            background: rgba(42, 32, 26, 0.04);
+            padding: 12px;
+            line-height: 1.35;
+            font-family: inherit;
+            font-size: 0.9rem;
+            transition: background var(--transition), border-color var(--transition), transform var(--transition);
+        }
+        .prompt-grid button:hover {
+            border-color: var(--line-strong);
+            transform: translateY(-1px);
+            background: var(--paper-faint);
+            color: var(--paper);
+        }
+
+        /* ── Messages ── */
+        .message {
+            width: 100%;
+            display: flex;
+            margin: 22px 0;
+            animation: message-in 220ms ease both;
+        }
+
+        .user-message { align-items: flex-end; }
+        .bot-message { align-items: flex-start; }
+
+        .message-content {
+            max-width: 82%;
+            line-height: 1.75;
+            overflow-wrap: anywhere;
+        }
+
+        .user-content {
+            max-width: min(68%, 680px);
+            padding: 10px 16px;
+            border-radius: var(--radius-md);
+            color: var(--paper);
+            background: var(--cinnabar-soft);
+            border-right: 2px solid var(--cinnabar-strong);
+            white-space: pre-wrap;
+            transition: background var(--transition);
+        }
+        .user-content:hover { background: rgba(194, 64, 44, 0.22); }
+
+        .bot-content {
+            padding: 2px 0 2px 16px;
+            border-left: 2px solid rgba(194, 64, 44, 0.38);
+            color: var(--paper-soft);
+        }
+        .bot-content p { margin: 0 0 0.9em; }
+        .bot-content p:last-child { margin-bottom: 0; }
+        .bot-content ul, .bot-content ol { margin: 0.6em 0 0.9em 1.35em; }
+        .bot-content code {
+            font-family: "Cascadia Mono", "Consolas", monospace;
+            font-size: 0.92em;
+        }
+        .bot-content :not(pre) > code {
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            background: rgba(42, 32, 26, 0.07);
+            padding: 0.1em 0.35em;
+        }
+        .bot-content pre {
+            max-width: 100%;
+            overflow-x: auto;
+            margin: 1em 0;
+            padding: 14px;
+            border: 1px solid var(--line);
+            border-radius: var(--radius-md);
+            background: rgba(42, 32, 26, 0.08);
+        }
+
+        .bot-label {
+            font-size: 0.72rem;
+            color: var(--paper-muted);
+            font-family: "Noto Serif SC", serif;
+            margin-bottom: 4px;
+            letter-spacing: 0.04em;
+        }
+
+        .bot-message-actions {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-top: 8px;
+            margin-left: 16px;
+        }
+
+        .msg-action-btn {
+            width: 32px; height: 32px;
+            display: inline-flex; align-items: center; justify-content: center;
+            border: 0; border-radius: 8px;
+            color: var(--paper-muted);
+            background: transparent;
+            transition: color var(--transition), background var(--transition);
+        }
+        .msg-action-btn:hover { color: var(--paper); background: var(--paper-faint); }
+
+        /* ── Composer ── */
+        .composer-dock {
+            position: fixed;
+            left: 50%;
+            bottom: 18px;
+            z-index: 35;
+            width: min(var(--composer-max), calc(100vw - 32px));
+            transform: translateX(-50%);
+        }
+
+        .composer {
+            display: flex;
+            align-items: flex-end;
+            gap: 8px;
+            padding: 8px;
+            border: 1px solid var(--line-strong);
+            border-radius: 16px;
+            background: rgba(255, 249, 235, 0.86);
+            box-shadow: var(--shadow-soft);
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
+        }
+
+        .composer textarea {
+            flex: 1;
+            min-height: 42px;
+            resize: none;
+            border: 0; outline: none;
+            background: transparent;
+            color: var(--paper);
+            padding: 10px 8px;
+            font-family: inherit;
+            font-size: 1rem;
+            line-height: 1.5;
+        }
+        .composer textarea::placeholder { color: rgba(42, 32, 26, 0.38); }
+
+        .composer-icon, .send-button {
+            width: 42px; height: 42px;
+            flex: 0 0 42px;
+            display: inline-flex; align-items: center; justify-content: center;
+            border-radius: 11px;
+        }
+        .composer-icon {
+            color: var(--paper-muted);
+            background: transparent;
+        }
+        .composer-icon:hover { background: var(--paper-faint); color: var(--cinnabar); }
+
+        .send-button {
+            color: #fff8ef;
+            background: var(--cinnabar);
+        }
+        .send-button:hover { transform: translateY(-1px); background: var(--cinnabar-strong); }
+
+        .composer-note {
+            margin-top: 8px;
+            text-align: center;
+            font-size: 0.76rem;
+            color: var(--paper-muted);
+        }
+
+        /* ── Scrollbar ── */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { border-radius: 999px; background: rgba(42, 32, 26, 0.16); }
+
+        /* ── Animations ── */
+        @keyframes nav-in {
+            from { opacity: 0; transform: translate(-50%, -8px); }
+            to   { opacity: 1; transform: translate(-50%, 0); }
+        }
+        @keyframes panel-in {
+            from { opacity: 0; transform: translateY(8px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes message-in {
+            from { opacity: 0; transform: translateY(6px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        @media (max-width: 760px) {
+            .top-nav { top: 10px; width: calc(100vw - 20px); }
+            .brand-name, .user-meta { display: none; }
+            .nav-actions { flex: 1; min-width: max-content; }
+            .nav-pill span { display: none; }
+            .workspace { padding: 76px 10px 122px; }
+            .chat-scroll { width: 100%; }
+            .prompt-grid { grid-template-columns: 1fr; }
+            .message-content, .user-content { max-width: 90%; }
+            .composer-dock { bottom: 10px; width: calc(100vw - 20px); }
+        }
+    </style>
+</head>
+<body>
+
+    <header class="top-nav">
+        <button class="brand-lockup">
+            <img class="brand-mark brand-mark-sm" src="logo-horse.svg" alt="" width="34" height="34" aria-hidden="true">
+            <span class="brand-name">SuperHermes</span>
+        </button>
+
+        <div class="nav-actions">
+            <button class="nav-pill active"><i class="fas fa-plus"></i> <span>新对话</span></button>
+            <button class="nav-pill"><i class="fas fa-clock-rotate-left"></i> <span>历史</span></button>
+            <button class="nav-pill"><i class="fas fa-database"></i> <span>知识库</span></button>
+        </div>
+
+        <div class="user-cluster">
+            <div class="user-chip">
+                <span class="user-avatar">U</span>
+                <div class="user-meta">
+                    <strong>user</strong>
+                    <small>user</small>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="workspace">
+        <div class="chat-scroll">
+            <div class="welcome-screen">
+                <p class="eyebrow">SuperHermes Online</p>
+                <h1>有什么想问 SuperHermes？</h1>
+                <p>可以检索知识库、分析文档、解释代码，或继续一段已有对话。</p>
+
+                <div class="prompt-grid">
+                    <button>解释知识库核心结论</button>
+                    <button>帮我整理一份技术方案</button>
+                    <button>分析 RAG 检索为什么不准</button>
+                </div>
+            </div>
+
+            <!-- Bot: greeting -->
+            <div class="message bot-message">
+                <div>
+                    <div class="bot-label">SuperHermes</div>
+                    <div class="message-content bot-content">
+                        <p>你好！我是 SuperHermes，有什么我可以帮你的吗？</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- User -->
+            <div class="message user-message">
+                <div class="message-content user-content">帮我查一下今天北京的天气</div>
+            </div>
+
+            <!-- Bot: weather -->
+            <div class="message bot-message">
+                <div>
+                    <div class="bot-label">SuperHermes</div>
+                    <div class="message-content bot-content">
+                        <p>今天北京天气晴，温度 15°C ~ 28°C，微风。</p>
+                        <p>空气质量良好，适合户外活动。</p>
+                    </div>
+                    <div class="bot-message-actions">
+                        <button class="msg-action-btn" title="复制"><i class="fas fa-copy"></i></button>
+                        <button class="msg-action-btn" title="重新生成"><i class="fas fa-arrows-rotate"></i></button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- User -->
+            <div class="message user-message">
+                <div class="message-content user-content">帮我分析一下这份数据报告的要点</div>
+            </div>
+
+            <!-- Bot: code example -->
+            <div class="message bot-message">
+                <div>
+                    <div class="bot-label">SuperHermes</div>
+                    <div class="message-content bot-content">
+                        <p>好的，这是一个简单的数据分析示例：</p>
+                        <pre><code>import pandas as pd
+
+df = pd.read_csv("data.csv")
+summary = df.describe()
+print(summary)</code></pre>
+                        <p>运行后会输出数据的统计摘要，包括均值、标准差、最小值和最大值等。</p>
+                    </div>
+                    <div class="bot-message-actions">
+                        <button class="msg-action-btn" title="复制"><i class="fas fa-copy"></i></button>
+                        <button class="msg-action-btn" title="重新生成"><i class="fas fa-arrows-rotate"></i></button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div class="composer-dock">
+        <div class="composer">
+            <button class="composer-icon" title="附件"><i class="fas fa-paperclip"></i></button>
+            <textarea placeholder="输入你的问题...  Shift + Enter 换行" rows="1"></textarea>
+            <button class="send-button" title="发送"><i class="fas fa-arrow-up"></i></button>
+        </div>
+        <p class="composer-note">AI 生成的内容可能包含错误，请仔细甄别。</p>
+    </div>
+
+</body>
+</html>

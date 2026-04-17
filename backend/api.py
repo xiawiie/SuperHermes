@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -31,6 +32,8 @@ from schemas import (
     SessionInfo,
     SessionListResponse,
     SessionMessagesResponse,
+    SessionRenameRequest,
+    SessionRenameResponse,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -93,6 +96,7 @@ async def me(current_user: User = Depends(get_current_user)):
 async def get_session_messages(session_id: str, current_user: User = Depends(get_current_user)):
     """获取指定会话的所有消息"""
     try:
+        records = await asyncio.to_thread(storage.get_session_messages, current_user.username, session_id)
         messages = [
             MessageInfo(
                 type=msg["type"],
@@ -100,7 +104,7 @@ async def get_session_messages(session_id: str, current_user: User = Depends(get
                 timestamp=msg["timestamp"],
                 rag_trace=msg.get("rag_trace"),
             )
-            for msg in storage.get_session_messages(current_user.username, session_id)
+            for msg in records
         ]
         return SessionMessagesResponse(messages=messages)
     except Exception as e:
@@ -111,9 +115,33 @@ async def get_session_messages(session_id: str, current_user: User = Depends(get
 async def list_sessions(current_user: User = Depends(get_current_user)):
     """获取当前用户的所有会话列表"""
     try:
-        sessions = [SessionInfo(**item) for item in storage.list_session_infos(current_user.username)]
+        session_records = await asyncio.to_thread(storage.list_session_infos, current_user.username)
+        sessions = [SessionInfo(**item) for item in session_records]
         sessions.sort(key=lambda x: x.updated_at, reverse=True)
         return SessionListResponse(sessions=sessions)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/sessions/{session_id}", response_model=SessionRenameResponse)
+async def rename_session(
+    session_id: str,
+    request: SessionRenameRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """重命名会话（写入 metadata 中的 title；空字符串表示清除标题）"""
+    try:
+        result = await asyncio.to_thread(
+            storage.update_session_title,
+            current_user.username,
+            session_id,
+            request.title,
+        )
+        if not result:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        return SessionRenameResponse(**result)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -122,7 +150,7 @@ async def list_sessions(current_user: User = Depends(get_current_user)):
 async def delete_session(session_id: str, current_user: User = Depends(get_current_user)):
     """删除当前用户的指定会话"""
     try:
-        deleted = storage.delete_session(current_user.username, session_id)
+        deleted = await asyncio.to_thread(storage.delete_session, current_user.username, session_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="会话不存在")
         return SessionDeleteResponse(session_id=session_id, message="成功删除会话")
@@ -136,7 +164,7 @@ async def delete_session(session_id: str, current_user: User = Depends(get_curre
 async def chat_endpoint(request: ChatRequest, current_user: User = Depends(get_current_user)):
     try:
         session_id = request.session_id or "default_session"
-        resp = chat_with_agent(request.message, current_user.username, session_id)
+        resp = await asyncio.to_thread(chat_with_agent, request.message, current_user.username, session_id)
         if isinstance(resp, dict):
             return ChatResponse(**resp)
         return ChatResponse(response=resp)
@@ -166,8 +194,16 @@ async def chat_stream_endpoint(request: ChatRequest, current_user: User = Depend
     async def event_generator():
         try:
             session_id = request.session_id or "default_session"
-            async for chunk in chat_with_agent_stream(request.message, current_user.username, session_id):
+            async for chunk in chat_with_agent_stream(
+                request.message,
+                current_user.username,
+                session_id,
+                bool(request.regenerate),
+            ):
                 yield chunk
+        except ValueError as e:
+            error_data = {"type": "error", "content": str(e)}
+            yield f"data: {json.dumps(error_data)}\n\n"
         except Exception as e:
             error_data = {"type": "error", "content": str(e)}
             yield f"data: {json.dumps(error_data)}\n\n"

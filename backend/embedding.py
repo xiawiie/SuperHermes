@@ -6,16 +6,18 @@ import re
 import threading
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
-from langchain_huggingface import HuggingFaceEmbeddings
 
 load_dotenv()
 
 _DEFAULT_STATE_PATH = Path(__file__).resolve().parent.parent / "data" / "bm25_state.json"
 
 
-def _create_dense_embedder() -> HuggingFaceEmbeddings:
+def _create_dense_embedder() -> Any:
+    from langchain_huggingface import HuggingFaceEmbeddings
+
     model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
     device = os.getenv("EMBEDDING_DEVICE", "cpu")
     return HuggingFaceEmbeddings(
@@ -29,7 +31,8 @@ class EmbeddingService:
     """文本向量化服务 - 密集向量本地模型 + BM25 稀疏向量（持久化统计）"""
 
     def __init__(self, state_path: Path | str | None = None):
-        self._embedder = _create_dense_embedder()
+        self._embedder = None
+        self._embedder_lock = threading.Lock()
         self._state_path = Path(state_path or os.getenv("BM25_STATE_PATH", _DEFAULT_STATE_PATH))
         self._lock = threading.Lock()
 
@@ -45,6 +48,13 @@ class EmbeddingService:
         self._avg_doc_len = 1.0
 
         self._load_state()
+
+    def _get_embedder(self) -> Any:
+        if self._embedder is None:
+            with self._embedder_lock:
+                if self._embedder is None:
+                    self._embedder = _create_dense_embedder()
+        return self._embedder
 
     def _recompute_avg_len(self) -> None:
         self._avg_doc_len = (
@@ -134,7 +144,7 @@ class EmbeddingService:
         if not texts:
             return []
         try:
-            return self._embedder.embed_documents(texts)
+            return self._get_embedder().embed_documents(texts)
         except Exception as e:
             raise Exception(f"本地嵌入模型调用失败: {str(e)}") from e
 

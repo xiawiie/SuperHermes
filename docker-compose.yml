@@ -2,7 +2,7 @@ version: '3.5'
 
 services:
   postgres:
-    container_name: supermew-postgres
+    container_name: superhermes-postgres
     image: postgres:15
     environment:
       POSTGRES_DB: langchain_app
@@ -19,7 +19,7 @@ services:
       retries: 10
 
   redis:
-    container_name: supermew-redis
+    container_name: superhermes-redis
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     ports:

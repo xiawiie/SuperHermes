@@ -2,212 +2,24 @@ from dotenv import load_dotenv
 import os
 import json
 import asyncio
-from langchain.chat_models import init_chat_model
-from langchain.agents import create_agent
+import threading
 from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk, SystemMessage
+from conversation_storage import ConversationStorage
 from tools import get_current_weather, search_knowledge_base, get_last_rag_context, reset_tool_call_guards, set_rag_step_queue
-from datetime import datetime
-from cache import cache
-from database import SessionLocal
-from models import User, ChatSession, ChatMessage
 
 load_dotenv()
 
 API_KEY = os.getenv("ARK_API_KEY")
 MODEL = os.getenv("MODEL")
 BASE_URL = os.getenv("BASE_URL")
-
-class ConversationStorage:
-    """对话存储（PostgreSQL + Redis）。"""
-
-    @staticmethod
-    def _messages_cache_key(user_id: str, session_id: str) -> str:
-        return f"chat_messages:{user_id}:{session_id}"
-
-    @staticmethod
-    def _sessions_cache_key(user_id: str) -> str:
-        return f"chat_sessions:{user_id}"
-
-    @staticmethod
-    def _to_langchain_messages(records: list[dict]) -> list:
-        messages = []
-        for msg_data in records:
-            msg_type = msg_data.get("type")
-            content = msg_data.get("content", "")
-            if msg_type == "human":
-                messages.append(HumanMessage(content=content))
-            elif msg_type == "ai":
-                messages.append(AIMessage(content=content))
-            elif msg_type == "system":
-                messages.append(SystemMessage(content=content))
-        return messages
-
-    def save(self, user_id: str, session_id: str, messages: list, metadata: dict = None, extra_message_data: list = None):
-        """保存对话"""
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.username == user_id).first()
-            if not user:
-                return
-
-            session = (
-                db.query(ChatSession)
-                .filter(ChatSession.user_id == user.id, ChatSession.session_id == session_id)
-                .first()
-            )
-            if not session:
-                session = ChatSession(user_id=user.id, session_id=session_id, metadata_json=metadata or {})
-                db.add(session)
-                db.flush()
-            else:
-                session.metadata_json = metadata or {}
-
-            db.query(ChatMessage).filter(ChatMessage.session_ref_id == session.id).delete(synchronize_session=False)
-
-            serialized = []
-            now = datetime.utcnow()
-            for idx, msg in enumerate(messages):
-                rag_trace = None
-                if extra_message_data and idx < len(extra_message_data):
-                    extra = extra_message_data[idx] or {}
-                    rag_trace = extra.get("rag_trace")
-
-                db.add(
-                    ChatMessage(
-                        session_ref_id=session.id,
-                        message_type=msg.type,
-                        content=str(msg.content),
-                        timestamp=now,
-                        rag_trace=rag_trace,
-                    )
-                )
-                serialized.append(
-                    {
-                        "type": msg.type,
-                        "content": str(msg.content),
-                        "timestamp": now.isoformat(),
-                        "rag_trace": rag_trace,
-                    }
-                )
-
-            session.updated_at = now
-            db.commit()
-
-            cache.set_json(self._messages_cache_key(user_id, session_id), serialized)
-            cache.delete(self._sessions_cache_key(user_id))
-        finally:
-            db.close()
-
-    def load(self, user_id: str, session_id: str) -> list:
-        """加载对话"""
-        cached = cache.get_json(self._messages_cache_key(user_id, session_id))
-        if cached is not None:
-            return self._to_langchain_messages(cached)
-
-        records = self.get_session_messages(user_id, session_id)
-        cache.set_json(self._messages_cache_key(user_id, session_id), records)
-        return self._to_langchain_messages(records)
-
-    def list_sessions(self, user_id: str) -> list:
-        """列出用户的所有会话"""
-        return [item["session_id"] for item in self.list_session_infos(user_id)]
-
-    def list_session_infos(self, user_id: str) -> list[dict]:
-        cached = cache.get_json(self._sessions_cache_key(user_id))
-        if cached is not None:
-            return cached
-
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.username == user_id).first()
-            if not user:
-                return []
-
-            sessions = (
-                db.query(ChatSession)
-                .filter(ChatSession.user_id == user.id)
-                .order_by(ChatSession.updated_at.desc())
-                .all()
-            )
-            result = []
-            for s in sessions:
-                count = db.query(ChatMessage).filter(ChatMessage.session_ref_id == s.id).count()
-                result.append(
-                    {
-                        "session_id": s.session_id,
-                        "updated_at": s.updated_at.isoformat(),
-                        "message_count": count,
-                    }
-                )
-            cache.set_json(self._sessions_cache_key(user_id), result)
-            return result
-        finally:
-            db.close()
-
-    def get_session_messages(self, user_id: str, session_id: str) -> list[dict]:
-        cached = cache.get_json(self._messages_cache_key(user_id, session_id))
-        if cached is not None:
-            return cached
-
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.username == user_id).first()
-            if not user:
-                return []
-            session = (
-                db.query(ChatSession)
-                .filter(ChatSession.user_id == user.id, ChatSession.session_id == session_id)
-                .first()
-            )
-            if not session:
-                return []
-
-            rows = (
-                db.query(ChatMessage)
-                .filter(ChatMessage.session_ref_id == session.id)
-                .order_by(ChatMessage.id.asc())
-                .all()
-            )
-            result = [
-                {
-                    "type": row.message_type,
-                    "content": row.content,
-                    "timestamp": row.timestamp.isoformat(),
-                    "rag_trace": row.rag_trace,
-                }
-                for row in rows
-            ]
-            cache.set_json(self._messages_cache_key(user_id, session_id), result)
-            return result
-        finally:
-            db.close()
-
-    def delete_session(self, user_id: str, session_id: str) -> bool:
-        """删除指定用户的会话，返回是否删除成功"""
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.username == user_id).first()
-            if not user:
-                return False
-            session = (
-                db.query(ChatSession)
-                .filter(ChatSession.user_id == user.id, ChatSession.session_id == session_id)
-                .first()
-            )
-            if not session:
-                return False
-
-            db.delete(session)
-            db.commit()
-            cache.delete(self._messages_cache_key(user_id, session_id))
-            cache.delete(self._sessions_cache_key(user_id))
-            return True
-        finally:
-            db.close()
-
-
+_agent_lock = threading.Lock()
+agent = None
+model = None
 
 def create_agent_instance():
+    from langchain.agents import create_agent
+    from langchain.chat_models import init_chat_model
+
     model = init_chat_model(
         model=MODEL,
         model_provider="openai",
@@ -221,7 +33,7 @@ def create_agent_instance():
         model=model,
         tools=[get_current_weather, search_knowledge_base],
         system_prompt=(
-            "You are a cute cat bot that loves to help users. "
+            "You are a Super Cute Pony Bot that loves to help users. "
             "When responding, you may use tools to assist. "
             "Use search_knowledge_base when users ask document/knowledge questions. "
             "Do not call the same tool repeatedly in one turn. At most one knowledge tool call per turn. "
@@ -236,7 +48,13 @@ def create_agent_instance():
     return agent, model
 
 
-agent, model = create_agent_instance()
+def get_agent_instance():
+    global agent, model
+    if agent is None or model is None:
+        with _agent_lock:
+            if agent is None or model is None:
+                agent, model = create_agent_instance()
+    return agent, model
 
 storage = ConversationStorage()
 
@@ -260,21 +78,25 @@ def summarize_old_messages(model, messages: list) -> str:
 
 def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: str = "default_session"):
     """使用 Agent 处理用户消息并返回响应"""
+    agent_instance, model_instance = get_agent_instance()
     messages = storage.load(user_id, session_id)
+    compacted_history = False
 
     # 清理可能残留的 RAG 上下文，避免跨请求污染
     get_last_rag_context(clear=True)
     reset_tool_call_guards()
     
     if len(messages) > 50:
-        summary = summarize_old_messages(model, messages[:40])
+        summary = summarize_old_messages(model_instance, messages[:40])
 
         messages = [
             SystemMessage(content=f"之前的对话摘要：\n{summary}")
         ] + messages[40:]
+        compacted_history = True
 
-    messages.append(HumanMessage(content=user_text))
-    result = agent.invoke(
+    user_message = HumanMessage(content=user_text)
+    messages.append(user_message)
+    result = agent_instance.invoke(
         {"messages": messages},
         config={"recursion_limit": 8},
     )
@@ -293,13 +115,22 @@ def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: s
     else:
         response_content = str(result)
     
-    messages.append(AIMessage(content=response_content))
+    ai_message = AIMessage(content=response_content)
+    messages.append(ai_message)
 
     rag_context = get_last_rag_context(clear=True)
     rag_trace = rag_context.get("rag_trace") if rag_context else None
 
-    extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
-    storage.save(user_id, session_id, messages, extra_message_data=extra_message_data)
+    if compacted_history:
+        extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
+        storage.save(user_id, session_id, messages, extra_message_data=extra_message_data)
+    else:
+        storage.append_messages(
+            user_id,
+            session_id,
+            [user_message, ai_message],
+            extra_message_data=[None, {"rag_trace": rag_trace}],
+        )
 
     return {
         "response": response_content,
@@ -307,13 +138,20 @@ def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: s
     }
 
 
-async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", session_id: str = "default_session"):
+async def chat_with_agent_stream(
+    user_text: str,
+    user_id: str = "default_user",
+    session_id: str = "default_session",
+    regenerate: bool = False,
+):
     """使用 Agent 处理用户消息并流式返回响应。
     
     架构：使用统一输出队列 + 后台任务，确保 RAG 检索步骤在工具执行期间实时推送，
     而非等待工具完成后才显示。
     """
-    messages = storage.load(user_id, session_id)
+    agent_instance, model_instance = get_agent_instance()
+    messages = await asyncio.to_thread(storage.load, user_id, session_id)
+    compacted_history = False
 
     # 清理可能残留的 RAG 上下文
     get_last_rag_context(clear=True)
@@ -330,12 +168,23 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
     set_rag_step_queue(_RagStepProxy())
 
     if len(messages) > 50:
-        summary = summarize_old_messages(model, messages[:40])
+        summary = await asyncio.to_thread(summarize_old_messages, model_instance, messages[:40])
         messages = [
             SystemMessage(content=f"之前的对话摘要：\n{summary}")
         ] + messages[40:]
+        compacted_history = True
 
-    messages.append(HumanMessage(content=user_text))
+    regenerate = bool(regenerate)
+    user_message = None
+    if regenerate:
+        if not messages or getattr(messages[-1], "type", None) != "ai":
+            raise ValueError("无法重新生成：上一条不是助手回复")
+        messages.pop()
+        if not messages or getattr(messages[-1], "type", None) != "human":
+            raise ValueError("无法重新生成：缺少对应的用户消息")
+    else:
+        user_message = HumanMessage(content=user_text)
+        messages.append(user_message)
 
     full_response = ""
 
@@ -343,7 +192,7 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
         """后台任务：运行 agent 并将内容 chunk 推入输出队列。"""
         nonlocal full_response
         try:
-            async for msg, metadata in agent.astream(
+            async for msg, metadata in agent_instance.astream(
                 {"messages": messages},
                 stream_mode="messages",
                 config={"recursion_limit": 8},
@@ -410,6 +259,32 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
     yield "data: [DONE]\n\n"
 
     # 保存对话
-    messages.append(AIMessage(content=full_response))
-    extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
-    storage.save(user_id, session_id, messages, extra_message_data=extra_message_data)
+    ai_message = AIMessage(content=full_response)
+    messages.append(ai_message)
+    if compacted_history:
+        extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
+        await asyncio.to_thread(
+            storage.save,
+            user_id,
+            session_id,
+            messages,
+            None,
+            extra_message_data,
+        )
+    elif regenerate:
+        await asyncio.to_thread(
+            storage.replace_last_assistant_message,
+            user_id,
+            session_id,
+            ai_message,
+            rag_trace,
+        )
+    else:
+        await asyncio.to_thread(
+            storage.append_messages,
+            user_id,
+            session_id,
+            [user_message, ai_message],
+            None,
+            [None, {"rag_trace": rag_trace}],
+        )

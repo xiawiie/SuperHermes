@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SuperHermes · 宣纸水墨预览</title>
+    <link rel="icon" href="frontend/logo-horse.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="frontend/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/github.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
+
+    <style>
+        /* ── 预览控制栏（只在 preview.html 生效）── */
+        .preview-toolbar {
+            position: fixed;
+            left: 50%;
+            bottom: 92px;
+            z-index: 60;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 4px;
+            padding: 5px;
+            border: 1px solid var(--line-strong);
+            border-radius: 999px;
+            background: rgba(255, 249, 235, 0.92);
+            box-shadow: var(--shadow-tight);
+            backdrop-filter: blur(14px);
+            font-family: "Noto Sans SC", system-ui, sans-serif;
+        }
+
+        .preview-toolbar button {
+            padding: 7px 14px;
+            border: 0;
+            border-radius: 999px;
+            background: transparent;
+            color: var(--paper-muted);
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: background var(--transition), color var(--transition);
+        }
+
+        .preview-toolbar button:hover {
+            color: var(--paper);
+            background: rgba(42, 32, 26, 0.06);
+        }
+
+        .preview-toolbar button.active {
+            color: #fff8ef;
+            background: linear-gradient(135deg, var(--cinnabar), var(--seal-red));
+            box-shadow: 0 6px 16px rgba(194, 64, 44, 0.22);
+        }
+
+        .preview-toolbar .divider {
+            width: 1px;
+            background: var(--line);
+            margin: 4px 2px;
+        }
+
+        /* 仅预览用：限定 chat-scroll 用内容自然高度，便于滚动查看 */
+        [data-preview-panel] {
+            display: none;
+        }
+
+        [data-preview-panel].active {
+            display: block;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- ═══════════════════════════ 1. 登录视图 ═══════════════════════════ -->
+    <div id="panel-auth" data-preview-panel="auth" class="app-shell active">
+        <main class="workspace">
+            <section class="auth-view">
+                <div class="auth-panel">
+                    <img class="brand-mark brand-mark-lg" src="frontend/logo-horse.svg" alt="" width="82" height="82" aria-hidden="true">
+                    <p class="eyebrow">Ink Intelligence</p>
+                    <h1>进入 SuperHermes</h1>
+                    <p class="auth-copy">登录后可以使用对话、历史记录与知识库检索。</p>
+
+                    <div class="auth-form">
+                        <input type="text" placeholder="用户名" value="ink_traveler">
+                        <input type="password" placeholder="密码" value="••••••••">
+                        <button class="primary-action">登录</button>
+                        <button class="text-action">没有账号？去注册</button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- ═══════════════════════════ 2. 欢迎态 ═══════════════════════════ -->
+    <div id="panel-welcome" data-preview-panel="welcome" class="app-shell">
+        <header class="top-nav" aria-label="主导航">
+            <button class="brand-lockup" title="回到新对话">
+                <img class="brand-mark brand-mark-sm" src="frontend/logo-horse.svg" alt="" width="34" height="34" aria-hidden="true">
+                <span class="brand-name">SuperHermes</span>
+            </button>
+
+            <nav class="nav-actions">
+                <button class="nav-pill active"><i class="fas fa-plus"></i><span>新对话</span></button>
+                <button class="nav-pill"><i class="fas fa-clock-rotate-left"></i><span>历史</span></button>
+                <button class="nav-pill"><i class="fas fa-database"></i><span>知识库</span></button>
+            </nav>
+
+            <div class="user-cluster">
+                <div class="user-chip">
+                    <span class="user-avatar">墨</span>
+                    <span class="user-meta">
+                        <strong>ink_traveler</strong>
+                        <small>admin</small>
+                    </span>
+                </div>
+                <button class="icon-btn" title="退出登录"><i class="fas fa-right-from-bracket"></i></button>
+            </div>
+        </header>
+
+        <main class="workspace">
+            <section class="chat-view">
+                <div class="chat-scroll">
+                    <div class="welcome-screen">
+                        <img class="brand-mark brand-mark-hero" src="frontend/logo-horse.svg" alt="" width="112" height="112" aria-hidden="true">
+                        <p class="eyebrow">SuperHermes Online</p>
+                        <h1>有什么想问 SuperHermes？</h1>
+                        <p>可以检索知识库、分析文档、解释代码，或继续一段已有对话。</p>
+                        <div class="prompt-grid">
+                            <button>解释这个知识库里的核心结论</button>
+                            <button>帮我整理一份技术方案</button>
+                            <button>分析 RAG 检索为什么不准</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <div class="composer-dock">
+            <div class="composer">
+                <button class="composer-icon" title="附件"><i class="fas fa-paperclip"></i></button>
+                <textarea rows="1" placeholder="输入你的问题...  Shift + Enter 换行"></textarea>
+                <button class="send-button" disabled title="发送"><i class="fas fa-arrow-up"></i></button>
+            </div>
+            <p class="composer-note">AI 生成的内容可能包含错误，请仔细甄别。</p>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════ 3. 对话进行中 ═══════════════════════════ -->
+    <div id="panel-chat" data-preview-panel="chat" class="app-shell">
+        <header class="top-nav">
+            <button class="brand-lockup">
+                <img class="brand-mark brand-mark-sm" src="frontend/logo-horse.svg" alt="" width="34" height="34" aria-hidden="true">
+                <span class="brand-name">SuperHermes</span>
+            </button>
+            <nav class="nav-actions">
+                <button class="nav-pill active"><i class="fas fa-plus"></i><span>新对话</span></button>
+                <button class="nav-pill"><i class="fas fa-clock-rotate-left"></i><span>历史</span></button>
+                <button class="nav-pill"><i class="fas fa-database"></i><span>知识库</span></button>
+            </nav>
+            <div class="user-cluster">
+                <div class="user-chip">
+                    <span class="user-avatar">墨</span>
+                    <span class="user-meta"><strong>ink_traveler</strong><small>admin</small></span>
+                </div>
+                <button class="icon-btn"><i class="fas fa-right-from-bracket"></i></button>
+            </div>
+        </header>
+
+        <main class="workspace">
+            <section class="chat-view">
+                <div class="chat-scroll">
+                    <!-- 用户消息 -->
+                    <div class="message user-message">
+                        <div class="message-content user-content">朱砂在中国画中主要用在哪些场景？能帮我整理一个简短清单吗？</div>
+                    </div>
+
+                    <!-- AI 回复 -->
+                    <div class="message bot-message">
+                        <div class="message-content bot-content">
+                            <p>朱砂（Cinnabar, HgS）是中国传统矿物颜料里最经典的暖红色，在绘画里的用法大致集中在几个场景：</p>
+                            <ul>
+                                <li><strong>人物画设色</strong>——唐宋人物画用朱砂晕染唇、颊，加一点胭脂可得"桃花面"。</li>
+                                <li><strong>工笔花鸟</strong>——红果、红花，尤其是牡丹、石榴、寒梅，常用朱砂分染 + 淡朱罩染。</li>
+                                <li><strong>青绿山水点苔</strong>——李思训派在石绿石青之上点朱砂苔，形成冷暖撞色节奏。</li>
+                                <li><strong>题跋朱印</strong>——收藏印、压脚印几乎全部采用朱砂印泥，红白对比最夺目。</li>
+                                <li><strong>道教符箓 &amp; 门神</strong>——民俗绘画中朱砂具避邪寓意，常用朱笔点睛。</li>
+                            </ul>
+                            <p>如果你要在界面设计里借鉴这个颜色：</p>
+<pre><code class="language-css">:root {
+  --cinnabar: #C2402C;     /* 朱砂主色 */
+  --cinnabar-strong: #D95E3B;
+  --seal-red: #8E2A1D;     /* 印章深红 */
+}
+.btn-primary {
+  background: linear-gradient(135deg, var(--cinnabar), var(--seal-red));
+  color: #fff8ef;
+}</code></pre>
+                            <p>朱砂的视觉特征是<code>高饱和 + 中明度</code>，在浅底上最容易形成视觉焦点，但一定要<strong>控制用量</strong>——传统画论里讲"色不过三，朱砂尤贵"，铺得太多会压迫眼睛。</p>
+                        </div>
+
+                        <div class="bot-message-actions">
+                            <button class="msg-action-btn" title="复制"><i class="fas fa-copy"></i></button>
+                            <button class="msg-action-btn" title="重新生成"><i class="fas fa-arrows-rotate"></i></button>
+                        </div>
+
+                        <details class="reasoning-details" open>
+                            <summary>
+                                <span>检索过程</span>
+                                <small>命中 3 份来源 · rerank 已执行</small>
+                            </summary>
+                            <div class="reasoning-content">
+                                <div class="trace-grid">
+                                    <div class="trace-line">工具：knowledge_search</div>
+                                    <div class="trace-line">检索阶段：rewrite → hybrid → rerank</div>
+                                    <div class="trace-line">相关性评分：0.87</div>
+                                    <div class="trace-line">Rerank：已执行</div>
+                                </div>
+                                <div class="trace-block">
+                                    <strong>重写查询</strong>
+                                    <p>朱砂 颜料 中国画 使用场景 人物 花鸟 山水 印章</p>
+                                </div>
+                                <div class="sources">
+                                    <strong>来源片段</strong>
+                                    <div class="source-item">
+                                        <div class="source-title-line">
+                                            <span>中国画颜料考.pdf</span>
+                                            <small>第 42 页</small>
+                                            <small>#1</small>
+                                            <small>rerank 0.9214</small>
+                                        </div>
+                                        <p>朱砂即辰砂，天然硫化汞。唐宋以降，为人物设色与题跋钤印之要色……</p>
+                                    </div>
+                                    <div class="source-item">
+                                        <div class="source-title-line">
+                                            <span>工笔花鸟设色法.docx</span>
+                                            <small>第 18 页</small>
+                                            <small>#2</small>
+                                            <small>rerank 0.8703</small>
+                                        </div>
+                                        <p>牡丹之红，先以朱砂平涂，再以曙红分染，最后淡罩，方得层次……</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </details>
+                    </div>
+
+                    <!-- 思考中 -->
+                    <div class="message bot-message">
+                        <div class="message-content thinking-content">
+                            <div class="thinking-head">
+                                <span class="ink-loader" aria-hidden="true"></span>
+                                <span>正在翻阅知识库…</span>
+                            </div>
+                            <div class="thinking-timeline">
+                                <div class="thinking-line">
+                                    <span class="trace-dot">✎</span>
+                                    <span class="trace-label">改写查询</span>
+                                    <small>朱砂 国画 使用场景</small>
+                                </div>
+                                <div class="thinking-line">
+                                    <span class="trace-dot">⌕</span>
+                                    <span class="trace-label">混合检索</span>
+                                    <small>BM25 + 向量，命中 12 片</small>
+                                </div>
+                                <div class="thinking-line">
+                                    <span class="trace-dot">✦</span>
+                                    <span class="trace-label">Rerank 排序</span>
+                                    <small>保留 Top 3</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <div class="composer-dock">
+            <div class="composer">
+                <button class="composer-icon"><i class="fas fa-paperclip"></i></button>
+                <textarea rows="1" placeholder="输入你的问题...  Shift + Enter 换行">继续展开青绿山水的用法</textarea>
+                <button class="send-button" title="发送"><i class="fas fa-arrow-up"></i></button>
+            </div>
+            <p class="composer-note">AI 生成的内容可能包含错误，请仔细甄别。</p>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════ 4. 历史抽屉 ═══════════════════════════ -->
+    <div id="panel-history" data-preview-panel="history" class="app-shell">
+        <header class="top-nav">
+            <button class="brand-lockup">
+                <img class="brand-mark brand-mark-sm" src="frontend/logo-horse.svg" alt="" width="34" height="34" aria-hidden="true">
+                <span class="brand-name">SuperHermes</span>
+            </button>
+            <nav class="nav-actions">
+                <button class="nav-pill"><i class="fas fa-plus"></i><span>新对话</span></button>
+                <button class="nav-pill active"><i class="fas fa-clock-rotate-left"></i><span>历史</span></button>
+                <button class="nav-pill"><i class="fas fa-database"></i><span>知识库</span></button>
+            </nav>
+            <div class="user-cluster">
+                <div class="user-chip">
+                    <span class="user-avatar">墨</span>
+                    <span class="user-meta"><strong>ink_traveler</strong><small>admin</small></span>
+                </div>
+                <button class="icon-btn"><i class="fas fa-right-from-bracket"></i></button>
+            </div>
+        </header>
+
+        <main class="workspace">
+            <section class="chat-view">
+                <div class="chat-scroll">
+                    <div class="welcome-screen">
+                        <img class="brand-mark brand-mark-hero" src="frontend/logo-horse.svg" alt="" width="112" height="112" aria-hidden="true">
+                        <p class="eyebrow">SuperHermes Online</p>
+                        <h1>有什么想问 SuperHermes？</h1>
+                        <p>可以检索知识库、分析文档、解释代码，或继续一段已有对话。</p>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <div class="composer-dock">
+            <div class="composer">
+                <button class="composer-icon"><i class="fas fa-paperclip"></i></button>
+                <textarea rows="1" placeholder="输入你的问题..."></textarea>
+                <button class="send-button" disabled><i class="fas fa-arrow-up"></i></button>
+            </div>
+            <p class="composer-note">AI 生成的内容可能包含错误，请仔细甄别。</p>
+        </div>
+
+        <!-- 历史面板 modal -->
+        <div class="panel-backdrop">
+            <section class="history-panel" aria-label="历史会话">
+                <div class="panel-heading compact">
+                    <div>
+                        <p class="eyebrow">Conversations</p>
+                        <h2>历史会话</h2>
+                    </div>
+                    <button class="icon-btn" title="关闭"><i class="fas fa-xmark"></i></button>
+                </div>
+                <div class="history-list">
+                    <div class="history-item active">
+                        <div class="history-main">
+                            <button class="history-title-hit"><strong>朱砂在中国画中的用法</strong></button>
+                            <button class="history-meta-hit"><small>7 条消息 · 今天 14:32 · session_17763</small></button>
+                        </div>
+                        <button class="ghost-action small history-rename" title="重命名"><i class="fas fa-pen"></i></button>
+                        <button class="danger-action"><i class="fas fa-trash"></i></button>
+                    </div>
+                    <div class="history-item">
+                        <div class="history-main">
+                            <button class="history-title-hit"><strong>整理一份 RAG 技术方案</strong></button>
+                            <button class="history-meta-hit"><small>12 条消息 · 昨天 21:07</small></button>
+                        </div>
+                        <button class="ghost-action small history-rename"><i class="fas fa-pen"></i></button>
+                        <button class="danger-action"><i class="fas fa-trash"></i></button>
+                    </div>
+                    <div class="history-item">
+                        <div class="history-main">
+                            <button class="history-title-hit"><strong>为什么 chunk 切分影响召回率</strong></button>
+                            <button class="history-meta-hit"><small>5 条消息 · 3 天前</small></button>
+                        </div>
+                        <button class="ghost-action small history-rename"><i class="fas fa-pen"></i></button>
+                        <button class="danger-action"><i class="fas fa-trash"></i></button>
+                    </div>
+                    <div class="history-item">
+                        <div class="history-main">
+                            <button class="history-title-hit"><strong>LangGraph 条件边怎么写</strong></button>
+                            <button class="history-meta-hit"><small>9 条消息 · 上周</small></button>
+                        </div>
+                        <button class="ghost-action small history-rename"><i class="fas fa-pen"></i></button>
+                        <button class="danger-action"><i class="fas fa-trash"></i></button>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════ 5. 知识库管理 ═══════════════════════════ -->
+    <div id="panel-knowledge" data-preview-panel="knowledge" class="app-shell">
+        <header class="top-nav">
+            <button class="brand-lockup">
+                <img class="brand-mark brand-mark-sm" src="frontend/logo-horse.svg" alt="" width="34" height="34" aria-hidden="true">
+                <span class="brand-name">SuperHermes</span>
+            </button>
+            <nav class="nav-actions">
+                <button class="nav-pill"><i class="fas fa-plus"></i><span>新对话</span></button>
+                <button class="nav-pill"><i class="fas fa-clock-rotate-left"></i><span>历史</span></button>
+                <button class="nav-pill active"><i class="fas fa-database"></i><span>知识库</span></button>
+            </nav>
+            <div class="user-cluster">
+                <div class="user-chip">
+                    <span class="user-avatar">墨</span>
+                    <span class="user-meta"><strong>ink_traveler</strong><small>admin</small></span>
+                </div>
+                <button class="icon-btn"><i class="fas fa-right-from-bracket"></i></button>
+            </div>
+        </header>
+
+        <main class="workspace">
+            <section class="knowledge-view">
+                <div class="panel-shell">
+                    <div class="panel-heading">
+                        <p class="eyebrow">Admin Workbench</p>
+                        <h1>知识库</h1>
+                        <p>上传文档后，SuperHermes 会切分、向量化并写入检索库。</p>
+                    </div>
+
+                    <div class="upload-zone">
+                        <button class="ghost-action">
+                            <i class="fas fa-file-arrow-up"></i>
+                            选择文档
+                        </button>
+                        <div class="selected-file">
+                            <span>中国画颜料考.pdf</span>
+                            <button class="primary-action small">开始上传</button>
+                        </div>
+                        <p class="upload-progress">切分中 · 已处理 42 / 78 片段</p>
+                    </div>
+
+                    <div class="documents-toolbar">
+                        <h2>已上传文档</h2>
+                        <button class="ghost-action small"><i class="fas fa-rotate"></i>刷新</button>
+                    </div>
+
+                    <div class="documents-list">
+                        <div class="document-row">
+                            <div class="document-type"><i class="fas fa-file-pdf"></i></div>
+                            <div class="document-main">
+                                <strong>工笔花鸟设色法.docx</strong>
+                                <small>docx · 124 个文本片段</small>
+                            </div>
+                            <button class="danger-action"><i class="fas fa-trash"></i></button>
+                        </div>
+                        <div class="document-row">
+                            <div class="document-type"><i class="fas fa-file-excel"></i></div>
+                            <div class="document-main">
+                                <strong>传统颜料色谱对照表.xlsx</strong>
+                                <small>xlsx · 38 个文本片段</small>
+                            </div>
+                            <button class="danger-action"><i class="fas fa-trash"></i></button>
+                        </div>
+                        <div class="document-row">
+                            <div class="document-type"><i class="fas fa-file-pdf"></i></div>
+                            <div class="document-main">
+                                <strong>青绿山水技法源流.pdf</strong>
+                                <small>pdf · 217 个文本片段</small>
+                            </div>
+                            <button class="danger-action"><i class="fas fa-trash"></i></button>
+                        </div>
+                        <div class="document-row">
+                            <div class="document-type"><i class="fas fa-file-word"></i></div>
+                            <div class="document-main">
+                                <strong>篆刻印泥调制笔记.docx</strong>
+                                <small>docx · 56 个文本片段</small>
+                            </div>
+                            <button class="danger-action"><i class="fas fa-trash"></i></button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- ═══════════════════════════ 预览切换工具条 ═══════════════════════════ -->
+    <nav class="preview-toolbar" aria-label="预览切换">
+        <button data-tab="auth"><i class="fas fa-right-to-bracket"></i> 登录</button>
+        <button data-tab="welcome" class="active"><i class="fas fa-sparkles"></i> 欢迎</button>
+        <button data-tab="chat"><i class="fas fa-comments"></i> 对话</button>
+        <button data-tab="history"><i class="fas fa-clock-rotate-left"></i> 历史</button>
+        <button data-tab="knowledge"><i class="fas fa-database"></i> 知识库</button>
+    </nav>
+
+    <script>
+        // ── 预览切换 ──
+        const panels = document.querySelectorAll('[data-preview-panel]');
+        const tabs = document.querySelectorAll('.preview-toolbar button');
+
+        function show(name) {
+            panels.forEach(p => p.classList.toggle('active', p.dataset.previewPanel === name));
+            tabs.forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+            // 切换时滚动到顶
+            window.scrollTo(0, 0);
+            document.querySelectorAll('.chat-scroll').forEach(el => el.scrollTop = 0);
+        }
+
+        tabs.forEach(btn => btn.addEventListener('click', () => show(btn.dataset.tab)));
+
+        // 默认欢迎态
+        show('welcome');
+
+        // 代码高亮
+        if (window.hljs) hljs.highlightAll();
+    </script>
+</body>
+
+</html>

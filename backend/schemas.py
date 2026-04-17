@@ -29,6 +29,7 @@ class CurrentUserResponse(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = "default_session"
+    regenerate: Optional[bool] = False
 
 
 class RetrievedChunk(BaseModel):
@@ -91,6 +92,7 @@ class SessionMessagesResponse(BaseModel):
 
 class SessionInfo(BaseModel):
     session_id: str
+    title: Optional[str] = None
     updated_at: str
     message_count: int
 
@@ -102,6 +104,16 @@ class SessionListResponse(BaseModel):
 class SessionDeleteResponse(BaseModel):
     session_id: str
     message: str
+
+
+class SessionRenameRequest(BaseModel):
+    title: str = ""
+
+
+class SessionRenameResponse(BaseModel):
+    session_id: str
+    title: Optional[str] = None
+    message: str = "已更新标题"
 
 
 class DocumentInfo(BaseModel):
