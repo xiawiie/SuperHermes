@@ -1,14 +1,20 @@
-"""父级分块文档存储（用于 Auto-merging Retriever）"""
-from datetime import datetime
+"""Parent chunk storage for auto-merging retrieval."""
+from datetime import UTC, datetime
 from typing import List
+
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from cache import cache
 from database import SessionLocal
 from models import ParentChunk
 
 
+def utc_now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 class ParentChunkStore:
-    """基于 PostgreSQL + Redis 的父级分块存储。"""
+    """PostgreSQL + Redis storage for parent chunks."""
 
     @staticmethod
     def _to_dict(item: ParentChunk) -> dict:
@@ -29,90 +35,122 @@ class ParentChunkStore:
     def _cache_key(chunk_id: str) -> str:
         return f"parent_chunk:{chunk_id}"
 
+    @staticmethod
+    def _payload_from_doc(doc: dict, updated_at: datetime) -> dict:
+        return {
+            "chunk_id": (doc.get("chunk_id") or "").strip(),
+            "text": doc.get("text", ""),
+            "filename": doc.get("filename", ""),
+            "file_type": doc.get("file_type", ""),
+            "file_path": doc.get("file_path", ""),
+            "page_number": int(doc.get("page_number", 0) or 0),
+            "parent_chunk_id": doc.get("parent_chunk_id", ""),
+            "root_chunk_id": doc.get("root_chunk_id", ""),
+            "chunk_level": int(doc.get("chunk_level", 0) or 0),
+            "chunk_idx": int(doc.get("chunk_idx", 0) or 0),
+            "updated_at": updated_at,
+        }
+
+    @staticmethod
+    def _cache_payload(payload: dict) -> dict:
+        return {
+            "chunk_id": payload["chunk_id"],
+            "text": payload["text"],
+            "filename": payload["filename"],
+            "file_type": payload["file_type"],
+            "file_path": payload["file_path"],
+            "page_number": payload["page_number"],
+            "parent_chunk_id": payload["parent_chunk_id"],
+            "root_chunk_id": payload["root_chunk_id"],
+            "chunk_level": payload["chunk_level"],
+            "chunk_idx": payload["chunk_idx"],
+        }
+
     def upsert_documents(self, docs: List[dict]) -> int:
-        """写入/更新父级分块，返回写入条数。"""
+        """Insert or update parent chunks and return the number of written rows."""
         if not docs:
             return 0
 
+        now = utc_now()
+        rows = []
+        cache_payloads = {}
+        seen = set()
+        for doc in docs:
+            payload = self._payload_from_doc(doc, now)
+            chunk_id = payload["chunk_id"]
+            if not chunk_id or chunk_id in seen:
+                continue
+            seen.add(chunk_id)
+            rows.append(payload)
+            cache_payloads[self._cache_key(chunk_id)] = self._cache_payload(payload)
+
+        if not rows:
+            return 0
+
         db = SessionLocal()
-        upserted = 0
         try:
-            for doc in docs:
-                chunk_id = (doc.get("chunk_id") or "").strip()
-                if not chunk_id:
-                    continue
-
-                record = db.query(ParentChunk).filter(ParentChunk.chunk_id == chunk_id).first()
-                payload = {
-                    "text": doc.get("text", ""),
-                    "filename": doc.get("filename", ""),
-                    "file_type": doc.get("file_type", ""),
-                    "file_path": doc.get("file_path", ""),
-                    "page_number": int(doc.get("page_number", 0) or 0),
-                    "parent_chunk_id": doc.get("parent_chunk_id", ""),
-                    "root_chunk_id": doc.get("root_chunk_id", ""),
-                    "chunk_level": int(doc.get("chunk_level", 0) or 0),
-                    "chunk_idx": int(doc.get("chunk_idx", 0) or 0),
-                    "updated_at": datetime.utcnow(),
+            if db.get_bind().dialect.name == "postgresql":
+                stmt = pg_insert(ParentChunk).values(rows)
+                update_columns = {
+                    column.name: getattr(stmt.excluded, column.name)
+                    for column in ParentChunk.__table__.columns
+                    if column.name != "chunk_id"
                 }
-                cache_payload = {
-                    "chunk_id": chunk_id,
-                    "text": payload["text"],
-                    "filename": payload["filename"],
-                    "file_type": payload["file_type"],
-                    "file_path": payload["file_path"],
-                    "page_number": payload["page_number"],
-                    "parent_chunk_id": payload["parent_chunk_id"],
-                    "root_chunk_id": payload["root_chunk_id"],
-                    "chunk_level": payload["chunk_level"],
-                    "chunk_idx": payload["chunk_idx"],
-                }
-                if record:
-                    for key, value in payload.items():
-                        setattr(record, key, value)
-                else:
-                    db.add(ParentChunk(chunk_id=chunk_id, **payload))
-
-                cache.set_json(self._cache_key(chunk_id), cache_payload)
-                upserted += 1
-
+                db.execute(
+                    stmt.on_conflict_do_update(
+                        index_elements=[ParentChunk.chunk_id],
+                        set_=update_columns,
+                    )
+                )
+            else:
+                for payload in rows:
+                    record = db.get(ParentChunk, payload["chunk_id"])
+                    if record:
+                        for key, value in payload.items():
+                            setattr(record, key, value)
+                    else:
+                        db.add(ParentChunk(**payload))
             db.commit()
         finally:
             db.close()
 
-        return upserted
+        cache.set_many_json(cache_payloads)
+        return len(rows)
 
     def get_documents_by_ids(self, chunk_ids: List[str]) -> List[dict]:
         if not chunk_ids:
             return []
 
         ordered_results = {}
-        missing_ids = []
+        normalized_ids = []
         for chunk_id in chunk_ids:
             key = (chunk_id or "").strip()
-            if not key:
-                continue
-            cached = cache.get_json(self._cache_key(key))
-            if cached:
-                ordered_results[key] = cached
-            else:
-                missing_ids.append(key)
+            if key:
+                normalized_ids.append(key)
 
+        cache_keys = {self._cache_key(chunk_id): chunk_id for chunk_id in normalized_ids}
+        cached_items = cache.get_many_json(list(cache_keys.keys()))
+        for cache_key, payload in cached_items.items():
+            ordered_results[cache_keys[cache_key]] = payload
+
+        missing_ids = [chunk_id for chunk_id in normalized_ids if chunk_id not in ordered_results]
         if missing_ids:
             db = SessionLocal()
             try:
                 rows = db.query(ParentChunk).filter(ParentChunk.chunk_id.in_(missing_ids)).all()
+                cache_updates = {}
                 for row in rows:
                     payload = self._to_dict(row)
                     ordered_results[row.chunk_id] = payload
-                    cache.set_json(self._cache_key(row.chunk_id), payload)
+                    cache_updates[self._cache_key(row.chunk_id)] = payload
+                cache.set_many_json(cache_updates)
             finally:
                 db.close()
 
         return [ordered_results[item] for item in chunk_ids if item in ordered_results]
 
     def delete_by_filename(self, filename: str) -> int:
-        """按文件名删除父级分块，返回删除条数。"""
+        """Delete parent chunks by source filename and return the deleted count."""
         if not filename:
             return 0
 
@@ -124,8 +162,7 @@ class ParentChunkStore:
             if deleted > 0:
                 db.query(ParentChunk).filter(ParentChunk.filename == filename).delete(synchronize_session=False)
                 db.commit()
-                for chunk_id in chunk_ids:
-                    cache.delete(self._cache_key(chunk_id))
+                cache.delete_many([self._cache_key(chunk_id) for chunk_id in chunk_ids])
             return deleted
         finally:
             db.close()

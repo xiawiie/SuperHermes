@@ -4071,7 +4071,7 @@ wheels = [
 ]
 
 [[package]]
-name = "supermew"
+name = "superhermes"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
