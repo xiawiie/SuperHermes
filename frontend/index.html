@@ -52,15 +52,15 @@
         </header>
 
         <main class="workspace">
-            <div v-if="isAuthenticated && showUploadStatusBar" class="upload-status-bar" role="status" aria-live="polite">
-                <div class="upload-status-copy">
-                    <strong>{{ uploadStatusText }}</strong>
-                    <small v-if="selectedFiles.length">?? {{ maxUploadFiles }} ?</small>
-                </div>
-                <div class="upload-status-track" aria-hidden="true">
-                    <span class="upload-status-fill" :style="{ width: `${uploadProgressPercent}%` }"></span>
-                </div>
-            </div>
+            <input
+                v-if="isAuthenticated && isAdmin"
+                type="file"
+                ref="globalFileInput"
+                @change="handleFileSelect"
+                accept=".pdf,.doc,.docx,.xls,.xlsx"
+                multiple
+                hidden
+            >
             <section v-if="!isAuthenticated" class="auth-view">
                 <div class="auth-panel">
                     <img class="brand-mark brand-mark-lg" src="logo-horse.svg" alt="" width="82" height="82" aria-hidden="true">
@@ -102,7 +102,15 @@
                     </div>
 
                     <div v-for="(msg, index) in messages" :key="msg.id || index" :class="['message', msg.isUser ? 'user-message' : 'bot-message']">
-                        <div v-if="msg.isUser" class="message-content user-content" v-text="msg.text"></div>
+                        <div v-if="msg.isUser" class="message-content user-content">
+                            <div v-text="msg.text"></div>
+                            <div v-if="msg.contextFiles && msg.contextFiles.length" class="message-attachments">
+                                <span v-for="filename in msg.contextFiles" :key="filename">
+                                    <i class="fas fa-file-lines"></i>
+                                    {{ filename }}
+                                </span>
+                            </div>
+                        </div>
 
                         <div v-else-if="msg.isThinking && !msg.text" class="message-content thinking-content">
                             <div class="thinking-head">
@@ -208,20 +216,31 @@
 
                     <div class="upload-zone">
                         <input type="file" ref="fileInput" @change="handleFileSelect" accept=".pdf,.doc,.docx,.xls,.xlsx" multiple hidden>
-                        <button class="ghost-action" @click="$refs.fileInput.click()">
-                            <i class="fas fa-file-arrow-up"></i>
-                            ????
-                        </button>
-                        <span class="upload-hint">??????????? {{ maxUploadFiles }} ???</span>
+                        <div class="upload-actions">
+                            <button type="button" class="ghost-action upload-trigger" @click="triggerUploadPicker">
+                                <i class="fas fa-file-arrow-up"></i>
+                                &#36873;&#25321;&#25991;&#20214;
+                            </button>
+                            <button
+                                type="button"
+                                :class="['ghost-action', 'upload-trigger', { ready: selectedFiles.length && !isUploading }]"
+                                :disabled="!selectedFiles.length || isUploading"
+                                @click="uploadDocument"
+                            >
+                                <i class="fas fa-cloud-arrow-up"></i>
+                                {{ isUploading ? '\u4e0a\u4f20\u4e2d...' : '\u4e0a\u4f20\u6587\u6863' }}
+                            </button>
+                        </div>
+                        <span class="upload-hint">&#25903;&#25345;&#25972;&#39029;&#25302;&#25341;&#19978;&#20256;&#65292;&#26368;&#22810; {{ maxUploadFiles }} &#20010;&#25991;&#20214;</span>
                         <div class="selected-files" v-if="selectedFiles.length">
                             <div v-for="(file, index) in selectedFiles" :key="`${file.name}-${file.size}-${file.lastModified || index}`" class="selected-file">
                                 <span>{{ file.name }}</span>
-                                <button class="icon-btn subtle" type="button" :disabled="isUploading" @click="removeSelectedFile(index)" title="????" aria-label="????">
+                                <button class="icon-btn subtle" type="button" :disabled="isUploading" @click="removeSelectedFile(index)" title="&#31227;&#38500;&#25991;&#20214;" aria-label="&#31227;&#38500;&#25991;&#20214;">
                                     <i class="fas fa-xmark"></i>
                                 </button>
                             </div>
                             <button class="primary-action small" :disabled="isUploading" @click="uploadDocument">
-                                {{ isUploading ? '???...' : `?????${selectedFiles.length}?` }}
+                                {{ isUploading ? '上传中...' : `开始上传（${selectedFiles.length}）` }}
                             </button>
                         </div>
                         <p v-if="uploadProgress" class="upload-progress">{{ uploadProgress }}</p>
@@ -256,14 +275,44 @@
         <div v-if="canAcceptKnowledgeUpload" :class="['page-drop-overlay', { active: isPageDragActive }]">
             <div class="page-drop-overlay-card">
                 <i class="fas fa-cloud-arrow-up"></i>
-                <strong>?????????</strong>
-                <span>?? PDF?Word?Excel??? {{ maxUploadFiles }} ?</span>
+                <strong>&#25302;&#25341;&#25991;&#20214;&#21040;&#36825;&#37324;&#19978;&#20256;</strong>
+                <span>&#25903;&#25345; PDF&#12289;Word&#12289;Excel&#65292;&#26368;&#22810; {{ maxUploadFiles }} &#20010;</span>
             </div>
         </div>
 
         <div v-if="isAuthenticated && activeView === 'chat'" class="composer-dock">
+            <div v-if="showUploadStatusBar" class="composer-upload-tray upload-status-bar" role="status" aria-live="polite">
+                <div class="upload-status-copy">
+                    <strong>{{ composerUploadTitle }}</strong>
+                    <small v-if="selectedFiles.length || pendingContextFiles.length">上限 {{ maxUploadFiles }} 个</small>
+                </div>
+                <div v-if="isUploading || selectedFiles.length" class="upload-status-track" aria-hidden="true">
+                    <span class="upload-status-fill" :style="{ width: `${uploadProgressPercent}%` }"></span>
+                </div>
+                <div v-if="pendingContextFiles.length" class="context-file-list" aria-label="待用于本轮对话的文件">
+                    <button
+                        v-for="(file, index) in pendingContextFiles"
+                        :key="file.filename"
+                        type="button"
+                        class="context-file-chip"
+                        :disabled="isLoading"
+                        @click="removePendingContextFile(index)"
+                        title="移除该上下文文件"
+                    >
+                        <i class="fas fa-file-lines"></i>
+                        <span>{{ file.filename }}</span>
+                        <i class="fas fa-xmark"></i>
+                    </button>
+                </div>
+            </div>
             <div class="composer">
-                <button class="composer-icon" title="附件" aria-label="附件">
+                <button
+                    class="composer-icon upload-trigger"
+                    type="button"
+                    @click="triggerUploadPicker"
+                    title="上传文件"
+                    aria-label="上传文件"
+                >
                     <i class="fas fa-paperclip"></i>
                 </button>
                 <textarea v-model="userInput" ref="textarea" rows="1" placeholder="输入你的问题...  Shift + Enter 换行"

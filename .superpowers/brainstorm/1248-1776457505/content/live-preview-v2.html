@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>SuperHermes Design Preview v2</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700;900&family=Noto+Sans+SC:wght@300;400;500;600&family=ZCOOL+KuaiLe&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      /* 雪绢冷调 */
+      --bg-primary: #faf8f5;
+      --bg-nav: rgba(255, 255, 255, 0.82);
+      --bg-card: rgba(255, 255, 255, 0.65);
+      --bg-input: rgba(255, 255, 255, 0.88);
+
+      /* 焦墨色 */
+      --text-primary: #3a3530;
+      --text-secondary: #6a6258;
+      --text-muted: #a89e90;
+      --text-faint: #d0c8bc;
+
+      /* 朱砂 — 只作点缀 */
+      --cinnabar: #c23a2a;
+      --cinnabar-soft: rgba(194, 58, 42, 0.08);
+      --cinnabar-glow: rgba(194, 58, 42, 0.12);
+      --cinnabar-line: rgba(194, 58, 42, 0.35);
+
+      /* 边框 */
+      --border-light: rgba(228, 220, 208, 0.5);
+      --border-medium: rgba(228, 220, 208, 0.8);
+
+      /* 阴影 */
+      --shadow-float: 0 6px 24px rgba(0, 0, 0, 0.06);
+      --shadow-nav: 0 3px 12px rgba(0, 0, 0, 0.04);
+
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --nav-height: 52px;
+      --content-max: 720px;
+    }
+
+    body {
+      font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      position: relative;
+      line-height: 1.75;
+    }
+
+    /* 纸纤维纹理 */
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        repeating-linear-gradient(135deg, rgba(238, 232, 224, 0.35) 0 1px, transparent 1px 7px),
+        repeating-linear-gradient(90deg, rgba(238, 232, 224, 0.25) 0 1px, transparent 1px 12px);
+    }
+
+    /* 远山水墨晕染 */
+    body::after {
+      content: "";
+      position: fixed;
+      top: -60px;
+      right: -80px;
+      width: 350px;
+      height: 250px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(200, 192, 180, 0.12) 0%, transparent 65%);
+      pointer-events: none;
+    }
+
+    /* ── 底部第二处水墨 ── */
+    .workspace::after {
+      content: "";
+      position: fixed;
+      bottom: -40px;
+      left: 10%;
+      width: 280px;
+      height: 180px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(200, 192, 180, 0.08) 0%, transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* 导航栏 */
+    .top-nav {
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(960px, calc(100vw - 32px));
+      height: var(--nav-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 5px;
+      background: var(--bg-nav);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--border-medium);
+      border-radius: 16px;
+      box-shadow: var(--shadow-nav);
+      z-index: 40;
+    }
+
+    .brand-lockup {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 10px;
+      border-radius: var(--radius-md);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+    }
+
+    .brand-lockup:hover { background: var(--cinnabar-soft); }
+
+    .brand-seal {
+      width: 30px;
+      height: 30px;
+      border-radius: 6px;
+      background: var(--cinnabar-soft);
+      color: var(--cinnabar);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+    }
+
+    .brand-name {
+      font-family: "Noto Serif SC", serif;
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: 0.06em;
+    }
+
+    .nav-actions {
+      display: flex;
+      gap: 2px;
+      padding: 3px;
+      background: rgba(0,0,0,0.015);
+      border-radius: var(--radius-md);
+    }
+
+    .nav-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 13px;
+      border-radius: var(--radius-sm);
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 13px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: all 0.18s ease;
+    }
+
+    .nav-pill:hover {
+      background: var(--cinnabar-soft);
+      color: var(--text-primary);
+    }
+
+    .nav-pill.active {
+      background: var(--cinnabar-glow);
+      color: var(--cinnabar);
+      font-weight: 500;
+    }
+
+    .user-cluster {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .user-avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background: var(--cinnabar-soft);
+      color: var(--cinnabar);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 12px;
+    }
+
+    /* 主工作区 */
+    .workspace {
+      position: relative;
+      padding-top: 90px;
+      padding-bottom: 130px;
+      min-height: 100vh;
+    }
+
+    .chat-scroll {
+      width: min(var(--content-max), calc(100vw - 40px));
+      margin: 0 auto;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* 欢迎页 */
+    .welcome-screen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 65vh;
+      text-align: center;
+      gap: 10px;
+      padding: 20px 0;
+    }
+
+    .welcome-screen .eyebrow {
+      color: var(--cinnabar);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+    }
+
+    .welcome-screen h1 {
+      font-family: "Noto Serif SC", serif;
+      font-size: clamp(1.8rem, 4.5vw, 3rem);
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: 0.04em;
+      line-height: 1.3;
+    }
+
+    .welcome-screen p {
+      color: var(--text-secondary);
+      font-size: 14px;
+      line-height: 1.75;
+      max-width: 480px;
+    }
+
+    .prompt-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      width: min(660px, 100%);
+      margin-top: 24px;
+    }
+
+    .prompt-grid button {
+      min-height: 52px;
+      padding: 12px 14px;
+      border: 1px solid var(--border-medium);
+      border-radius: var(--radius-md);
+      background: var(--bg-card);
+      color: var(--text-secondary);
+      font-size: 13px;
+      line-height: 1.4;
+      font-family: inherit;
+      cursor: pointer;
+      transition: all 0.18s ease;
+    }
+
+    .prompt-grid button:hover {
+      border-color: var(--cinnabar);
+      box-shadow: var(--shadow-float);
+    }
+
+    /* 消息 */
+    .message {
+      margin: 18px 0;
+      display: flex;
+    }
+
+    .message.bot-message {
+      align-items: flex-start;
+    }
+
+    .message.user-message {
+      align-items: flex-end;
+      justify-content: flex-end;
+    }
+
+    .message-content {
+      max-width: 75%;
+      line-height: 1.75;
+      overflow-wrap: anywhere;
+    }
+
+    /* Bot: 直接文字，左侧一条淡淡朱砂线 */
+    .bot-content {
+      padding: 2px 0 2px 14px;
+      border-left: 2px solid var(--cinnabar-line);
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    /* User: 简洁右对齐，极淡底色 + 朱砂右边线 */
+    .user-content {
+      padding: 10px 16px;
+      background: var(--cinnabar-soft);
+      color: var(--text-primary);
+      border-radius: var(--radius-md);
+      border-right: 2px solid var(--cinnabar-line);
+      font-size: 14px;
+    }
+
+    /* Bot label */
+    .bot-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: "Noto Serif SC", serif;
+      margin-bottom: 4px;
+      letter-spacing: 0.04em;
+    }
+
+    /* 代码块 */
+    .bot-content code {
+      font-family: "Cascadia Mono", "Consolas", monospace;
+      font-size: 0.9em;
+      background: rgba(0,0,0,0.04);
+      padding: 0.1em 0.35em;
+      border-radius: 4px;
+    }
+
+    .bot-content pre {
+      background: rgba(0,0,0,0.04);
+      padding: 12px;
+      border-radius: var(--radius-md);
+      overflow-x: auto;
+      margin: 0.8em 0;
+    }
+
+    /* 输入框 */
+    .composer-dock {
+      position: fixed;
+      left: 50%;
+      bottom: 18px;
+      transform: translateX(-50%);
+      width: min(var(--content-max), calc(100vw - 40px));
+      z-index: 35;
+    }
+
+    .composer {
+      display: flex;
+      align-items: flex-end;
+      gap: 6px;
+      padding: 8px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-medium);
+      border-radius: 16px;
+      box-shadow: var(--shadow-float);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      transition: border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    .composer:focus-within {
+      border-color: var(--cinnabar);
+      box-shadow: var(--shadow-float), 0 0 0 3px var(--cinnabar-soft);
+    }
+
+    .composer textarea {
+      flex: 1;
+      min-height: 38px;
+      max-height: 120px;
+      resize: none;
+      border: none;
+      outline: none;
+      background: transparent;
+      color: var(--text-primary);
+      padding: 8px;
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .composer textarea::placeholder {
+      color: var(--text-muted);
+    }
+
+    .composer-icon, .send-button {
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      border: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.18s ease;
+      flex-shrink: 0;
+    }
+
+    .composer-icon {
+      background: transparent;
+      color: var(--text-muted);
+    }
+
+    .composer-icon:hover {
+      background: var(--cinnabar-soft);
+      color: var(--cinnabar);
+    }
+
+    .send-button {
+      background: var(--cinnabar);
+      color: white;
+    }
+
+    .send-button:hover:not(:disabled) {
+      background: #a83020;
+      transform: translateY(-1px);
+    }
+
+    .send-button:disabled {
+      opacity: 0.4;
+    }
+
+    .composer-note {
+      margin-top: 8px;
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* 滚动条 */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--text-faint); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+    /* 装饰：角落印章 */
+    .corner-seal {
+      position: fixed;
+      bottom: 24px;
+      right: 28px;
+      width: 32px;
+      height: 32px;
+      border-radius: 4px;
+      background: var(--cinnabar);
+      opacity: 0.12;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    @media (max-width: 760px) {
+      .prompt-grid {
+        grid-template-columns: 1fr;
+      }
+      .message-content {
+        max-width: 88%;
+      }
+      .brand-name { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+  <header class="top-nav">
+    <button class="brand-lockup">
+      <span class="brand-seal">🐴</span>
+      <span class="brand-name">SuperHermes</span>
+    </button>
+
+    <div class="nav-actions">
+      <button class="nav-pill active">新对话</button>
+      <button class="nav-pill">历史</button>
+      <button class="nav-pill">知识库</button>
+    </div>
+
+    <div class="user-cluster">
+      <span class="user-avatar">U</span>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <div class="chat-scroll">
+      <div class="welcome-screen">
+        <p class="eyebrow">Ink & Freedom</p>
+        <h1>有什么想问 SuperHermes？</h1>
+        <p>以墨为媒，问无不言。检索知识、分析文档，或随意聊聊。</p>
+
+        <div class="prompt-grid">
+          <button>解释知识库核心结论</button>
+          <button>帮我整理一份技术方案</button>
+          <button>分析 RAG 检索为什么不准</button>
+        </div>
+      </div>
+
+      <!-- Example conversation -->
+      <div class="message bot-message">
+        <div>
+          <div class="bot-label">SuperHermes</div>
+          <div class="message-content bot-content">
+            你好！我是 SuperHermes 小马 🐴 有什么我可以帮你的吗？
+          </div>
+        </div>
+      </div>
+
+      <div class="message user-message">
+        <div class="message-content user-content">
+          帮我查一下今天北京的天气
+        </div>
+      </div>
+
+      <div class="message bot-message">
+        <div>
+          <div class="bot-label">SuperHermes</div>
+          <div class="message-content bot-content">
+            今天北京天气晴，温度 15°C ~ 28°C，微风。<br>
+            空气质量良好，适合户外活动。
+          </div>
+        </div>
+      </div>
+
+      <div class="message user-message">
+        <div class="message-content user-content">
+          帮我分析一下这份数据
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div class="composer-dock">
+    <div class="composer">
+      <button class="composer-icon"><i class="fas fa-paperclip"></i></button>
+      <textarea placeholder="输入你的问题..." rows="1"></textarea>
+      <button class="send-button"><i class="fas fa-arrow-up"></i></button>
+    </div>
+    <p class="composer-note">AI 生成的内容可能包含错误，请仔细甄别。</p>
+  </div>
+
+  <div class="corner-seal"></div>
+
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</body>
+</html>

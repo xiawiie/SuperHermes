@@ -35,7 +35,7 @@ class BootstrapTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertTrue(
-            result.stdout.strip().startswith("postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/langchain_app"),
+            result.stdout.strip().startswith("postgresql+psycopg2://postgres:postgres@127.0.0.1:5433/langchain_app"),
             msg=result.stdout.strip() or result.stderr,
         )
 
@@ -49,7 +49,15 @@ class BootstrapTests(unittest.TestCase):
 
         try:
             result = self.run_python(
-                "import database; database.init_db(); print(database.DATABASE_URL)",
+                "\n".join(
+                    [
+                        "import database",
+                        "database.init_db()",
+                        "print(database.DATABASE_URL)",
+                        "print(database.DATABASE_FALLBACK_USED)",
+                        "print(bool(database.DATABASE_FALLBACK_REASON))",
+                    ]
+                ),
                 env=env,
             )
         finally:
@@ -60,6 +68,7 @@ class BootstrapTests(unittest.TestCase):
             result.stdout.strip().startswith(f"sqlite:///{fallback_path.as_posix()}"),
             msg=result.stdout.strip() or result.stderr,
         )
+        self.assertIn("\nTrue\nTrue", result.stdout)
 
     def test_app_import_does_not_eagerly_initialize_remote_dependencies(self):
         env = os.environ.copy()
