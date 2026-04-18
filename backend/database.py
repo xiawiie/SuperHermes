@@ -13,11 +13,11 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_SQLITE_PATH = BASE_DIR / "data" / "superhermes.db"
 DEFAULT_DOCKER_DATABASE_URL = "postgresql+psycopg2://postgres:postgres@127.0.0.1:5433/langchain_app"
-PRIMARY_DATABASE_URL = os.getenv(
+_PRIMARY_DATABASE_URL = os.getenv(
     "DATABASE_URL",
     DEFAULT_DOCKER_DATABASE_URL,
 )
-DATABASE_URL = PRIMARY_DATABASE_URL
+DATABASE_URL = _PRIMARY_DATABASE_URL
 FALLBACK_DATABASE_URL = os.getenv(
     "FALLBACK_DATABASE_URL",
     f"sqlite:///{DEFAULT_SQLITE_PATH.as_posix()}",
@@ -55,7 +55,7 @@ def _ensure_sqlite_parent_dir(database_url: str) -> None:
 def _configure_engine(database_url: str, fallback_reason: str | None = None) -> None:
     global DATABASE_URL, engine, DATABASE_FALLBACK_USED, DATABASE_FALLBACK_REASON
     DATABASE_URL = database_url
-    DATABASE_FALLBACK_USED = database_url != PRIMARY_DATABASE_URL
+    DATABASE_FALLBACK_USED = database_url != _PRIMARY_DATABASE_URL
     DATABASE_FALLBACK_REASON = fallback_reason if DATABASE_FALLBACK_USED else None
     _ensure_sqlite_parent_dir(database_url)
     engine = _build_engine(database_url)
@@ -88,7 +88,7 @@ def init_db() -> None:
     try:
         Base.metadata.create_all(bind=engine)
         _ensure_runtime_indexes()
-        DATABASE_FALLBACK_USED = DATABASE_URL != PRIMARY_DATABASE_URL
+        DATABASE_FALLBACK_USED = DATABASE_URL != _PRIMARY_DATABASE_URL
         if not DATABASE_FALLBACK_USED:
             DATABASE_FALLBACK_REASON = None
     except OperationalError as exc:

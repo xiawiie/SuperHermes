@@ -37,12 +37,18 @@ class ConversationStorage:
         for msg_data in records:
             msg_type = msg_data.get("type")
             content = msg_data.get("content", "")
+            rag_trace = msg_data.get("rag_trace")
             if msg_type == "human":
-                messages.append(HumanMessage(content=content))
+                msg = HumanMessage(content=content)
             elif msg_type == "ai":
-                messages.append(AIMessage(content=content))
+                msg = AIMessage(content=content)
             elif msg_type == "system":
-                messages.append(SystemMessage(content=content))
+                msg = SystemMessage(content=content)
+            else:
+                msg = HumanMessage(content=content)
+            if rag_trace:
+                msg.additional_kwargs["rag_trace"] = rag_trace
+            messages.append(msg)
         return messages
 
     @staticmethod
