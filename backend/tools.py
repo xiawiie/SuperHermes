@@ -14,6 +14,7 @@ AMAP_API_KEY = os.getenv("AMAP_API_KEY")
 
 _LAST_RAG_CONTEXT = None
 _KNOWLEDGE_TOOL_CALLS_THIS_TURN = 0
+_RAG_CONTEXT_FILES_THIS_TURN = []
 _RAG_STEP_QUEUE = None  # asyncio.Queue, set by agent before streaming
 _RAG_STEP_LOOP = None   # asyncio loop, captured when setting queue
 
@@ -36,6 +37,25 @@ def reset_tool_call_guards():
     """每轮对话开始时重置工具调用计数。"""
     global _KNOWLEDGE_TOOL_CALLS_THIS_TURN
     _KNOWLEDGE_TOOL_CALLS_THIS_TURN = 0
+
+
+def set_rag_context_files(filenames: Optional[list[str]] = None):
+    """Set filenames that should constrain knowledge retrieval for the current turn."""
+    global _RAG_CONTEXT_FILES_THIS_TURN
+    seen = set()
+    clean_files = []
+    for filename in filenames or []:
+        name = (filename or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        clean_files.append(name)
+    _RAG_CONTEXT_FILES_THIS_TURN = clean_files
+
+
+def get_rag_context_files() -> list[str]:
+    """Return current-turn filename constraints for knowledge retrieval."""
+    return list(_RAG_CONTEXT_FILES_THIS_TURN)
 
 
 def set_rag_step_queue(queue):
@@ -147,7 +167,7 @@ def search_knowledge_base(query: str) -> str:
     # 问题可能出在 asyncio.get_event_loop() 在子线程中调用会报错或者拿不到主线程的loop。
     # 我们应该在 set_rag_step_queue 时也保存 loop 引用，或者在 emit_rag_step 中更健壮地获取 loop。
 
-    rag_result = run_rag_graph(query)
+    rag_result = run_rag_graph(query, context_files=get_rag_context_files())
 
     docs = rag_result.get("docs", []) if isinstance(rag_result, dict) else []
     rag_trace = rag_result.get("rag_trace", {}) if isinstance(rag_result, dict) else {}

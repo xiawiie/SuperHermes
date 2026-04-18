@@ -164,7 +164,13 @@ async def delete_session(session_id: str, current_user: User = Depends(get_curre
 async def chat_endpoint(request: ChatRequest, current_user: User = Depends(get_current_user)):
     try:
         session_id = request.session_id or "default_session"
-        resp = await asyncio.to_thread(chat_with_agent, request.message, current_user.username, session_id)
+        resp = await asyncio.to_thread(
+            chat_with_agent,
+            request.message,
+            current_user.username,
+            session_id,
+            request.context_files or [],
+        )
         if isinstance(resp, dict):
             return ChatResponse(**resp)
         return ChatResponse(response=resp)
@@ -199,6 +205,7 @@ async def chat_stream_endpoint(request: ChatRequest, current_user: User = Depend
                 current_user.username,
                 session_id,
                 bool(request.regenerate),
+                request.context_files or [],
             ):
                 yield chunk
         except ValueError as e:

@@ -5,7 +5,7 @@ from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
 
-from rag_utils import retrieve_documents, step_back_expand, generate_hypothetical_document
+from rag_utils import retrieve_context_documents, retrieve_documents, step_back_expand, generate_hypothetical_document
 from tools import emit_rag_step
 
 load_dotenv()
@@ -56,7 +56,8 @@ GRADE_PROMPT = (
     "Here is the retrieved document: \n\n {context} \n\n"
     "Here is the user question: {question} \n"
     "If the document contains keyword(s) or semantic meaning related to the user question, grade it as relevant. \n"
-    "Give a binary score 'yes' or 'no' score to indicate whether the document is relevant to the question."
+    "Return JSON only, for example {{\"binary_score\":\"yes\"}} or {{\"binary_score\":\"no\"}}. "
+    "Give a binary score 'yes' or 'no' to indicate whether the document is relevant to the question."
 )
 
 
@@ -79,6 +80,7 @@ class RAGState(TypedDict):
     query: str
     context: str
     docs: List[dict]
+    context_files: List[str]
     route: Optional[str]
     expansion_type: Optional[str]
     expanded_query: Optional[str]
@@ -100,11 +102,31 @@ def _format_docs(docs: List[dict]) -> str:
     return "\n\n---\n\n".join(chunks)
 
 
+def _dedupe_docs(docs: List[dict]) -> List[dict]:
+    deduped = []
+    seen = set()
+    for item in docs:
+        key = item.get("chunk_id") or (item.get("filename"), item.get("page_number"), item.get("text"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 def retrieve_initial(state: RAGState) -> RAGState:
     query = state["question"]
+    context_files = state.get("context_files") or []
     emit_rag_step("🔍", "正在检索知识库...", f"查询: {query[:50]}")
-    retrieved = retrieve_documents(query, top_k=5)
+    retrieved = retrieve_documents(query, top_k=5, context_files=context_files)
     results = retrieved.get("docs", [])
+    attached_docs = []
+    attached_meta = {}
+    if context_files:
+        attached = retrieve_context_documents(context_files, limit_per_file=8)
+        attached_docs = attached.get("docs", [])
+        attached_meta = attached.get("meta", {})
+        results = _dedupe_docs(attached_docs + results)
     retrieve_meta = retrieved.get("meta", {})
     context = _format_docs(results)
     emit_rag_step(
@@ -132,6 +154,8 @@ def retrieve_initial(state: RAGState) -> RAGState:
         "expanded_query": query,
         "retrieved_chunks": results,
         "initial_retrieved_chunks": results,
+        "attached_context_chunks": attached_docs,
+        "context_files": context_files,
         "retrieval_stage": "initial",
         "rerank_enabled": retrieve_meta.get("rerank_enabled"),
         "rerank_applied": retrieve_meta.get("rerank_applied"),
@@ -146,6 +170,7 @@ def retrieve_initial(state: RAGState) -> RAGState:
         "auto_merge_threshold": retrieve_meta.get("auto_merge_threshold"),
         "auto_merge_replaced_chunks": retrieve_meta.get("auto_merge_replaced_chunks"),
         "auto_merge_steps": retrieve_meta.get("auto_merge_steps"),
+        "attached_context_count": attached_meta.get("attached_context_count", 0),
     }
     return {
         "query": query,
@@ -170,11 +195,18 @@ def grade_documents_node(state: RAGState) -> RAGState:
     question = state["question"]
     context = state.get("context", "")
     prompt = GRADE_PROMPT.format(question=question, context=context)
-    response = grader.with_structured_output(GradeDocuments).invoke(
-        [{"role": "user", "content": prompt}]
-    )
-    score = (response.binary_score or "").strip().lower()
+    try:
+        response = grader.with_structured_output(GradeDocuments).invoke(
+            [{"role": "user", "content": prompt}]
+        )
+        score = (response.binary_score or "").strip().lower()
+        grade_error = None
+    except Exception as exc:
+        score = "unknown"
+        grade_error = str(exc)
     route = "generate_answer" if score == "yes" else "rewrite_question"
+    if grade_error and context:
+        route = "generate_answer"
     if route == "generate_answer":
         emit_rag_step("✅", "文档相关性评估通过", f"评分: {score}")
     else:
@@ -184,6 +216,8 @@ def grade_documents_node(state: RAGState) -> RAGState:
         "grade_route": route,
         "rewrite_needed": route == "rewrite_question",
     }
+    if grade_error:
+        grade_update["grade_error"] = grade_error
     rag_trace = state.get("rag_trace", {}) or {}
     rag_trace.update(grade_update)
     return {"route": route, "rag_trace": rag_trace}
@@ -200,6 +234,7 @@ def rewrite_question_node(state: RAGState) -> RAGState:
             "- step_back：包含具体名称、日期、代码等细节，需要先理解通用概念的问题。\n"
             "- hyde：模糊、概念性、需要解释或定义的问题。\n"
             "- complex：多步骤、需要分解或综合多种信息的复杂问题。\n"
+            "Return JSON only, for example {\"strategy\":\"step_back\"}.\n"
             f"用户问题：{question}"
         )
         try:
@@ -244,6 +279,7 @@ def rewrite_question_node(state: RAGState) -> RAGState:
 
 def retrieve_expanded(state: RAGState) -> RAGState:
     strategy = state.get("expansion_type") or "step_back"
+    context_files = state.get("context_files") or []
     emit_rag_step("🔄", "使用扩展查询重新检索...", f"策略: {strategy}")
     results: List[dict] = []
     rerank_applied_any = False
@@ -262,7 +298,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
 
     if strategy in ("hyde", "complex"):
         hypothetical_doc = state.get("hypothetical_doc") or generate_hypothetical_document(state["question"])
-        retrieved_hyde = retrieve_documents(hypothetical_doc, top_k=5)
+        retrieved_hyde = retrieve_documents(hypothetical_doc, top_k=5, context_files=context_files)
         results.extend(retrieved_hyde.get("docs", []))
         hyde_meta = retrieved_hyde.get("meta", {})
         emit_rag_step(
@@ -291,7 +327,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
 
     if strategy in ("step_back", "complex"):
         expanded_query = state.get("expanded_query") or state["question"]
-        retrieved_stepback = retrieve_documents(expanded_query, top_k=5)
+        retrieved_stepback = retrieve_documents(expanded_query, top_k=5, context_files=context_files)
         results.extend(retrieved_stepback.get("docs", []))
         step_meta = retrieved_stepback.get("meta", {})
         emit_rag_step(
@@ -343,6 +379,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         "expansion_type": strategy,
         "retrieved_chunks": deduped,
         "expanded_retrieved_chunks": deduped,
+        "context_files": context_files,
         "retrieval_stage": "expanded",
         "rerank_enabled": rerank_enabled_any,
         "rerank_applied": rerank_applied_any,
@@ -386,12 +423,13 @@ def build_rag_graph():
 rag_graph = build_rag_graph()
 
 
-def run_rag_graph(question: str) -> dict:
+def run_rag_graph(question: str, context_files: list[str] | None = None) -> dict:
     return rag_graph.invoke({
         "question": question,
         "query": question,
         "context": "",
         "docs": [],
+        "context_files": context_files or [],
         "route": None,
         "expansion_type": None,
         "expanded_query": None,

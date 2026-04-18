@@ -1,23 +1,33 @@
-"""文档向量化并写入 Milvus - 支持密集+稀疏向量"""
+"""文档向量化并写入 Milvus - 支持密集 + 稀疏向量。"""
+from __future__ import annotations
+
 from embedding import EmbeddingService, embedding_service as _default_embedding_service
 from milvus_client import MilvusManager
 
 
 class MilvusWriter:
-    """文档向量化并写入 Milvus 服务 - 支持混合检索"""
+    """文档向量化并写入 Milvus 服务 - 支持混合检索。"""
 
-    def __init__(self, embedding_service: EmbeddingService = None, milvus_manager: MilvusManager = None):
+    def __init__(
+        self,
+        embedding_service: EmbeddingService | None = None,
+        milvus_manager: MilvusManager | None = None,
+    ) -> None:
         self.embedding_service = embedding_service or _default_embedding_service
         self.milvus_manager = milvus_manager or MilvusManager()
 
-    def write_documents(self, documents: list[dict], batch_size: int = 50):
+    def write_documents(self, documents: list[dict], batch_size: int = 50) -> None:
         """
-        批量写入文档到 Milvus（同时生成密集和稀疏向量）
+        批量写入文档到 Milvus（同时生成密集和稀疏向量）。
+
         :param documents: 文档列表
         :param batch_size: 批次大小
         """
         if not documents:
             return
+
+        if batch_size <= 0:
+            raise ValueError("batch_size must be > 0")
 
         self.milvus_manager.init_collection()
 
@@ -28,7 +38,7 @@ class MilvusWriter:
         for i in range(0, total, batch_size):
             batch = documents[i:i + batch_size]
             texts = [doc["text"] for doc in batch]
-            
+
             # 同时生成密集向量和稀疏向量
             dense_embeddings, sparse_embeddings = self.embedding_service.get_all_embeddings(texts)
 

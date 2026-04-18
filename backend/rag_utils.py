@@ -242,9 +242,93 @@ def step_back_expand(query: str) -> dict:
     }
 
 
-def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
+def _escape_milvus_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _build_filename_filter(filenames: list[str] | None) -> str:
+    clean_files = []
+    seen = set()
+    for filename in filenames or []:
+        name = (filename or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        clean_files.append(_escape_milvus_string(name))
+    if not clean_files:
+        return ""
+    quoted = ", ".join(f'"{filename}"' for filename in clean_files)
+    return f"filename in [{quoted}]"
+
+
+def _dedupe_docs(docs: list[dict]) -> list[dict]:
+    deduped = []
+    seen = set()
+    for item in docs:
+        key = item.get("chunk_id") or (item.get("filename"), item.get("page_number"), item.get("text"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def retrieve_context_documents(filenames: list[str] | None, limit_per_file: int = 8) -> Dict[str, Any]:
+    """Fetch representative indexed chunks directly from attached filenames."""
+    clean_files = []
+    seen = set()
+    for filename in filenames or []:
+        name = (filename or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        clean_files.append(name)
+
+    docs = []
+    for filename in clean_files:
+        filename_filter = _build_filename_filter([filename])
+        if not filename_filter:
+            continue
+        rows = _milvus_manager.query(
+            filter_expr=f"chunk_level == {LEAF_RETRIEVE_LEVEL} and {filename_filter}",
+            output_fields=[
+                "text",
+                "filename",
+                "file_type",
+                "page_number",
+                "chunk_id",
+                "parent_chunk_id",
+                "root_chunk_id",
+                "chunk_level",
+                "chunk_idx",
+            ],
+            limit=limit_per_file,
+        )
+        rows.sort(key=lambda item: (item.get("page_number", 0), item.get("chunk_idx", 0)))
+        docs.extend(rows)
+
+    docs = _dedupe_docs(docs)
+    for idx, item in enumerate(docs, 1):
+        item["rrf_rank"] = idx
+    return {
+        "docs": docs,
+        "meta": {
+            "retrieval_mode": "attached_file_context",
+            "candidate_k": limit_per_file * max(len(clean_files), 1),
+            "context_files": clean_files,
+            "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
+            "attached_context_count": len(docs),
+        },
+    }
+
+
+def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | None = None) -> Dict[str, Any]:
     candidate_k = max(top_k * 3, top_k)
     filter_expr = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
+    filename_filter = _build_filename_filter(context_files)
+    if filename_filter:
+        filter_expr = f"{filter_expr} and {filename_filter}"
+    hybrid_error = None
     try:
         dense_embeddings = _embedding_service.get_embeddings([query])
         dense_embedding = dense_embeddings[0]
@@ -261,9 +345,13 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
         rerank_meta["retrieval_mode"] = "hybrid"
         rerank_meta["candidate_k"] = candidate_k
         rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
+        rerank_meta["context_files"] = context_files or []
+        rerank_meta["hybrid_error"] = None
+        rerank_meta["dense_error"] = None
         rerank_meta.update(merge_meta)
         return {"docs": merged_docs, "meta": rerank_meta}
-    except Exception:
+    except Exception as exc:
+        hybrid_error = str(exc)
         try:
             dense_embeddings = _embedding_service.get_embeddings([query])
             dense_embedding = dense_embeddings[0]
@@ -277,9 +365,12 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
             rerank_meta["retrieval_mode"] = "dense_fallback"
             rerank_meta["candidate_k"] = candidate_k
             rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
+            rerank_meta["context_files"] = context_files or []
+            rerank_meta["hybrid_error"] = hybrid_error
+            rerank_meta["dense_error"] = None
             rerank_meta.update(merge_meta)
             return {"docs": merged_docs, "meta": rerank_meta}
-        except Exception:
+        except Exception as dense_exc:
             return {
                 "docs": [],
                 "meta": {
@@ -288,9 +379,12 @@ def retrieve_documents(query: str, top_k: int = 5) -> Dict[str, Any]:
                     "rerank_model": RERANK_MODEL,
                     "rerank_endpoint": _get_rerank_endpoint(),
                     "rerank_error": "retrieve_failed",
+                    "hybrid_error": hybrid_error,
+                    "dense_error": str(dense_exc),
                     "retrieval_mode": "failed",
                     "candidate_k": candidate_k,
                     "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
+                    "context_files": context_files or [],
                     "auto_merge_enabled": AUTO_MERGE_ENABLED,
                     "auto_merge_applied": False,
                     "auto_merge_threshold": AUTO_MERGE_THRESHOLD,

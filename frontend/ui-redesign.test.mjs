@@ -11,6 +11,12 @@ const read = (file) => readFileSync(join(__dirname, file), "utf8");
 const index = read("index.html");
 const css = read("style.css");
 const script = read("script.js");
+const backendSchemas = read("../backend/schemas.py");
+const backendApi = read("../backend/api.py");
+const backendAgent = read("../backend/agent.py");
+const backendTools = read("../backend/tools.py");
+const backendRagPipeline = read("../backend/rag_pipeline.py");
+const backendRagUtils = read("../backend/rag_utils.py");
 
 function loadAppOptions() {
   let capturedOptions = null;
@@ -93,6 +99,9 @@ function createVm(overrides = {}) {
     ...options.data(),
     $refs: {
       fileInput: { value: "" },
+    },
+    $nextTick(callback) {
+      callback?.();
     },
     ...overrides,
   };
@@ -179,14 +188,28 @@ const checks = [
     },
   },
   {
-    name: "supports multi-file upload selection, page-level drop zone, and a top upload progress bar",
+    name: "supports global file picking from chat, page-level drop zone, and a top upload progress bar",
     run() {
       assert.match(index, /type="file"[^>]*multiple/);
+      assert.match(index, /ref="globalFileInput"/);
+      assert.match(index, /composer-upload-tray/);
+      assert.match(index, /class="upload-actions"/);
+      assert.match(index, /upload-trigger/);
+      assert.match(index, /fa-cloud-arrow-up/);
+      assert.match(index, /@click="triggerUploadPicker"/);
+      assert.match(index, /:disabled="!selectedFiles.length \|\| isUploading"/);
       assert.match(index, /upload-status-bar/);
       assert.match(index, /page-drop-overlay/);
       assert.match(script, /maxUploadFiles/);
       assert.match(script, /queueSelectedFiles/);
       assert.match(script, /handleWindowDrop/);
+      assert.match(script, /triggerUploadPicker/);
+      assert.match(script, /pendingContextFiles/);
+      assert.match(script, /context_files/);
+      assert.match(css, /\.upload-actions\s*\{[\s\S]*display:\s*inline-grid;[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+      assert.match(css, /\.upload-actions \.ghost-action\s*\{[\s\S]*width:\s*142px;/);
+      assert.match(css, /\.upload-actions \.ghost-action:hover:not\(:disabled\)/);
+      assert.match(css, /\.selected-files > \.primary-action\s*\{\s*display:\s*none;/);
     },
   },
   {
@@ -207,12 +230,12 @@ const checks = [
     },
   },
   {
-    name: "dropping files on the page queues them and starts upload in knowledge view",
+    name: "dropping files on the page queues them and starts upload in chat view",
     async run() {
       const { vm } = createVm({
         token: "token",
         currentUser: { username: "admin", role: "admin" },
-        activeView: "knowledge",
+        activeView: "chat",
       });
 
       let uploadTriggered = false;
@@ -233,6 +256,113 @@ const checks = [
     },
   },
   {
+    name: "clicking the chat upload trigger opens the shared file picker",
+    run() {
+      const { vm } = createVm({
+        token: "token",
+        currentUser: { username: "admin", role: "admin" },
+      });
+      let clicked = false;
+      vm.$refs.globalFileInput = {
+        click() {
+          clicked = true;
+        },
+      };
+
+      vm.triggerUploadPicker();
+
+      assert.equal(clicked, true);
+    },
+  },
+  {
+    name: "uploaded files remain pending until the current chat turn consumes them as context",
+    async run() {
+      const { vm } = createVm({
+        token: "token",
+        currentUser: { username: "admin", role: "admin" },
+        selectedFiles: [{ name: "manual.pdf", size: 1, lastModified: 1 }],
+      });
+      vm.uploadSingleFile = async () => ({ filename: "manual.pdf", message: "ok" });
+      vm.loadDocuments = async () => {};
+
+      await vm.uploadDocument();
+
+      assert.deepEqual(Array.from(vm.pendingContextFiles.map((file) => file.filename)), ["manual.pdf"]);
+
+      let streamedOptions = null;
+      vm.userInput = "总结这份文档";
+      vm.resetTextareaHeight = () => {};
+      vm.scheduleScrollToBottom = () => {};
+      vm.streamChatToBotSlot = async (_text, _idx, options) => {
+        streamedOptions = options;
+        return true;
+      };
+
+      await vm.handleSend();
+
+      assert.deepEqual(Array.from(streamedOptions.contextFiles), ["manual.pdf"]);
+      assert.equal(vm.pendingContextFiles.length, 0);
+    },
+  },
+  {
+    name: "sending while upload is active waits and uses that file in the current turn",
+    async run() {
+      const { vm } = createVm({
+        token: "token",
+        currentUser: { username: "admin", role: "admin" },
+        isUploading: true,
+      });
+      let releaseUpload = null;
+      vm.waitForActiveUpload = () =>
+        new Promise((resolve) => {
+          releaseUpload = () => {
+            vm.addPendingContextFile({ filename: "slow.pdf" });
+            vm.isUploading = false;
+            resolve();
+          };
+        });
+      let streamedOptions = null;
+      vm.userInput = "分析这个文档";
+      vm.resetTextareaHeight = () => {};
+      vm.scheduleScrollToBottom = () => {};
+      vm.streamChatToBotSlot = async (_text, _idx, options) => {
+        streamedOptions = options;
+        return true;
+      };
+
+      const sendPromise = vm.handleSend();
+      assert.equal(streamedOptions, null);
+      releaseUpload();
+      await sendPromise;
+
+      assert.deepEqual(Array.from(streamedOptions.contextFiles), ["slow.pdf"]);
+      assert.equal(vm.pendingContextFiles.length, 0);
+    },
+  },
+  {
+    name: "failed chat streaming keeps attached context files available for retry",
+    async run() {
+      const { vm } = createVm({
+        token: "token",
+        currentUser: { username: "admin", role: "admin" },
+        pendingContextFiles: [{ filename: "retry.pdf", addedAt: 1 }],
+      });
+      let streamedOptions = null;
+      vm.userInput = "分析这个文档";
+      vm.resetTextareaHeight = () => {};
+      vm.scheduleScrollToBottom = () => {};
+      vm.streamChatToBotSlot = async (_text, _idx, options) => {
+        streamedOptions = options;
+        return false;
+      };
+
+      await vm.handleSend();
+
+      assert.deepEqual(Array.from(streamedOptions.contextFiles), ["retry.pdf"]);
+      assert.deepEqual(Array.from(vm.pendingContextFiles.map((file) => file.filename)), ["retry.pdf"]);
+    },
+  },
+  {
     name: "computes a real upload progress percentage across the queued files",
     run() {
       const { vm } = createVm({
@@ -245,6 +375,24 @@ const checks = [
       });
 
       assert.equal(vm.uploadProgressPercent, 75);
+    },
+  },
+  {
+    name: "threads attached context files through backend RAG filtering",
+    run() {
+      assert.match(backendSchemas, /context_files:\s*Optional\[List\[str\]\]/);
+      assert.match(backendApi, /request\.context_files/);
+      assert.match(backendAgent, /context_files/);
+      assert.match(backendTools, /set_rag_context_files/);
+      assert.match(backendTools, /run_rag_graph\(query,\s*context_files=/);
+      assert.match(backendRagPipeline, /context_files/);
+      assert.match(backendRagUtils, /filename in \[/);
+      assert.match(backendRagUtils, /retrieve_context_documents/);
+      assert.match(backendRagPipeline, /attached_context_chunks/);
+      assert.match(backendAgent, /_with_retrieved_context_instruction/);
+      assert.match(backendAgent, /model_instance\.astream/);
+      assert.match(backendRagPipeline, /JSON/i);
+      assert.match(backendRagPipeline, /grade_error/);
     },
   },
 ];

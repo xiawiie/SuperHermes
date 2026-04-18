@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -7,6 +8,8 @@ from sqlalchemy import func
 from cache import cache as default_cache
 from database import SessionLocal
 from models import ChatMessage, ChatSession, User
+
+logger = logging.getLogger(__name__)
 
 
 def utc_now() -> datetime:
@@ -276,7 +279,7 @@ class ConversationStorage:
                 .join(User, ChatSession.user_id == User.id)
                 .outerjoin(ChatMessage, ChatMessage.session_ref_id == ChatSession.id)
                 .filter(User.username == user_id)
-                .group_by(ChatSession.id, ChatSession.session_id, ChatSession.metadata_json, ChatSession.updated_at)
+                .group_by(ChatSession.id)
                 .order_by(ChatSession.updated_at.desc())
                 .all()
             )
@@ -284,13 +287,16 @@ class ConversationStorage:
                 {
                     "session_id": row.session_id,
                     "title": (row.metadata_json or {}).get("title"),
-                    "updated_at": row.updated_at.isoformat(),
+                    "updated_at": row.updated_at.isoformat() if row.updated_at else "",
                     "message_count": int(row.message_count or 0),
                 }
                 for row in rows
             ]
             self.cache.set_json(self._sessions_cache_key(user_id), result)
             return result
+        except Exception:
+            logger.exception("Failed to load sessions for user=%s", user_id)
+            return []
         finally:
             db.close()
 

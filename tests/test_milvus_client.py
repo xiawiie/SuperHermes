@@ -44,6 +44,28 @@ class MilvusManagerReconnectTests(unittest.TestCase):
         self.assertEqual(result, [{"filename": "manual.pdf", "file_type": "PDF"}])
         self.assertEqual(factory.call_count, 2)
 
+    def test_query_retries_multiple_closed_channel_failures(self):
+        clients = [
+            FlakyMilvusClient(should_fail=True),
+            FlakyMilvusClient(should_fail=True),
+            FlakyMilvusClient(),
+        ]
+
+        def client_factory(uri):
+            self.assertEqual(uri, "http://127.0.0.1:19530")
+            return clients.pop(0)
+
+        with patch("milvus_client.MilvusClient", side_effect=client_factory) as factory:
+            manager = MilvusManager()
+            manager.host = "127.0.0.1"
+            manager.port = "19530"
+            manager.uri = "http://127.0.0.1:19530"
+
+            result = manager.query(output_fields=["filename", "file_type"], limit=5)
+
+        self.assertEqual(result, [{"filename": "manual.pdf", "file_type": "PDF"}])
+        self.assertEqual(factory.call_count, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,8 @@ createApp({
             documents: [],
             documentsLoading: false,
             selectedFiles: [],
+            pendingContextFiles: [],
+            activeUploadResolvers: [],
             isUploading: false,
             uploadProgress: "",
             currentUploadPercent: 0,
@@ -63,7 +65,7 @@ createApp({
         },
 
         canAcceptKnowledgeUpload() {
-            return this.isAuthenticated && this.isAdmin && this.activeView === "knowledge";
+            return this.isAuthenticated && this.isAdmin;
         },
 
         uploadProgressPercent() {
@@ -74,7 +76,6 @@ createApp({
             const combined = ((this.completedUploads + partial) / this.selectedFiles.length) * 100;
             return Math.max(0, Math.min(100, Math.round(combined)));
         },
-
         uploadStatusText() {
             if (this.isUploading && this.selectedFiles.length) {
                 const currentIndex = Math.min(this.completedUploads + 1, this.selectedFiles.length);
@@ -88,7 +89,17 @@ createApp({
         },
 
         showUploadStatusBar() {
-            return this.isUploading || !!this.uploadProgress || this.selectedFiles.length > 0;
+            return this.isUploading || !!this.uploadProgress || this.selectedFiles.length > 0 || this.pendingContextFiles.length > 0;
+        },
+
+        composerUploadTitle() {
+            if (this.isUploading) {
+                return this.uploadStatusText;
+            }
+            if (this.pendingContextFiles.length) {
+                return `将作为本轮对话上下文：${this.pendingContextFiles.length} 个文件`;
+            }
+            return this.uploadStatusText;
         },
     },
 
@@ -142,12 +153,13 @@ createApp({
             return div.innerHTML;
         },
 
-        createUserMessage(text) {
+        createUserMessage(text, contextFiles = []) {
             return {
                 id: "msg_" + Date.now() + "_" + Math.random().toString(16).slice(2),
                 text,
                 html: "",
                 isUser: true,
+                contextFiles,
             };
         },
 
@@ -252,6 +264,7 @@ createApp({
             this.sessions = [];
             this.documents = [];
             this.selectedFiles = [];
+            this.pendingContextFiles = [];
             this.activeView = "chat";
             this.showHistoryPanel = false;
             this.streamBuffer = "";
@@ -263,6 +276,15 @@ createApp({
             this.pageDragDepth = 0;
             this.clearStreamFlushTimer();
             localStorage.removeItem("accessToken");
+        },
+
+        triggerUploadPicker() {
+            if (!this.isAdmin) {
+                alert("仅管理员可上传文件");
+                return;
+            }
+            const input = this.$refs.globalFileInput || this.$refs.fileInput;
+            input?.click?.();
         },
 
         bindPageUploadEvents() {
@@ -350,6 +372,42 @@ createApp({
             }
         },
 
+        addPendingContextFile(file) {
+            const filename = file?.filename || file?.name;
+            if (!filename) return;
+            if (this.pendingContextFiles.some((existing) => existing.filename === filename)) {
+                return;
+            }
+            this.pendingContextFiles.push({
+                filename,
+                addedAt: Date.now(),
+            });
+        },
+
+        removePendingContextFile(index) {
+            this.pendingContextFiles.splice(index, 1);
+        },
+
+        consumePendingContextFiles() {
+            const filenames = this.pendingContextFiles.map((file) => file.filename).filter(Boolean);
+            this.pendingContextFiles = [];
+            return filenames;
+        },
+
+        waitForActiveUpload() {
+            if (!this.isUploading) {
+                return Promise.resolve();
+            }
+            return new Promise((resolve) => {
+                this.activeUploadResolvers.push(resolve);
+            });
+        },
+
+        resolveActiveUploadWaiters() {
+            const resolvers = this.activeUploadResolvers.splice(0);
+            resolvers.forEach((resolve) => resolve());
+        },
+
         handleWindowDragEnter(event) {
             if (!this.canAcceptKnowledgeUpload || !this.isFileDragEvent(event)) {
                 return;
@@ -435,7 +493,18 @@ createApp({
             const text = this.userInput.trim();
             if (!text || this.isLoading || this.isComposing) return;
 
-            this.messages.push(this.createUserMessage(text));
+            const hadUploadWork = this.isUploading || this.selectedFiles.length > 0;
+            if (this.isUploading) {
+                await this.waitForActiveUpload();
+            } else if (this.selectedFiles.length) {
+                await this.uploadDocument();
+            }
+            if (hadUploadWork && !this.pendingContextFiles.length) {
+                return;
+            }
+
+            const contextFiles = this.pendingContextFiles.map((file) => file.filename).filter(Boolean);
+            this.messages.push(this.createUserMessage(text, contextFiles));
             this.userInput = "";
             this.$nextTick(() => {
                 this.resetTextareaHeight();
@@ -444,7 +513,10 @@ createApp({
 
             this.messages.push(this.createBotMessage());
             const botMsgIdx = this.messages.length - 1;
-            await this.streamChatToBotSlot(text, botMsgIdx, { regenerate: false });
+            const streamOk = await this.streamChatToBotSlot(text, botMsgIdx, { regenerate: false, contextFiles });
+            if (streamOk) {
+                this.consumePendingContextFiles();
+            }
         },
 
         canRegenerateAssistant(index) {
@@ -501,6 +573,9 @@ createApp({
 
         async streamChatToBotSlot(userText, botMsgIdx, options = {}) {
             const regenerate = !!(options && options.regenerate);
+            const contextFiles = Array.isArray(options.contextFiles) ? options.contextFiles : [];
+            let streamOk = false;
+            let streamHadError = false;
             this.isLoading = true;
             this.streamBuffer = "";
             this.streamFlushScheduled = false;
@@ -516,6 +591,7 @@ createApp({
                         message: userText,
                         session_id: this.sessionId,
                         regenerate,
+                        context_files: contextFiles,
                     }),
                     signal: this.abortController.signal,
                 });
@@ -536,9 +612,13 @@ createApp({
                     while ((eventEndIndex = buffer.indexOf("\n\n")) !== -1) {
                         const eventStr = buffer.slice(0, eventEndIndex);
                         buffer = buffer.slice(eventEndIndex + 2);
-                        this.consumeSseEvent(eventStr, botMsgIdx);
+                        const eventType = this.consumeSseEvent(eventStr, botMsgIdx);
+                        if (eventType === "error") {
+                            streamHadError = true;
+                        }
                     }
                 }
+                streamOk = !streamHadError;
             } catch (error) {
                 const botMsg = this.messages[botMsgIdx];
                 if (botMsg) {
@@ -555,12 +635,13 @@ createApp({
                 this.abortController = null;
                 this.scheduleScrollToBottom();
             }
+            return streamOk;
         },
 
         consumeSseEvent(eventStr, botMsgIdx) {
             if (!eventStr.startsWith("data: ")) return;
             const dataStr = eventStr.slice(6);
-            if (dataStr === "[DONE]") return;
+            if (dataStr === "[DONE]") return "done";
 
             try {
                 const data = JSON.parse(dataStr);
@@ -586,9 +667,11 @@ createApp({
                     this.streamBuffer += `\n\n[Error: ${data.content}]`;
                     this.scheduleStreamFlush(botMsgIdx);
                 }
+                return data.type;
             } catch (error) {
                 console.warn("SSE parse error:", error);
             }
+            return null;
         },
 
         scheduleStreamFlush(botMsgIdx) {
@@ -857,10 +940,13 @@ createApp({
             }
         },
 
-        handleFileSelect(event) {
-            this.queueSelectedFiles(event.target.files);
+        async handleFileSelect(event) {
+            const addedCount = this.queueSelectedFiles(event.target.files);
             if (event.target) {
                 event.target.value = "";
+            }
+            if (addedCount > 0 && this.activeView === "chat" && !this.isUploading) {
+                await this.uploadDocument();
             }
         },
 
@@ -912,7 +998,7 @@ createApp({
         },
         async uploadDocument() {
             if (!this.selectedFiles.length) {
-                alert("??????");
+                alert("\u8bf7\u5148\u9009\u62e9\u6587\u4ef6");
                 return;
             }
             if (this.isUploading) return;
@@ -927,17 +1013,21 @@ createApp({
                     const file = filesToUpload[index];
                     this.currentUploadName = file.name;
                     this.currentUploadPercent = 0;
-                    this.uploadProgress = `???? ${index + 1}/${filesToUpload.length}?${file.name}`;
+                    this.uploadProgress = `\u6b63\u5728\u4e0a\u4f20 ${index + 1}/${filesToUpload.length}\uff1a${file.name}`;
                     const data = await this.uploadSingleFile(file, (percent) => {
                         this.currentUploadPercent = percent;
                     });
                     this.completedUploads = index + 1;
                     this.currentUploadPercent = 100;
-                    this.uploadProgress = data.message || `${file.name} ????`;
+                    this.uploadProgress = data.message || `${file.name} \u4e0a\u4f20\u6210\u529f`;
+                    this.addPendingContextFile(data.filename ? data : file);
                 }
 
                 if (this.$refs.fileInput) {
                     this.$refs.fileInput.value = "";
+                }
+                if (this.$refs.globalFileInput) {
+                    this.$refs.globalFileInput.value = "";
                 }
                 await this.loadDocuments();
                 this.selectedFiles = [];
@@ -948,9 +1038,10 @@ createApp({
                     this.completedUploads = 0;
                 }, 3000);
             } catch (error) {
-                this.uploadProgress = `?????${error.message}`;
+                this.uploadProgress = `\u4e0a\u4f20\u5931\u8d25\uff1a${error.message}`;
             } finally {
                 this.isUploading = false;
+                this.resolveActiveUploadWaiters();
             }
         },
 

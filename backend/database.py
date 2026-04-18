@@ -1,4 +1,5 @@
 import os
+import logging
 from pathlib import Path
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
@@ -7,19 +8,23 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_SQLITE_PATH = BASE_DIR / "data" / "superhermes.db"
-DEFAULT_DOCKER_DATABASE_URL = "postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/langchain_app"
-DATABASE_URL = os.getenv(
+DEFAULT_DOCKER_DATABASE_URL = "postgresql+psycopg2://postgres:postgres@127.0.0.1:5433/langchain_app"
+PRIMARY_DATABASE_URL = os.getenv(
     "DATABASE_URL",
     DEFAULT_DOCKER_DATABASE_URL,
 )
+DATABASE_URL = PRIMARY_DATABASE_URL
 FALLBACK_DATABASE_URL = os.getenv(
     "FALLBACK_DATABASE_URL",
     f"sqlite:///{DEFAULT_SQLITE_PATH.as_posix()}",
 )
 ALLOW_DATABASE_FALLBACK = os.getenv("ALLOW_DATABASE_FALLBACK", "1").strip().lower() not in {"0", "false", "no"}
+DATABASE_FALLBACK_USED = False
+DATABASE_FALLBACK_REASON: str | None = None
 
 Base = declarative_base()
 
@@ -47,9 +52,11 @@ def _ensure_sqlite_parent_dir(database_url: str) -> None:
     Path(parsed.database).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 
 
-def _configure_engine(database_url: str) -> None:
-    global DATABASE_URL, engine
+def _configure_engine(database_url: str, fallback_reason: str | None = None) -> None:
+    global DATABASE_URL, engine, DATABASE_FALLBACK_USED, DATABASE_FALLBACK_REASON
     DATABASE_URL = database_url
+    DATABASE_FALLBACK_USED = database_url != PRIMARY_DATABASE_URL
+    DATABASE_FALLBACK_REASON = fallback_reason if DATABASE_FALLBACK_USED else None
     _ensure_sqlite_parent_dir(database_url)
     engine = _build_engine(database_url)
     SessionLocal.configure(bind=engine)
@@ -74,13 +81,18 @@ def _ensure_runtime_indexes() -> None:
 
 
 def init_db() -> None:
+    global DATABASE_FALLBACK_USED, DATABASE_FALLBACK_REASON
     # Delayed import to avoid circular dependency.
     import models  # noqa: F401
 
     try:
         Base.metadata.create_all(bind=engine)
         _ensure_runtime_indexes()
-    except OperationalError:
+        DATABASE_FALLBACK_USED = DATABASE_URL != PRIMARY_DATABASE_URL
+        if not DATABASE_FALLBACK_USED:
+            DATABASE_FALLBACK_REASON = None
+    except OperationalError as exc:
+        primary_error = str(exc).splitlines()[0] if str(exc) else "primary database unavailable"
         should_fallback = (
             ALLOW_DATABASE_FALLBACK
             and not DATABASE_URL.startswith("sqlite")
@@ -89,6 +101,10 @@ def init_db() -> None:
         )
         if not should_fallback:
             raise
-        _configure_engine(FALLBACK_DATABASE_URL)
+        logger.warning(
+            "Primary database unavailable; using fallback database %s",
+            make_url(FALLBACK_DATABASE_URL).render_as_string(hide_password=True),
+        )
+        _configure_engine(FALLBACK_DATABASE_URL, fallback_reason=primary_error)
         Base.metadata.create_all(bind=engine)
         _ensure_runtime_indexes()

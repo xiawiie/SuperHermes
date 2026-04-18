@@ -30,6 +30,7 @@ class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = "default_session"
     regenerate: Optional[bool] = False
+    context_files: Optional[List[str]] = None
 
 
 class RetrievedChunk(BaseModel):
@@ -61,6 +62,8 @@ class RagTrace(BaseModel):
     rerank_model: Optional[str] = None
     rerank_endpoint: Optional[str] = None
     rerank_error: Optional[str] = None
+    hybrid_error: Optional[str] = None
+    dense_error: Optional[str] = None
     retrieval_mode: Optional[str] = None
     candidate_k: Optional[int] = None
     leaf_retrieve_level: Optional[int] = None
@@ -72,6 +75,8 @@ class RagTrace(BaseModel):
     retrieved_chunks: Optional[List[RetrievedChunk]] = None
     initial_retrieved_chunks: Optional[List[RetrievedChunk]] = None
     expanded_retrieved_chunks: Optional[List[RetrievedChunk]] = None
+    attached_context_chunks: Optional[List[RetrievedChunk]] = None
+    context_files: Optional[List[str]] = None
 
 
 class ChatResponse(BaseModel):
