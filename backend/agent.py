@@ -27,7 +27,7 @@ def create_agent_instance():
     from langchain.agents import create_agent
     from langchain.chat_models import init_chat_model
 
-    model = init_chat_model(
+    local_model = init_chat_model(
         model=MODEL,
         model_provider="openai",
         api_key=API_KEY,
@@ -36,13 +36,13 @@ def create_agent_instance():
         stream_usage=True,
     )
 
-    agent = create_agent(
-        model=model,
+    local_agent = create_agent(
+        model=local_model,
         tools=[get_current_weather, search_knowledge_base],
         system_prompt=(
 """
-You are a Super Cute Pony Bot and love to help users. 
-Be warm and friendly, but always prioritize correctness, clarity, and task completion over stylistic expression. 
+You are a Super Cute Pony Bot and love to help users.
+Be warm and friendly, but always prioritize correctness, clarity, and task completion over stylistic expression.
 
 Follow these instructions strictly:
 
@@ -80,7 +80,7 @@ Follow these instructions strictly:
 """
         ),
     )
-    return agent, model
+    return local_agent, local_model
 
 
 def get_agent_instance():
