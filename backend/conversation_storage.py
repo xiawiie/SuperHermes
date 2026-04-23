@@ -1,5 +1,5 @@
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -12,8 +12,9 @@ from models import ChatMessage, ChatSession, User
 logger = logging.getLogger(__name__)
 
 
-def utc_now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+def local_now() -> datetime:
+    """返回当前本地时间（不带时区信息）。"""
+    return datetime.now()
 
 
 class ConversationStorage:
@@ -124,7 +125,7 @@ class ConversationStorage:
             session = self._get_or_create_session(db, user, session_id, metadata)
             db.query(ChatMessage).filter(ChatMessage.session_ref_id == session.id).delete(synchronize_session=False)
 
-            now = utc_now()
+            now = local_now()
             rows = []
             serialized = []
             for idx, message in enumerate(messages):
@@ -173,7 +174,7 @@ class ConversationStorage:
                 return
 
             session = self._get_or_create_session(db, user, session_id, metadata)
-            now = utc_now()
+            now = local_now()
             rows = []
             serialized = []
             for idx, message in enumerate(messages):
@@ -238,7 +239,7 @@ class ConversationStorage:
                 db.delete(last_msg)
                 db.flush()
 
-            now = utc_now()
+            now = local_now()
             db.add(
                 ChatMessage(
                     session_ref_id=session.id,
@@ -359,7 +360,7 @@ class ConversationStorage:
                 else:
                     meta["title"] = normalized[:80]
             session.metadata_json = meta
-            session.updated_at = utc_now()
+            session.updated_at = local_now()
             db.commit()
             self.cache.delete(self._sessions_cache_key(user_id))
             return {
