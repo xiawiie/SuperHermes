@@ -38,6 +38,26 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
         self.assertEqual(metrics["mrr"], 0.5)
         self.assertEqual(metrics["context_precision_id_at_5"], 0.5)
         self.assertEqual(metrics["irrelevant_context_ratio_at_5"], 0.5)
+        self.assertAlmostEqual(metrics["recall_at_5"], 1.0)
+
+    def test_recall_counts_distinct_expected_items_found(self):
+        docs = [
+            {"chunk_id": "leaf-a", "root_chunk_id": "root-1", "text": "自然人"},
+            {"chunk_id": "leaf-b", "root_chunk_id": "wrong", "text": "noise"},
+        ]
+        metrics = compute_retrieval_metrics(
+            docs,
+            expected_root_ids=["root-1", "root-2"],
+            expected_keywords=["自然人", "法人"],
+            top_k=5,
+        )
+        # root-1 found, root-2 not found = 1/2; "自然人" found, "法人" not = 1/2; total 2/4
+        self.assertAlmostEqual(metrics["recall_at_5"], 0.5)
+
+    def test_recall_is_none_when_no_expected(self):
+        docs = [{"chunk_id": "leaf-a", "text": "whatever"}]
+        metrics = compute_retrieval_metrics(docs, top_k=5)
+        self.assertIsNone(metrics["recall_at_5"])
 
     def test_first_relevant_rank_uses_legacy_chunk_id(self):
         docs = [
