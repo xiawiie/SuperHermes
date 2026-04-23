@@ -42,7 +42,7 @@ def _extract_reference(reference_outputs: Optional[dict]) -> str:
     return ""
 
 # 1. Select your dataset
-dataset_name = "RAG"
+dataset_name = "Test1"  # 替换为你在 LangSmith 上创建的评估数据集名称
 
 # 2. Define an evaluator (评估最终答案，不评估检索块)
 def custom_evaluator(run_outputs: dict, reference_outputs: dict) -> bool:
@@ -69,7 +69,7 @@ def custom_evaluator(run_outputs: dict, reference_outputs: dict) -> bool:
 def target_function(inputs: dict) -> dict:
     question = inputs["question"]
     # 每条评估样本使用独立会话，避免上下文串扰
-    session_id = f"langsmith_eval_{uuid4().hex}"
+    session_id = f"langsmith_eval_{uuid4().he   x}"
     result = chat_with_agent(
         user_text=question,
         user_id="langsmith_eval_user",
