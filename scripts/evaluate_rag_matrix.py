@@ -202,6 +202,39 @@ def first_relevant_rank(
     return None
 
 
+def _count_expected_matches(
+    top_docs: list[dict],
+    expected_chunk_ids: list[str] | None = None,
+    expected_root_ids: list[str] | None = None,
+    expected_anchors: list[str] | None = None,
+    expected_keywords: list[str] | None = None,
+) -> tuple[int, int]:
+    """Return (matched_count, total_count) for distinct expected items found in top docs."""
+    chunk_ids = set(_as_list(expected_chunk_ids))
+    root_ids = set(_as_list(expected_root_ids))
+    anchors = _as_list(expected_anchors)
+    keywords = _as_list(expected_keywords)
+
+    total = len(chunk_ids) + len(root_ids) + len(anchors) + len(keywords)
+    if total == 0:
+        return 0, 0
+
+    found = 0
+    doc_chunk_ids = {str(doc.get("chunk_id") or "") for doc in top_docs}
+    doc_root_ids = {str(doc.get("root_chunk_id") or "") for doc in top_docs}
+    found += len(chunk_ids & doc_chunk_ids)
+    found += len(root_ids & doc_root_ids)
+
+    for anchor in anchors:
+        if any(_anchor_match(anchor, _doc_text(doc)) for doc in top_docs):
+            found += 1
+    for keyword in keywords:
+        if any(keyword and keyword in _doc_text(doc) for doc in top_docs):
+            found += 1
+
+    return found, total
+
+
 def compute_retrieval_metrics(
     docs: list[dict],
     expected_chunk_ids: list[str] | None = None,
@@ -239,6 +272,15 @@ def compute_retrieval_metrics(
     returned_count = len(top_docs)
     precision = (relevant_count / returned_count) if returned_count else 0.0
 
+    matched_expected, total_expected = _count_expected_matches(
+        top_docs,
+        expected_chunk_ids=expected_chunk_ids,
+        expected_root_ids=expected_root_ids,
+        expected_anchors=expected_anchors,
+        expected_keywords=expected_keywords,
+    )
+    recall = (matched_expected / total_expected) if total_expected > 0 else None
+
     return {
         "top_k": top_k,
         "returned_count": returned_count,
@@ -252,6 +294,7 @@ def compute_retrieval_metrics(
         "mrr": (1.0 / rank) if rank else 0.0,
         "context_precision_id_at_5": precision if has_expected else None,
         "irrelevant_context_ratio_at_5": (1.0 - precision) if has_expected else None,
+        "recall_at_5": recall,
         "relevant_count": relevant_count,
         "error_rate": 0.0,
     }
@@ -354,6 +397,7 @@ def summarize_results(rows: list[dict], variants: list[str]) -> dict[str, Any]:
             "mrr": _average(variant_rows, "mrr"),
             "context_precision_id_at_5": _average(variant_rows, "context_precision_id_at_5"),
             "irrelevant_context_ratio_at_5": _average(variant_rows, "irrelevant_context_ratio_at_5"),
+            "recall_at_5": _average(variant_rows, "recall_at_5"),
             "avg_latency_ms": _average_field(variant_rows, "latency_ms"),
             "error_rate": _average_field(variant_rows, "error_rate"),
             "fallback_trigger_rate": _average_field(variant_rows, "fallback_required"),
@@ -376,12 +420,12 @@ def render_summary_markdown(summary: dict) -> str:
         "",
         "## Variant Metrics",
         "",
-        "| Variant | Rows | Hit@5 | Root@5 | Anchor@5 | Keyword@5 | MRR | CtxPrecision@5 | Irrelevant@5 | Avg ms | Error | Fallback |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Variant | Rows | Hit@5 | Root@5 | Anchor@5 | Keyword@5 | MRR | CtxPrecision@5 | Recall@5 | Irrelevant@5 | Avg ms | Error | Fallback |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for variant, metrics in summary.get("variants", {}).items():
         lines.append(
-            "| {variant} | {rows} | {hit} | {root} | {anchor} | {keyword} | {mrr} | {precision} | {irrelevant} | {latency} | {error} | {fallback} |".format(
+            "| {variant} | {rows} | {hit} | {root} | {anchor} | {keyword} | {mrr} | {precision} | {recall} | {irrelevant} | {latency} | {error} | {fallback} |".format(
                 variant=variant,
                 rows=metrics.get("rows", 0),
                 hit=_fmt_metric(metrics.get("hit_at_5")),
@@ -390,6 +434,7 @@ def render_summary_markdown(summary: dict) -> str:
                 keyword=_fmt_metric(metrics.get("keyword_hit_at_5")),
                 mrr=_fmt_metric(metrics.get("mrr")),
                 precision=_fmt_metric(metrics.get("context_precision_id_at_5")),
+                recall=_fmt_metric(metrics.get("recall_at_5")),
                 irrelevant=_fmt_metric(metrics.get("irrelevant_context_ratio_at_5")),
                 latency=_fmt_metric(metrics.get("avg_latency_ms")),
                 error=_fmt_metric(metrics.get("error_rate")),
