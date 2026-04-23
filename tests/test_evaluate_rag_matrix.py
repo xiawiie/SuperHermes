@@ -49,6 +49,28 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
 
         self.assertEqual(rank, 2)
 
+    def test_anchor_match_avoids_partial_numeric_anchor_hits(self):
+        docs = [{"chunk_id": "leaf-a", "root_chunk_id": "wrong", "section_title": "11.2 高级配置"}]
+
+        metrics = compute_retrieval_metrics(docs, expected_anchors=["1.2"], top_k=5)
+
+        self.assertFalse(metrics["hit_at_5"])
+        self.assertFalse(metrics["anchor_hit_at_5"])
+
+    def test_anchor_match_correctly_matches_legal_article(self):
+        docs = [{"chunk_id": "leaf-a", "root_chunk_id": "root-1", "section_title": "第一条", "text": "为了保护民事主体的合法权益..."}]
+
+        metrics = compute_retrieval_metrics(docs, expected_anchors=["第一条"], top_k=5)
+
+        self.assertTrue(metrics["anchor_hit_at_5"])
+
+    def test_anchor_match_no_false_positive_from_adjacent_numeral(self):
+        docs = [{"chunk_id": "leaf-a", "root_chunk_id": "wrong", "text": "二十一、其他事项"}]
+
+        metrics = compute_retrieval_metrics(docs, expected_anchors=["一、"], top_k=5)
+
+        self.assertFalse(metrics["anchor_hit_at_5"])
+
     def test_compare_sample_rank_counts_win_loss_tie(self):
         old = {"hit_at_5": False, "first_relevant_rank": None}
         new = {"hit_at_5": True, "first_relevant_rank": 3}

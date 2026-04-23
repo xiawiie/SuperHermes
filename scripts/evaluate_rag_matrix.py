@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -137,6 +138,22 @@ def _doc_text(doc: dict) -> str:
     return " ".join(str(part) for part in parts if part)
 
 
+_NUMERAL_NE = r"(?<![一二三四五六七八九十百千万零两\d])"
+_NUMERAL_NLA = r"(?![一二三四五六七八九十百千万零两\d])"
+
+
+def _anchor_match(anchor: str, text: str) -> bool:
+    """Match anchor as a discrete structural unit, not a partial substring.
+
+    Prevents ``"1.2"`` matching ``"11.2"``, ``"一、"`` matching ``"二十一、"``,
+    and similar false positives for decimal/list-item anchors.
+    """
+    if not anchor or not text:
+        return False
+    escaped = re.escape(anchor)
+    return bool(re.search(_NUMERAL_NE + escaped + _NUMERAL_NLA, text))
+
+
 def _doc_match_flags(
     doc: dict,
     expected_chunk_ids: list[str] | None = None,
@@ -152,7 +169,7 @@ def _doc_match_flags(
 
     chunk_hit = bool(str(doc.get("chunk_id") or "") in chunk_ids)
     root_hit = bool(str(doc.get("root_chunk_id") or "") in root_ids)
-    anchor_hit = any(anchor and anchor in text for anchor in anchors)
+    anchor_hit = any(_anchor_match(anchor, text) for anchor in anchors)
     keyword_hit = any(keyword and keyword in text for keyword in keywords)
 
     return {
