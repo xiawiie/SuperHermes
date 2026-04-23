@@ -170,6 +170,23 @@ def retrieve_initial(state: RAGState) -> RAGState:
         "auto_merge_threshold": retrieve_meta.get("auto_merge_threshold"),
         "auto_merge_replaced_chunks": retrieve_meta.get("auto_merge_replaced_chunks"),
         "auto_merge_steps": retrieve_meta.get("auto_merge_steps"),
+        "structure_rerank_enabled": retrieve_meta.get("structure_rerank_enabled"),
+        "structure_rerank_applied": retrieve_meta.get("structure_rerank_applied"),
+        "structure_rerank_root_weight": retrieve_meta.get("structure_rerank_root_weight"),
+        "same_root_cap": retrieve_meta.get("same_root_cap"),
+        "dominant_root_id": retrieve_meta.get("dominant_root_id"),
+        "dominant_root_share": retrieve_meta.get("dominant_root_share"),
+        "dominant_root_support": retrieve_meta.get("dominant_root_support"),
+        "confidence_gate_enabled": retrieve_meta.get("confidence_gate_enabled"),
+        "fallback_required": retrieve_meta.get("fallback_required"),
+        "confidence_reasons": retrieve_meta.get("confidence_reasons"),
+        "top_margin": retrieve_meta.get("top_margin"),
+        "top_score": retrieve_meta.get("top_score"),
+        "anchor_match": retrieve_meta.get("anchor_match"),
+        "query_anchors": retrieve_meta.get("query_anchors"),
+        "candidates_before_rerank": retrieve_meta.get("candidates_before_rerank"),
+        "candidates_after_rerank": retrieve_meta.get("candidates_after_rerank"),
+        "candidates_after_structure_rerank": retrieve_meta.get("candidates_after_structure_rerank"),
         "attached_context_count": attached_meta.get("attached_context_count", 0),
     }
     return {
@@ -181,6 +198,22 @@ def retrieve_initial(state: RAGState) -> RAGState:
 
 
 def grade_documents_node(state: RAGState) -> RAGState:
+    rag_trace = state.get("rag_trace", {}) or {}
+    if rag_trace.get("fallback_required") is False:
+        rag_trace.update({
+            "grade_score": "skipped_fast_path",
+            "grade_route": "generate_answer",
+            "rewrite_needed": False,
+        })
+        return {"route": "generate_answer", "rag_trace": rag_trace}
+    if rag_trace.get("fallback_required") is True:
+        rag_trace.update({
+            "grade_score": "fallback_triggered",
+            "grade_route": "rewrite_question",
+            "rewrite_needed": True,
+        })
+        return {"route": "rewrite_question", "rag_trace": rag_trace}
+
     grader = _get_grader_model()
     emit_rag_step("📊", "正在评估文档相关性...")
     if not grader:
@@ -394,6 +427,23 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         "auto_merge_threshold": auto_merge_threshold,
         "auto_merge_replaced_chunks": auto_merge_replaced_chunks,
         "auto_merge_steps": auto_merge_steps,
+        "structure_rerank_enabled": state.get("rag_trace", {}).get("structure_rerank_enabled"),
+        "structure_rerank_applied": state.get("rag_trace", {}).get("structure_rerank_applied"),
+        "structure_rerank_root_weight": state.get("rag_trace", {}).get("structure_rerank_root_weight"),
+        "same_root_cap": state.get("rag_trace", {}).get("same_root_cap"),
+        "dominant_root_id": state.get("rag_trace", {}).get("dominant_root_id"),
+        "dominant_root_share": state.get("rag_trace", {}).get("dominant_root_share"),
+        "dominant_root_support": state.get("rag_trace", {}).get("dominant_root_support"),
+        "confidence_gate_enabled": state.get("rag_trace", {}).get("confidence_gate_enabled"),
+        "fallback_required": state.get("rag_trace", {}).get("fallback_required"),
+        "confidence_reasons": state.get("rag_trace", {}).get("confidence_reasons"),
+        "top_margin": state.get("rag_trace", {}).get("top_margin"),
+        "top_score": state.get("rag_trace", {}).get("top_score"),
+        "anchor_match": state.get("rag_trace", {}).get("anchor_match"),
+        "query_anchors": state.get("rag_trace", {}).get("query_anchors"),
+        "candidates_before_rerank": state.get("rag_trace", {}).get("candidates_before_rerank"),
+        "candidates_after_rerank": state.get("rag_trace", {}).get("candidates_after_rerank"),
+        "candidates_after_structure_rerank": state.get("rag_trace", {}).get("candidates_after_structure_rerank"),
     })
     return {"docs": deduped, "context": context, "rag_trace": rag_trace}
 

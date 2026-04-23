@@ -1,5 +1,5 @@
 """Parent chunk storage for auto-merging retrieval."""
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import List
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -8,10 +8,12 @@ from cache import cache
 from database import SessionLocal
 from models import ParentChunk
 
+_BJ_TZ = timezone(timedelta(hours=8))
+
 
 def local_now() -> datetime:
-    """返回当前本地时间（不带时区信息）。"""
-    return datetime.now()
+    """返回当前北京时间（UTC+8，不带时区信息）。"""
+    return datetime.now(_BJ_TZ).replace(tzinfo=None)
 
 
 class ParentChunkStore:

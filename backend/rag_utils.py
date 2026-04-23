@@ -2,6 +2,7 @@ from collections import defaultdict
 from typing import List, Tuple, Dict, Any
 import os
 import json
+import re
 import requests
 from dotenv import load_dotenv
 
@@ -21,12 +22,50 @@ RERANK_API_KEY = os.getenv("RERANK_API_KEY")
 AUTO_MERGE_ENABLED = os.getenv("AUTO_MERGE_ENABLED", "true").lower() != "false"
 AUTO_MERGE_THRESHOLD = int(os.getenv("AUTO_MERGE_THRESHOLD", "2"))
 LEAF_RETRIEVE_LEVEL = int(os.getenv("LEAF_RETRIEVE_LEVEL", "3"))
+STRUCTURE_RERANK_ROOT_WEIGHT = float(os.getenv("STRUCTURE_RERANK_ROOT_WEIGHT", "0.3"))
+SAME_ROOT_CAP = int(os.getenv("SAME_ROOT_CAP", "2"))
+STRUCTURE_RERANK_ENABLED = os.getenv("STRUCTURE_RERANK_ENABLED", "true").lower() != "false"
+CONFIDENCE_GATE_ENABLED = os.getenv("CONFIDENCE_GATE_ENABLED", "true").lower() != "false"
+LOW_CONF_TOP_MARGIN = float(os.getenv("LOW_CONF_TOP_MARGIN", "0.05"))
+LOW_CONF_ROOT_SHARE = float(os.getenv("LOW_CONF_ROOT_SHARE", "0.45"))
+LOW_CONF_TOP_SCORE = float(os.getenv("LOW_CONF_TOP_SCORE", "0.20"))
+ENABLE_ANCHOR_GATE = os.getenv("ENABLE_ANCHOR_GATE", "true").lower() != "false"
 
 # 全局初始化检索依赖（与 api 共用 embedding_service，保证 BM25 状态一致）
 _milvus_manager = MilvusManager()
 _parent_chunk_store = ParentChunkStore()
 
 _stepback_model = None
+_ANCHOR_PATTERN = re.compile(
+    r"(第[一二三四五六七八九十百千万零两0-9]+[编章节条部分款项]|"
+    r"\d+(?:\.\d+){1,4}|"
+    r"[一二三四五六七八九十]+、|"
+    r"[（(][一二三四五六七八九十0-9A-Za-z]+[)）]|"
+    r"附录[A-Za-z0-9一二三四五六七八九十]+|"
+    r"附件[0-9一二三四五六七八九十]+)"
+)
+
+
+def _doc_retrieval_text(doc: dict) -> str:
+    return str(doc.get("retrieval_text") or doc.get("text") or "")
+
+
+def _candidate_trace(docs: List[dict]) -> List[dict]:
+    traced: List[dict] = []
+    for doc in docs:
+        traced.append(
+            {
+                "chunk_id": doc.get("chunk_id", ""),
+                "root_chunk_id": doc.get("root_chunk_id", ""),
+                "anchor_id": doc.get("anchor_id", ""),
+                "filename": doc.get("filename", ""),
+                "text_preview": _doc_retrieval_text(doc)[:240],
+                "score": doc.get("score"),
+                "rerank_score": doc.get("rerank_score"),
+                "final_score": doc.get("final_score"),
+            }
+        )
+    return traced
 
 
 def _get_rerank_endpoint() -> str:
@@ -105,6 +144,184 @@ def _auto_merge_documents(docs: List[dict], top_k: int) -> Tuple[List[dict], Dic
     }
 
 
+def _apply_structure_rerank(docs: List[dict], top_k: int) -> Tuple[List[dict], Dict[str, Any]]:
+    if not STRUCTURE_RERANK_ENABLED:
+        limited = docs[:top_k]
+        return limited, {
+            "structure_rerank_enabled": False,
+            "structure_rerank_applied": False,
+            "structure_rerank_root_weight": STRUCTURE_RERANK_ROOT_WEIGHT,
+            "same_root_cap": SAME_ROOT_CAP,
+            "dominant_root_id": None,
+            "dominant_root_share": 0.0,
+            "dominant_root_support": 0,
+        }
+    if not docs:
+        return [], {
+            "structure_rerank_enabled": STRUCTURE_RERANK_ENABLED,
+            "structure_rerank_applied": False,
+            "structure_rerank_root_weight": STRUCTURE_RERANK_ROOT_WEIGHT,
+            "same_root_cap": SAME_ROOT_CAP,
+            "dominant_root_id": None,
+            "dominant_root_share": 0.0,
+            "dominant_root_support": 0,
+        }
+
+    grouped: Dict[str, List[dict]] = defaultdict(list)
+    for doc in docs:
+        root_id = (doc.get("root_chunk_id") or doc.get("chunk_id") or "").strip()
+        if not root_id:
+            root_id = f"__orphan__:{len(grouped)}"
+        grouped[root_id].append(doc)
+
+    root_scores: Dict[str, float] = {}
+    for root_id, items in grouped.items():
+        root_scores[root_id] = max(
+            float(item.get("rerank_score", item.get("score", 0.0)) or 0.0)
+            for item in items
+        )
+
+    scored_docs = []
+    for doc in docs:
+        leaf_score = float(doc.get("rerank_score", doc.get("score", 0.0)) or 0.0)
+        root_id = (doc.get("root_chunk_id") or doc.get("chunk_id") or "").strip()
+        root_score = root_scores.get(root_id, leaf_score)
+        final_score = (1.0 - STRUCTURE_RERANK_ROOT_WEIGHT) * leaf_score + STRUCTURE_RERANK_ROOT_WEIGHT * root_score
+        enriched = dict(doc)
+        enriched["leaf_score"] = leaf_score
+        enriched["root_score"] = root_score
+        enriched["final_score"] = final_score
+        scored_docs.append(enriched)
+
+    scored_docs.sort(key=lambda item: item.get("final_score", 0.0), reverse=True)
+    limited: List[dict] = []
+    per_root: Dict[str, int] = defaultdict(int)
+    for doc in scored_docs:
+        root_id = (doc.get("root_chunk_id") or doc.get("chunk_id") or "").strip()
+        if per_root[root_id] >= SAME_ROOT_CAP:
+            continue
+        limited.append(doc)
+        per_root[root_id] += 1
+        if len(limited) >= top_k:
+            break
+
+    root_total_scores: Dict[str, float] = defaultdict(float)
+    for doc in limited:
+        root_id = (doc.get("root_chunk_id") or doc.get("chunk_id") or "").strip()
+        root_total_scores[root_id] += float(doc.get("final_score", 0.0) or 0.0)
+
+    dominant_root_id = None
+    dominant_root_share = 0.0
+    dominant_root_support = 0
+    total_score = sum(root_total_scores.values())
+    if root_total_scores:
+        dominant_root_id = max(root_total_scores, key=root_total_scores.get)
+        dominant_root_support = per_root.get(dominant_root_id, 0)
+        if total_score > 0:
+            dominant_root_share = root_total_scores[dominant_root_id] / total_score
+
+    return limited, {
+        "structure_rerank_enabled": STRUCTURE_RERANK_ENABLED,
+        "structure_rerank_applied": True,
+        "structure_rerank_root_weight": STRUCTURE_RERANK_ROOT_WEIGHT,
+        "same_root_cap": SAME_ROOT_CAP,
+        "dominant_root_id": dominant_root_id,
+        "dominant_root_share": dominant_root_share,
+        "dominant_root_support": dominant_root_support,
+    }
+
+
+def _extract_query_anchors(query: str) -> list[str]:
+    if not query:
+        return []
+    return list(dict.fromkeys(_ANCHOR_PATTERN.findall(query)))
+
+
+def _doc_matches_anchor(doc: dict, anchor: str) -> bool:
+    if not anchor:
+        return False
+    for value in (
+        doc.get("anchor_id"),
+        doc.get("section_title"),
+        doc.get("section_path"),
+    ):
+        if anchor and anchor in str(value or ""):
+            return True
+    prefix = _doc_retrieval_text(doc).split("\n", 1)[0]
+    return anchor in prefix
+
+
+def _evaluate_retrieval_confidence(query: str, docs: List[dict]) -> Dict[str, Any]:
+    if not docs:
+        return {
+            "confidence_gate_enabled": CONFIDENCE_GATE_ENABLED,
+            "fallback_required": CONFIDENCE_GATE_ENABLED,
+            "confidence_reasons": ["no_docs"] if CONFIDENCE_GATE_ENABLED else [],
+            "top_margin": 0.0,
+            "top_score": 0.0,
+            "dominant_root_share": 0.0,
+            "dominant_root_support": 0,
+            "anchor_match": False,
+            "query_anchors": [],
+        }
+
+    top_score = float(docs[0].get("final_score", docs[0].get("rerank_score", docs[0].get("score", 0.0))) or 0.0)
+    second_score = (
+        float(docs[1].get("final_score", docs[1].get("rerank_score", docs[1].get("score", 0.0))) or 0.0)
+        if len(docs) > 1
+        else 0.0
+    )
+    top_margin = top_score - second_score
+
+    root_total_scores: Dict[str, float] = defaultdict(float)
+    root_supports: Dict[str, int] = defaultdict(int)
+    for doc in docs[:5]:
+        root_id = (doc.get("root_chunk_id") or doc.get("chunk_id") or "").strip()
+        score = float(doc.get("final_score", doc.get("rerank_score", doc.get("score", 0.0))) or 0.0)
+        root_total_scores[root_id] += score
+        root_supports[root_id] += 1
+
+    dominant_root_share = 0.0
+    dominant_root_support = 0
+    if root_total_scores:
+        dominant_root_id = max(root_total_scores, key=root_total_scores.get)
+        total = sum(root_total_scores.values())
+        dominant_root_support = root_supports[dominant_root_id]
+        dominant_root_share = (root_total_scores[dominant_root_id] / total) if total else 0.0
+
+    anchors = _extract_query_anchors(query) if ENABLE_ANCHOR_GATE else []
+    anchor_match = True
+    if anchors:
+        anchor_match = False
+        for anchor in anchors:
+            if any(_doc_matches_anchor(doc, anchor) for doc in docs[:2]):
+                anchor_match = True
+                break
+
+    reasons: list[str] = []
+    if anchors and not anchor_match:
+        reasons.append("anchor_mismatch")
+    if top_margin < LOW_CONF_TOP_MARGIN and dominant_root_share < LOW_CONF_ROOT_SHARE:
+        reasons.append("weak_margin_and_root")
+    if top_score < LOW_CONF_TOP_SCORE and top_margin < LOW_CONF_TOP_MARGIN:
+        reasons.append("low_score_and_margin")
+
+    if not CONFIDENCE_GATE_ENABLED:
+        reasons = []
+
+    return {
+        "confidence_gate_enabled": CONFIDENCE_GATE_ENABLED,
+        "fallback_required": bool(reasons),
+        "confidence_reasons": reasons,
+        "top_margin": top_margin,
+        "top_score": top_score,
+        "dominant_root_share": dominant_root_share,
+        "dominant_root_support": dominant_root_support,
+        "anchor_match": anchor_match,
+        "query_anchors": anchors,
+    }
+
+
 def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[dict], Dict[str, Any]]:
     docs_with_rank = [{**doc, "rrf_rank": i} for i, doc in enumerate(docs, 1)]
     meta: Dict[str, Any] = {
@@ -121,7 +338,7 @@ def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[di
     payload = {
         "model": RERANK_MODEL,
         "query": query,
-        "documents": [doc.get("text", "") for doc in docs_with_rank],
+        "documents": [_doc_retrieval_text(doc) for doc in docs_with_rank],
         "top_n": min(top_k, len(docs_with_rank)),
         "return_documents": False,
     }
@@ -293,6 +510,7 @@ def retrieve_context_documents(filenames: list[str] | None, limit_per_file: int 
             filter_expr=f"chunk_level == {LEAF_RETRIEVE_LEVEL} and {filename_filter}",
             output_fields=[
                 "text",
+                "retrieval_text",
                 "filename",
                 "file_type",
                 "page_number",
@@ -300,6 +518,10 @@ def retrieve_context_documents(filenames: list[str] | None, limit_per_file: int 
                 "parent_chunk_id",
                 "root_chunk_id",
                 "chunk_level",
+                "chunk_role",
+                "section_title",
+                "section_path",
+                "anchor_id",
                 "chunk_idx",
             ],
             limit=limit_per_file,
@@ -341,15 +563,20 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
             filter_expr=filter_expr,
         )
         reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=top_k)
-        merged_docs, merge_meta = _auto_merge_documents(docs=reranked, top_k=top_k)
+        reranked_docs, structure_meta = _apply_structure_rerank(docs=reranked, top_k=top_k)
+        confidence_meta = _evaluate_retrieval_confidence(query=query, docs=reranked_docs)
         rerank_meta["retrieval_mode"] = "hybrid"
         rerank_meta["candidate_k"] = candidate_k
         rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
         rerank_meta["context_files"] = context_files or []
         rerank_meta["hybrid_error"] = None
         rerank_meta["dense_error"] = None
-        rerank_meta.update(merge_meta)
-        return {"docs": merged_docs, "meta": rerank_meta}
+        rerank_meta.update(structure_meta)
+        rerank_meta.update(confidence_meta)
+        rerank_meta["candidates_before_rerank"] = _candidate_trace(retrieved)
+        rerank_meta["candidates_after_rerank"] = _candidate_trace(reranked)
+        rerank_meta["candidates_after_structure_rerank"] = _candidate_trace(reranked_docs)
+        return {"docs": reranked_docs, "meta": rerank_meta}
     except Exception as exc:
         hybrid_error = str(exc)
         try:
@@ -361,15 +588,20 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
                 filter_expr=filter_expr,
             )
             reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=top_k)
-            merged_docs, merge_meta = _auto_merge_documents(docs=reranked, top_k=top_k)
+            reranked_docs, structure_meta = _apply_structure_rerank(docs=reranked, top_k=top_k)
+            confidence_meta = _evaluate_retrieval_confidence(query=query, docs=reranked_docs)
             rerank_meta["retrieval_mode"] = "dense_fallback"
             rerank_meta["candidate_k"] = candidate_k
             rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
             rerank_meta["context_files"] = context_files or []
             rerank_meta["hybrid_error"] = hybrid_error
             rerank_meta["dense_error"] = None
-            rerank_meta.update(merge_meta)
-            return {"docs": merged_docs, "meta": rerank_meta}
+            rerank_meta.update(structure_meta)
+            rerank_meta.update(confidence_meta)
+            rerank_meta["candidates_before_rerank"] = _candidate_trace(retrieved)
+            rerank_meta["candidates_after_rerank"] = _candidate_trace(reranked)
+            rerank_meta["candidates_after_structure_rerank"] = _candidate_trace(reranked_docs)
+            return {"docs": reranked_docs, "meta": rerank_meta}
         except Exception as dense_exc:
             return {
                 "docs": [],
@@ -385,11 +617,21 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
                     "candidate_k": candidate_k,
                     "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
                     "context_files": context_files or [],
+                    "structure_rerank_applied": False,
+                    "structure_rerank_enabled": STRUCTURE_RERANK_ENABLED,
+                    "structure_rerank_root_weight": STRUCTURE_RERANK_ROOT_WEIGHT,
+                    "same_root_cap": SAME_ROOT_CAP,
                     "auto_merge_enabled": AUTO_MERGE_ENABLED,
                     "auto_merge_applied": False,
                     "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
                     "auto_merge_replaced_chunks": 0,
                     "auto_merge_steps": 0,
                     "candidate_count": 0,
+                    "confidence_gate_enabled": CONFIDENCE_GATE_ENABLED,
+                    "fallback_required": CONFIDENCE_GATE_ENABLED,
+                    "confidence_reasons": ["retrieve_failed"] if CONFIDENCE_GATE_ENABLED else [],
+                    "candidates_before_rerank": [],
+                    "candidates_after_rerank": [],
+                    "candidates_after_structure_rerank": [],
                 },
             }
