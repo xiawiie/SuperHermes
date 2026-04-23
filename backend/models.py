@@ -1,14 +1,16 @@
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
 
+_BJ_TZ = timezone(timedelta(hours=8))
+
 
 def local_now() -> datetime:
-    """返回当前本地时间（不带时区信息，与数据库 DateTime 类型匹配）。"""
-    return datetime.now()
+    """返回当前北京时间（UTC+8，不带时区信息，与数据库 DateTime 类型匹配）。"""
+    return datetime.now(_BJ_TZ).replace(tzinfo=None)
 
 
 class User(Base):

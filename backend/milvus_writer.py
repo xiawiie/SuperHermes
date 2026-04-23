@@ -1,4 +1,4 @@
-"""文档向量化并写入 Milvus - 支持密集 + 稀疏向量。"""
+"""Write chunk documents into Milvus with dense and sparse embeddings."""
 from __future__ import annotations
 
 from embedding import EmbeddingService, embedding_service as _default_embedding_service
@@ -6,7 +6,7 @@ from milvus_client import MilvusManager
 
 
 class MilvusWriter:
-    """文档向量化并写入 Milvus 服务 - 支持混合检索。"""
+    """Persist leaf chunks into Milvus."""
 
     def __init__(
         self,
@@ -17,47 +17,64 @@ class MilvusWriter:
         self.milvus_manager = milvus_manager or MilvusManager()
 
     def write_documents(self, documents: list[dict], batch_size: int = 50) -> None:
-        """
-        批量写入文档到 Milvus（同时生成密集和稀疏向量）。
-
-        :param documents: 文档列表
-        :param batch_size: 批次大小
-        """
         if not documents:
             return
-
         if batch_size <= 0:
             raise ValueError("batch_size must be > 0")
 
         self.milvus_manager.init_collection()
 
-        all_texts = [doc["text"] for doc in documents]
-        self.embedding_service.increment_add_documents(all_texts)
-
         total = len(documents)
         for i in range(0, total, batch_size):
             batch = documents[i:i + batch_size]
-            texts = [doc["text"] for doc in batch]
-
-            # 同时生成密集向量和稀疏向量
-            dense_embeddings, sparse_embeddings = self.embedding_service.get_all_embeddings(texts)
+            prepared_batch = self._prepare_batch(batch)
+            if not prepared_batch:
+                continue
 
             insert_data = [
                 {
                     "dense_embedding": dense_emb,
                     "sparse_embedding": sparse_emb,
                     "text": doc["text"],
+                    "retrieval_text": doc.get("retrieval_text", doc["text"]),
                     "filename": doc["filename"],
                     "file_type": doc["file_type"],
                     "file_path": doc.get("file_path", ""),
                     "page_number": doc.get("page_number", 0),
+                    "page_start": doc.get("page_start", doc.get("page_number", 0)),
+                    "page_end": doc.get("page_end", doc.get("page_number", 0)),
                     "chunk_idx": doc.get("chunk_idx", 0),
                     "chunk_id": doc.get("chunk_id", ""),
                     "parent_chunk_id": doc.get("parent_chunk_id", ""),
                     "root_chunk_id": doc.get("root_chunk_id", ""),
                     "chunk_level": doc.get("chunk_level", 0),
+                    "chunk_role": doc.get("chunk_role", ""),
+                    "section_title": doc.get("section_title", ""),
+                    "section_type": doc.get("section_type", ""),
+                    "section_path": doc.get("section_path", ""),
+                    "anchor_id": doc.get("anchor_id", ""),
                 }
-                for doc, dense_emb, sparse_emb in zip(batch, dense_embeddings, sparse_embeddings)
+                for doc, dense_emb, sparse_emb in prepared_batch
             ]
 
             self.milvus_manager.insert(insert_data)
+
+    def _prepare_batch(self, batch: list[dict]) -> list[tuple[dict, list[float], dict]]:
+        texts = [doc.get("retrieval_text") or doc["text"] for doc in batch]
+        try:
+            dense_embeddings, sparse_embeddings = self.embedding_service.get_all_embeddings(texts)
+            self.embedding_service.increment_add_documents(texts)
+            return list(zip(batch, dense_embeddings, sparse_embeddings))
+        except Exception:
+            prepared: list[tuple[dict, list[float], dict]] = []
+            successful_texts: list[str] = []
+            for doc, text in zip(batch, texts):
+                try:
+                    dense_embeddings, sparse_embeddings = self.embedding_service.get_all_embeddings([text])
+                except Exception:
+                    continue
+                prepared.append((doc, dense_embeddings[0], sparse_embeddings[0]))
+                successful_texts.append(text)
+            if successful_texts:
+                self.embedding_service.increment_add_documents(successful_texts)
+            return prepared

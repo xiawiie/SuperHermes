@@ -127,15 +127,19 @@ class MilvusManager:
             schema.add_field("dense_embedding", DataType.FLOAT_VECTOR, dim=dense_dim)
             schema.add_field("sparse_embedding", DataType.SPARSE_FLOAT_VECTOR)
             schema.add_field("text", DataType.VARCHAR, max_length=2000)
+            schema.add_field("retrieval_text", DataType.VARCHAR, max_length=4000)
             schema.add_field("filename", DataType.VARCHAR, max_length=255)
             schema.add_field("file_type", DataType.VARCHAR, max_length=50)
             schema.add_field("file_path", DataType.VARCHAR, max_length=1024)
             schema.add_field("page_number", DataType.INT64)
+            schema.add_field("page_start", DataType.INT64)
+            schema.add_field("page_end", DataType.INT64)
             schema.add_field("chunk_idx", DataType.INT64)
             schema.add_field("chunk_id", DataType.VARCHAR, max_length=512)
             schema.add_field("parent_chunk_id", DataType.VARCHAR, max_length=512)
             schema.add_field("root_chunk_id", DataType.VARCHAR, max_length=512)
             schema.add_field("chunk_level", DataType.INT64)
+            schema.add_field("chunk_role", DataType.VARCHAR, max_length=32)
 
             index_params = client.prepare_index_params()
             index_params.add_index(
@@ -231,13 +235,17 @@ class MilvusManager:
             filter_expr=filter_expr,
             output_fields=[
                 "text",
+                "retrieval_text",
                 "filename",
                 "file_type",
                 "page_number",
+                "page_start",
+                "page_end",
                 "chunk_id",
                 "parent_chunk_id",
                 "root_chunk_id",
                 "chunk_level",
+                "chunk_role",
                 "chunk_idx",
             ],
             limit=len(ids),
@@ -253,14 +261,22 @@ class MilvusManager:
     ) -> list[dict]:
         output_fields = [
             "text",
+            "retrieval_text",
             "filename",
             "file_type",
             "page_number",
+            "page_start",
+            "page_end",
             "chunk_id",
             "parent_chunk_id",
             "root_chunk_id",
             "chunk_level",
+            "chunk_role",
             "chunk_idx",
+            "section_title",
+            "section_type",
+            "section_path",
+            "anchor_id",
         ]
 
         dense_search = AnnSearchRequest(
@@ -297,14 +313,22 @@ class MilvusManager:
                     {
                         "id": hit.get("id"),
                         "text": hit.get("text", ""),
+                        "retrieval_text": hit.get("retrieval_text", ""),
                         "filename": hit.get("filename", ""),
                         "file_type": hit.get("file_type", ""),
                         "page_number": hit.get("page_number", 0),
+                        "page_start": hit.get("page_start", hit.get("page_number", 0)),
+                        "page_end": hit.get("page_end", hit.get("page_number", 0)),
                         "chunk_id": hit.get("chunk_id", ""),
                         "parent_chunk_id": hit.get("parent_chunk_id", ""),
                         "root_chunk_id": hit.get("root_chunk_id", ""),
                         "chunk_level": hit.get("chunk_level", 0),
+                        "chunk_role": hit.get("chunk_role", ""),
                         "chunk_idx": hit.get("chunk_idx", 0),
+                        "section_title": hit.get("section_title", ""),
+                        "section_type": hit.get("section_type", ""),
+                        "section_path": hit.get("section_path", ""),
+                        "anchor_id": hit.get("anchor_id", ""),
                         "score": hit.get("distance", 0.0),
                     }
                 )
@@ -326,14 +350,22 @@ class MilvusManager:
                 limit=top_k,
                 output_fields=[
                     "text",
+                    "retrieval_text",
                     "filename",
                     "file_type",
                     "page_number",
+                    "page_start",
+                    "page_end",
                     "chunk_id",
                     "parent_chunk_id",
                     "root_chunk_id",
                     "chunk_level",
+                    "chunk_role",
                     "chunk_idx",
+                    "section_title",
+                    "section_type",
+                    "section_path",
+                    "anchor_id",
                 ],
                 filter=filter_expr,
             ),
@@ -348,14 +380,22 @@ class MilvusManager:
                     {
                         "id": hit.get("id"),
                         "text": entity.get("text", ""),
+                        "retrieval_text": entity.get("retrieval_text", ""),
                         "filename": entity.get("filename", ""),
                         "file_type": entity.get("file_type", ""),
                         "page_number": entity.get("page_number", 0),
+                        "page_start": entity.get("page_start", entity.get("page_number", 0)),
+                        "page_end": entity.get("page_end", entity.get("page_number", 0)),
                         "chunk_id": entity.get("chunk_id", ""),
                         "parent_chunk_id": entity.get("parent_chunk_id", ""),
                         "root_chunk_id": entity.get("root_chunk_id", ""),
                         "chunk_level": entity.get("chunk_level", 0),
+                        "chunk_role": entity.get("chunk_role", ""),
                         "chunk_idx": entity.get("chunk_idx", 0),
+                        "section_title": entity.get("section_title", ""),
+                        "section_type": entity.get("section_type", ""),
+                        "section_path": entity.get("section_path", ""),
+                        "anchor_id": entity.get("anchor_id", ""),
                         "score": hit.get("distance", 0.0),
                     }
                 )
