@@ -138,6 +138,23 @@ def _doc_text(doc: dict) -> str:
     return " ".join(str(part) for part in parts if part)
 
 
+def _doc_page_candidates(doc: dict) -> set[str]:
+    raw_page = doc.get("page_number")
+    pages: set[str] = set()
+    try:
+        page = int(raw_page)
+    except (TypeError, ValueError):
+        return pages
+    pages.add(str(page))
+    pages.add(str(page + 1))
+    return pages
+
+
+def _doc_page_refs(doc: dict) -> set[str]:
+    filename = str(doc.get("filename") or "")
+    return {f"{filename}::p{page}" for page in _doc_page_candidates(doc)}
+
+
 _NUMERAL_NE = r"(?<![一二三四五六七八九十百千万零两\d])"
 _NUMERAL_NLA = r"(?![一二三四五六七八九十百千万零两\d])"
 
@@ -160,24 +177,42 @@ def _doc_match_flags(
     expected_root_ids: list[str] | None = None,
     expected_anchors: list[str] | None = None,
     expected_keywords: list[str] | None = None,
+    expected_files: list[str] | None = None,
+    expected_pages: list[str] | None = None,
+    expected_page_refs: list[str] | None = None,
+    expected_all_keywords: list[str] | None = None,
+    expected_keyword_policy: dict[str, Any] | None = None,
 ) -> dict[str, bool]:
     chunk_ids = set(_as_list(expected_chunk_ids))
     root_ids = set(_as_list(expected_root_ids))
     anchors = _as_list(expected_anchors)
     keywords = _as_list(expected_keywords)
+    all_keywords = _as_list(expected_all_keywords) or keywords
+    files = set(_as_list(expected_files))
+    pages = set(_as_list(expected_pages))
+    page_refs = set(_as_list(expected_page_refs))
     text = _doc_text(doc)
 
     chunk_hit = bool(str(doc.get("chunk_id") or "") in chunk_ids)
     root_hit = bool(str(doc.get("root_chunk_id") or "") in root_ids)
     anchor_hit = any(_anchor_match(anchor, text) for anchor in anchors)
     keyword_hit = any(keyword and keyword in text for keyword in keywords)
+    keyword_matches = sum(1 for keyword in all_keywords if keyword and keyword in text)
+    min_keyword_match = int((expected_keyword_policy or {}).get("min_match") or (1 if all_keywords else 0))
+    keyword_required_hit = bool(all_keywords) and keyword_matches >= min_keyword_match
+    file_hit = bool(str(doc.get("filename") or "") in files)
+    page_hit = bool(pages and _doc_page_candidates(doc) & pages)
+    page_ref_hit = bool(page_refs and _doc_page_refs(doc) & page_refs)
 
     return {
         "chunk": chunk_hit,
         "root": root_hit,
         "anchor": anchor_hit,
         "keyword": keyword_hit,
-        "any": chunk_hit or root_hit or anchor_hit or keyword_hit,
+        "keyword_required": keyword_required_hit,
+        "file": file_hit,
+        "page": page_hit or page_ref_hit,
+        "any": chunk_hit or root_hit or anchor_hit or keyword_required_hit or keyword_hit or page_ref_hit or page_hit or file_hit,
     }
 
 
@@ -187,8 +222,14 @@ def first_relevant_rank(
     expected_root_ids: list[str] | None = None,
     expected_anchors: list[str] | None = None,
     expected_keywords: list[str] | None = None,
+    expected_files: list[str] | None = None,
+    expected_pages: list[str] | None = None,
+    expected_page_refs: list[str] | None = None,
+    expected_all_keywords: list[str] | None = None,
+    expected_keyword_policy: dict[str, Any] | None = None,
     top_k: int = 5,
 ) -> int | None:
+    prefer_chunk = bool(_as_list(expected_chunk_ids))
     for idx, doc in enumerate((docs or [])[:top_k], 1):
         flags = _doc_match_flags(
             doc,
@@ -196,8 +237,15 @@ def first_relevant_rank(
             expected_root_ids=expected_root_ids,
             expected_anchors=expected_anchors,
             expected_keywords=expected_keywords,
+            expected_files=expected_files,
+            expected_pages=expected_pages,
+            expected_page_refs=expected_page_refs,
+            expected_all_keywords=expected_all_keywords,
+            expected_keyword_policy=expected_keyword_policy,
         )
-        if flags["any"]:
+        if prefer_chunk and flags["chunk"]:
+            return idx
+        if not prefer_chunk and flags["any"]:
             return idx
     return None
 
@@ -208,22 +256,37 @@ def _count_expected_matches(
     expected_root_ids: list[str] | None = None,
     expected_anchors: list[str] | None = None,
     expected_keywords: list[str] | None = None,
+    expected_files: list[str] | None = None,
+    expected_pages: list[str] | None = None,
+    expected_page_refs: list[str] | None = None,
+    expected_all_keywords: list[str] | None = None,
+    expected_keyword_policy: dict[str, Any] | None = None,
 ) -> tuple[int, int]:
     """Return (matched_count, total_count) for distinct expected items found in top docs."""
     chunk_ids = set(_as_list(expected_chunk_ids))
     root_ids = set(_as_list(expected_root_ids))
     anchors = _as_list(expected_anchors)
     keywords = _as_list(expected_keywords)
+    files = set(_as_list(expected_files))
+    pages = set(_as_list(expected_pages))
+    page_refs = set(_as_list(expected_page_refs))
+    all_keywords = _as_list(expected_all_keywords) or keywords
 
-    total = len(chunk_ids) + len(root_ids) + len(anchors) + len(keywords)
+    total = len(chunk_ids) + len(root_ids) + len(anchors) + len(keywords) + len(files) + len(pages) + len(page_refs)
     if total == 0:
         return 0, 0
 
     found = 0
     doc_chunk_ids = {str(doc.get("chunk_id") or "") for doc in top_docs}
     doc_root_ids = {str(doc.get("root_chunk_id") or "") for doc in top_docs}
+    doc_files = {str(doc.get("filename") or "") for doc in top_docs}
+    doc_pages = set().union(*(_doc_page_candidates(doc) for doc in top_docs)) if top_docs else set()
+    doc_page_refs = set().union(*(_doc_page_refs(doc) for doc in top_docs)) if top_docs else set()
     found += len(chunk_ids & doc_chunk_ids)
     found += len(root_ids & doc_root_ids)
+    found += len(files & doc_files)
+    found += len(pages & doc_pages)
+    found += len(page_refs & doc_page_refs)
 
     for anchor in anchors:
         if any(_anchor_match(anchor, _doc_text(doc)) for doc in top_docs):
@@ -241,6 +304,11 @@ def compute_retrieval_metrics(
     expected_root_ids: list[str] | None = None,
     expected_anchors: list[str] | None = None,
     expected_keywords: list[str] | None = None,
+    expected_files: list[str] | None = None,
+    expected_pages: list[str] | None = None,
+    expected_page_refs: list[str] | None = None,
+    expected_all_keywords: list[str] | None = None,
+    expected_keyword_policy: dict[str, Any] | None = None,
     top_k: int = 5,
 ) -> dict[str, Any]:
     top_docs = (docs or [])[:top_k]
@@ -249,6 +317,9 @@ def compute_retrieval_metrics(
         or _as_list(expected_root_ids)
         or _as_list(expected_anchors)
         or _as_list(expected_keywords)
+        or _as_list(expected_files)
+        or _as_list(expected_pages)
+        or _as_list(expected_page_refs)
     )
     flags = [
         _doc_match_flags(
@@ -257,16 +328,27 @@ def compute_retrieval_metrics(
             expected_root_ids=expected_root_ids,
             expected_anchors=expected_anchors,
             expected_keywords=expected_keywords,
+            expected_files=expected_files,
+            expected_pages=expected_pages,
+            expected_page_refs=expected_page_refs,
+            expected_all_keywords=expected_all_keywords,
+            expected_keyword_policy=expected_keyword_policy,
         )
         for doc in top_docs
     ]
-    relevant_count = sum(1 for item in flags if item["any"])
+    prefer_chunk = bool(_as_list(expected_chunk_ids))
+    relevant_count = sum(1 for item in flags if item["chunk"]) if prefer_chunk else sum(1 for item in flags if item["any"])
     rank = first_relevant_rank(
         top_docs,
         expected_chunk_ids=expected_chunk_ids,
         expected_root_ids=expected_root_ids,
         expected_anchors=expected_anchors,
         expected_keywords=expected_keywords,
+        expected_files=expected_files,
+        expected_pages=expected_pages,
+        expected_page_refs=expected_page_refs,
+        expected_all_keywords=expected_all_keywords,
+        expected_keyword_policy=expected_keyword_policy,
         top_k=top_k,
     )
     returned_count = len(top_docs)
@@ -278,8 +360,15 @@ def compute_retrieval_metrics(
         expected_root_ids=expected_root_ids,
         expected_anchors=expected_anchors,
         expected_keywords=expected_keywords,
+        expected_files=expected_files,
+        expected_pages=expected_pages,
+        expected_page_refs=expected_page_refs,
+        expected_all_keywords=expected_all_keywords,
+        expected_keyword_policy=expected_keyword_policy,
     )
     recall = (matched_expected / total_expected) if total_expected > 0 else None
+    chunk_hit = any(item["chunk"] for item in flags)
+    mrr = (1.0 / rank) if rank else 0.0
 
     return {
         "top_k": top_k,
@@ -289,9 +378,14 @@ def compute_retrieval_metrics(
         "root_hit_at_5": any(item["root"] for item in flags),
         "anchor_hit_at_5": any(item["anchor"] for item in flags),
         "keyword_hit_at_5": any(item["keyword"] for item in flags),
-        "legacy_chunk_hit_at_5": any(item["chunk"] for item in flags),
+        "keyword_required_hit_at_5": any(item["keyword_required"] for item in flags),
+        "file_hit_at_5": any(item["file"] for item in flags),
+        "page_hit_at_5": any(item["page"] for item in flags),
+        "chunk_hit_at_5": chunk_hit,
+        "legacy_chunk_hit_at_5": chunk_hit,
         "first_relevant_rank": rank,
-        "mrr": (1.0 / rank) if rank else 0.0,
+        "mrr": mrr,
+        "positive_chunk_mrr": mrr if chunk_hit else 0.0,
         "context_precision_id_at_5": precision if has_expected else None,
         "irrelevant_context_ratio_at_5": (1.0 - precision) if has_expected else None,
         "recall_at_5": recall,
@@ -390,11 +484,16 @@ def summarize_results(rows: list[dict], variants: list[str]) -> dict[str, Any]:
         summary["variants"][variant] = {
             "rows": len(variant_rows),
             "hit_at_5": _average(variant_rows, "hit_at_5"),
+            "file_hit_at_5": _average(variant_rows, "file_hit_at_5"),
+            "page_hit_at_5": _average(variant_rows, "page_hit_at_5"),
+            "chunk_hit_at_5": _average(variant_rows, "chunk_hit_at_5"),
             "root_hit_at_5": _average(variant_rows, "root_hit_at_5"),
             "anchor_hit_at_5": _average(variant_rows, "anchor_hit_at_5"),
             "keyword_hit_at_5": _average(variant_rows, "keyword_hit_at_5"),
+            "keyword_required_hit_at_5": _average(variant_rows, "keyword_required_hit_at_5"),
             "legacy_chunk_hit_at_5": _average(variant_rows, "legacy_chunk_hit_at_5"),
             "mrr": _average(variant_rows, "mrr"),
+            "positive_chunk_mrr": _average(variant_rows, "positive_chunk_mrr"),
             "context_precision_id_at_5": _average(variant_rows, "context_precision_id_at_5"),
             "irrelevant_context_ratio_at_5": _average(variant_rows, "irrelevant_context_ratio_at_5"),
             "recall_at_5": _average(variant_rows, "recall_at_5"),
@@ -420,19 +519,24 @@ def render_summary_markdown(summary: dict) -> str:
         "",
         "## Variant Metrics",
         "",
-        "| Variant | Rows | Hit@5 | Root@5 | Anchor@5 | Keyword@5 | MRR | CtxPrecision@5 | Recall@5 | Irrelevant@5 | Avg ms | Error | Fallback |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Variant | Rows | Hit@5 | File@5 | Page@5 | Chunk@5 | Root@5 | Anchor@5 | KeywordAny@5 | KeywordReq@5 | MRR | PosChunkMRR | CtxPrecision@5 | Recall@5 | Irrelevant@5 | Avg ms | Error | Fallback |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for variant, metrics in summary.get("variants", {}).items():
         lines.append(
-            "| {variant} | {rows} | {hit} | {root} | {anchor} | {keyword} | {mrr} | {precision} | {recall} | {irrelevant} | {latency} | {error} | {fallback} |".format(
+            "| {variant} | {rows} | {hit} | {file} | {page} | {chunk} | {root} | {anchor} | {keyword} | {keyword_required} | {mrr} | {positive_chunk_mrr} | {precision} | {recall} | {irrelevant} | {latency} | {error} | {fallback} |".format(
                 variant=variant,
                 rows=metrics.get("rows", 0),
                 hit=_fmt_metric(metrics.get("hit_at_5")),
+                file=_fmt_metric(metrics.get("file_hit_at_5")),
+                page=_fmt_metric(metrics.get("page_hit_at_5")),
+                chunk=_fmt_metric(metrics.get("chunk_hit_at_5")),
                 root=_fmt_metric(metrics.get("root_hit_at_5")),
                 anchor=_fmt_metric(metrics.get("anchor_hit_at_5")),
                 keyword=_fmt_metric(metrics.get("keyword_hit_at_5")),
+                keyword_required=_fmt_metric(metrics.get("keyword_required_hit_at_5")),
                 mrr=_fmt_metric(metrics.get("mrr")),
+                positive_chunk_mrr=_fmt_metric(metrics.get("positive_chunk_mrr")),
                 precision=_fmt_metric(metrics.get("context_precision_id_at_5")),
                 recall=_fmt_metric(metrics.get("recall_at_5")),
                 irrelevant=_fmt_metric(metrics.get("irrelevant_context_ratio_at_5")),
@@ -475,7 +579,7 @@ def _fmt_metric(value: Any) -> str:
     return str(value)
 
 
-def _expected_fields(record: dict) -> dict[str, list[str]]:
+def _expected_fields(record: dict) -> dict[str, Any]:
     expected_chunk_ids = (
         _as_list(record.get("expected_chunk_ids"))
         or _as_list(record.get("legacy_gold_chunk_ids"))
@@ -486,6 +590,11 @@ def _expected_fields(record: dict) -> dict[str, list[str]]:
         "expected_root_ids": _as_list(record.get("expected_root_ids")),
         "expected_anchors": _as_list(record.get("expected_anchors")),
         "expected_keywords": _as_list(record.get("expected_keywords")),
+        "expected_files": _as_list(record.get("expected_files")) or _as_list(record.get("gold_files")),
+        "expected_pages": _as_list(record.get("expected_pages")) or _as_list(record.get("gold_pages")),
+        "expected_page_refs": _as_list(record.get("expected_page_refs")) or _as_list(record.get("gold_doc_ids")),
+        "expected_all_keywords": _as_list(record.get("expected_all_keywords")),
+        "expected_keyword_policy": record.get("expected_keyword_policy") if isinstance(record.get("expected_keyword_policy"), dict) else {},
     }
 
 
@@ -530,7 +639,11 @@ def evaluate_sample(record: dict, variant: str, top_k: int) -> dict[str, Any]:
         metrics = compute_retrieval_metrics(docs, top_k=top_k, **expected)
         metrics["error_rate"] = 0.0
         rag_trace = {"retrieved_chunks": docs, **meta}
-        diagnostic_result = classify_failure(query=query, rag_trace=rag_trace, **expected)
+        diagnostic_expected = {
+            key: expected[key]
+            for key in ("expected_chunk_ids", "expected_root_ids", "expected_anchors", "expected_keywords")
+        }
+        diagnostic_result = classify_failure(query=query, rag_trace=rag_trace, **diagnostic_expected)
         return {
             "sample_id": sample_id,
             "variant": variant,
@@ -559,12 +672,14 @@ def evaluate_sample(record: dict, variant: str, top_k: int) -> dict[str, Any]:
                 "returned_count": 0,
                 "scorable": bool(any(expected.values())),
                 "hit_at_5": False,
+                "chunk_hit_at_5": False,
                 "root_hit_at_5": False,
                 "anchor_hit_at_5": False,
                 "keyword_hit_at_5": False,
                 "legacy_chunk_hit_at_5": False,
                 "first_relevant_rank": None,
                 "mrr": 0.0,
+                "positive_chunk_mrr": 0.0,
                 "context_precision_id_at_5": 0.0 if any(expected.values()) else None,
                 "irrelevant_context_ratio_at_5": 1.0 if any(expected.values()) else None,
                 "relevant_count": 0,

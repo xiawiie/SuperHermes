@@ -91,6 +91,24 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
 
         self.assertFalse(metrics["anchor_hit_at_5"])
 
+    def test_chunk_hit_takes_precedence_when_gold_chunk_ids_exist(self):
+        docs = [
+            {"chunk_id": "leaf-a", "root_chunk_id": "root-wrong", "text": "keyword"},
+            {"chunk_id": "leaf-b", "root_chunk_id": "root-1", "text": "keyword"},
+        ]
+
+        metrics = compute_retrieval_metrics(
+            docs,
+            expected_chunk_ids=["leaf-b"],
+            expected_root_ids=["root-1"],
+            expected_keywords=["keyword"],
+            top_k=5,
+        )
+
+        self.assertTrue(metrics["chunk_hit_at_5"])
+        self.assertTrue(metrics["hit_at_5"])
+        self.assertEqual(metrics["first_relevant_rank"], 2)
+
     def test_compare_sample_rank_counts_win_loss_tie(self):
         old = {"hit_at_5": False, "first_relevant_rank": None}
         new = {"hit_at_5": True, "first_relevant_rank": 3}
