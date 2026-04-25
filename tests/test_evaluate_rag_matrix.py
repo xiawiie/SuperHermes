@@ -90,6 +90,20 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
         self.assertTrue(metrics["hard_negative_file_hit_at_5"])
         self.assertEqual(metrics["hard_negative_context_ratio_at_5"], 0.5)
 
+    def test_page_metrics_use_page_start_and_page_end_metadata(self):
+        docs = [{"filename": "manual.pdf", "page_start": 4, "page_end": 6, "chunk_id": "c1"}]
+
+        metrics = compute_retrieval_metrics(
+            docs,
+            expected_files=["manual.pdf"],
+            expected_pages=[5],
+            top_k=5,
+        )
+
+        self.assertTrue(metrics["file_hit_at_5"])
+        self.assertTrue(metrics["page_hit_at_5"])
+        self.assertTrue(metrics["file_page_hit_at_5"])
+
     def test_validate_eval_dataset_records_requires_benchmark_fields(self):
         report = validate_eval_dataset_records(
             [
@@ -250,6 +264,25 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
         self.assertEqual(summary["variants"]["A1"]["rewrite_strategy_distribution"], {"step_back": 1, "none": 1})
         self.assertEqual(summary["diagnostics"]["A0"]["recall_miss"], 1)
 
+    def test_summarize_file_page_uses_same_doc_metric_not_separate_hits(self):
+        rows = [
+            {
+                "sample_id": "s1",
+                "variant": "B0_legacy",
+                "metrics": {
+                    "file_hit_at_5": True,
+                    "page_hit_at_5": True,
+                    "file_page_hit_at_5": False,
+                    "mrr": 0.0,
+                },
+                "latency_ms": 1.0,
+            }
+        ]
+
+        summary = summarize_results(rows, variants=["B0_legacy"])
+
+        self.assertEqual(summary["variants"]["B0_legacy"]["file_page_hit_at_5"], 0.0)
+
     def test_phase2_sparse_variants_are_available(self):
         self.assertEqual(parse_variants("P1,P2,P3"), ["P1", "P2", "P3"])
         self.assertEqual(VARIANT_CONFIGS["P1"]["env"]["RERANK_TOP_N"], "0")
@@ -275,6 +308,8 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
         self.assertEqual(VARIANT_CONFIGS["B0_legacy"]["env"], {})
         self.assertEqual(VARIANT_CONFIGS["S1_linear"]["env"]["CONFIDENCE_GATE_ENABLED"], "false")
         self.assertEqual(VARIANT_CONFIGS["S1_linear"]["env"]["RAG_FALLBACK_ENABLED"], "false")
+        self.assertEqual(VARIANT_CONFIGS["S1_linear"]["env"]["QUERY_PLAN_ENABLED"], "false")
+        self.assertEqual(VARIANT_CONFIGS["S2"]["env"]["QUERY_PLAN_ENABLED"], "true")
         self.assertEqual(VARIANT_CONFIGS["S2"]["env"]["DOC_SCOPE_GLOBAL_RESERVE_WEIGHT"], "0.2")
         self.assertEqual(VARIANT_CONFIGS["S2HR"]["env"]["RERANK_PAIR_ENRICHMENT_ENABLED"], "true")
 

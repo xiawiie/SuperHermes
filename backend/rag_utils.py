@@ -52,21 +52,22 @@ LOW_CONF_TOP_MARGIN = float(os.getenv("LOW_CONF_TOP_MARGIN", "0.05"))
 LOW_CONF_ROOT_SHARE = float(os.getenv("LOW_CONF_ROOT_SHARE", "0.45"))
 LOW_CONF_TOP_SCORE = float(os.getenv("LOW_CONF_TOP_SCORE", "0.20"))
 ENABLE_ANCHOR_GATE = os.getenv("ENABLE_ANCHOR_GATE", "true").lower() != "false"
+QUERY_PLAN_ENABLED = _env_bool("QUERY_PLAN_ENABLED", False)
 RAG_CANDIDATE_K = int(os.getenv("RAG_CANDIDATE_K", "0"))
 RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "0"))
 RERANK_CPU_TOP_N_CAP = int(os.getenv("RERANK_CPU_TOP_N_CAP", "0"))
 RERANK_INPUT_K_CPU = int(os.getenv("RERANK_INPUT_K_CPU", "10"))
 RERANK_INPUT_K_GPU = int(os.getenv("RERANK_INPUT_K_GPU", "20"))
-RERANK_CACHE_ENABLED = os.getenv("RERANK_CACHE_ENABLED", "true").lower() != "false"
+RERANK_CACHE_ENABLED = _env_bool("RERANK_CACHE_ENABLED", True)
 RERANK_CACHE_TTL_SECONDS = int(os.getenv("RERANK_CACHE_TTL_SECONDS", "60"))
 MILVUS_SEARCH_EF = int(os.getenv("MILVUS_SEARCH_EF", "64"))
 MILVUS_SPARSE_DROP_RATIO = float(os.getenv("MILVUS_SPARSE_DROP_RATIO", "0.2"))
 MILVUS_RRF_K = int(os.getenv("MILVUS_RRF_K", "60"))
-DOC_SCOPE_GLOBAL_RESERVE_WEIGHT = float(os.getenv("DOC_SCOPE_GLOBAL_RESERVE_WEIGHT", "0.2"))
+DOC_SCOPE_GLOBAL_RESERVE_WEIGHT = min(1.0, max(0.0, float(os.getenv("DOC_SCOPE_GLOBAL_RESERVE_WEIGHT", "0.2"))))
 DOC_SCOPE_FILENAME_BOOST_WEIGHT = float(os.getenv("DOC_SCOPE_FILENAME_BOOST_WEIGHT", "0.15"))
-RERANK_PAIR_ENRICHMENT_ENABLED = os.getenv("RERANK_PAIR_ENRICHMENT_ENABLED", "false").lower() != "false"
-HEADING_LEXICAL_ENABLED = os.getenv("HEADING_LEXICAL_ENABLED", "false").lower() != "false"
-HEADING_LEXICAL_WEIGHT = float(os.getenv("HEADING_LEXICAL_WEIGHT", "0.20"))
+RERANK_PAIR_ENRICHMENT_ENABLED = _env_bool("RERANK_PAIR_ENRICHMENT_ENABLED", False)
+HEADING_LEXICAL_ENABLED = _env_bool("HEADING_LEXICAL_ENABLED", False)
+HEADING_LEXICAL_WEIGHT = min(1.0, max(0.0, float(os.getenv("HEADING_LEXICAL_WEIGHT", "0.20"))))
 
 # 全局初始化检索依赖（与 api 共用 embedding_service，保证 BM25 状态一致）
 _milvus_manager = MilvusManager()
@@ -217,11 +218,12 @@ def _apply_heading_lexical_scoring(
     for idx, doc in enumerate(candidates, 1):
         section_path = str(doc.get("section_path") or "")
         heading = str(doc.get("section_title") or "")
+        anchor_id = str(doc.get("anchor_id") or "")
 
         heading_lexical_score = (
             0.5 * SequenceMatcher(None, semantic_query, section_path).ratio()
             + 0.3 * SequenceMatcher(None, semantic_query, heading).ratio()
-            + 0.2 * (1.0 if any(a in heading or a in section_path for a in anchors) else 0.0)
+            + 0.2 * (1.0 if any(a in anchor_id or a in heading or a in section_path for a in anchors) else 0.0)
         )
 
         # Normalize RRF-like rank score: 1/(k+rank)
@@ -354,6 +356,11 @@ def _candidate_trace(docs: List[dict]) -> List[dict]:
                 "root_chunk_id": doc.get("root_chunk_id", ""),
                 "anchor_id": doc.get("anchor_id", ""),
                 "filename": doc.get("filename", ""),
+                "section_title": doc.get("section_title", ""),
+                "section_path": doc.get("section_path", ""),
+                "page_number": doc.get("page_number"),
+                "page_start": doc.get("page_start"),
+                "page_end": doc.get("page_end"),
                 "text_preview": _doc_retrieval_text(doc)[:240],
                 "score": doc.get("score"),
                 "rerank_score": doc.get("rerank_score"),
@@ -387,7 +394,7 @@ def _effective_rerank_top_n(top_k: int, candidate_count: int) -> int:
         return 0
     requested = RERANK_TOP_N if RERANK_TOP_N > 0 else top_k
     requested = max(top_k, requested)
-    if RERANK_DEVICE.lower() == "cpu" and RERANK_CPU_TOP_N_CAP > 0:
+    if _rerank_device_tier() == "cpu" and RERANK_CPU_TOP_N_CAP > 0:
         requested = min(requested, RERANK_CPU_TOP_N_CAP)
     return min(candidate_count, requested)
 
@@ -413,7 +420,7 @@ def _effective_rerank_input_k(rerank_top_n: int, candidate_count: int) -> tuple[
     cap = RERANK_INPUT_K_GPU if device_tier == "gpu" else RERANK_INPUT_K_CPU
     if cap <= 0:
         return candidate_count, device_tier, cap
-    return min(candidate_count, max(rerank_top_n, cap)), device_tier, cap
+    return min(candidate_count, cap), device_tier, cap
 
 
 def _is_rerank_enabled() -> bool:
@@ -1206,12 +1213,27 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
 
     # --- QueryPlan parsing ---
     stage_start = time.perf_counter()
-    filename_registry = get_filename_registry(_milvus_manager, cache)
-    query_plan = parse_query_plan(
-        raw_query=query,
-        filename_registry=filename_registry,
-        context_files=context_files,
-    )
+    if QUERY_PLAN_ENABLED:
+        filename_registry = get_filename_registry(_milvus_manager, cache)
+        query_plan = parse_query_plan(
+            raw_query=query,
+            filename_registry=filename_registry,
+            context_files=context_files,
+        )
+    else:
+        query_plan = QueryPlan(
+            raw_query=query,
+            semantic_query=query,
+            clean_query=query,
+            doc_hints=[],
+            matched_files=[],
+            scope_mode="none",
+            heading_hint=None,
+            anchors=[],
+            model_numbers=[],
+            intent_type=None,
+            route="global_hybrid",
+        )
     timings["query_plan_ms"] = _elapsed_ms(stage_start)
 
     # Determine the search query (semantic_query, not raw_query)
@@ -1232,11 +1254,11 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
         if score >= DOC_SCOPE_MATCH_BOOST
     ]
 
-    if query_plan.scope_mode == "filter" and routable_matched_files and not filename_filter:
+    if QUERY_PLAN_ENABLED and query_plan.scope_mode == "filter" and routable_matched_files and not filename_filter:
         # Build scoped filter
         matched_filenames = [f for f, _ in routable_matched_files]
-        scoped_filenames_quoted = ", ".join([f'"{f}"' for f in matched_filenames])
-        scoped_filter = f"{base_filter} and filename in [{scoped_filenames_quoted}]"
+        scoped_filename_filter = _build_filename_filter(matched_filenames)
+        scoped_filter = f"{base_filter} and {scoped_filename_filter}"
 
         # Compute embeddings once, reuse for both paths
         current_stage = "embed_dense"
@@ -1307,6 +1329,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
 
             scope_trace = {
                 "query_plan": query_plan.to_dict(),
+                "query_plan_enabled": QUERY_PLAN_ENABLED,
                 "semantic_query": query_plan.semantic_query,
                 "scope_mode": query_plan.scope_mode,
                 "query_route": query_plan.route,
@@ -1322,6 +1345,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
             retrieved = []
             scope_trace = {
                 "query_plan": query_plan.to_dict(),
+                "query_plan_enabled": QUERY_PLAN_ENABLED,
                 "semantic_query": query_plan.semantic_query,
                 "scope_mode": query_plan.scope_mode,
                 "query_route": query_plan.route,
@@ -1331,7 +1355,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
             }
 
         # Apply heading lexical scoring if enabled
-        if HEADING_LEXICAL_ENABLED and query_plan.scope_mode in {"filter", "boost"} and query_plan.heading_hint:
+        if QUERY_PLAN_ENABLED and HEADING_LEXICAL_ENABLED and query_plan.scope_mode in {"filter", "boost"} and query_plan.heading_hint:
             retrieved = _apply_heading_lexical_scoring(
                 query_plan=query_plan,
                 candidates=retrieved,
@@ -1360,6 +1384,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
     hybrid_error = None
     global_trace = {
         "query_plan": query_plan.to_dict(),
+        "query_plan_enabled": QUERY_PLAN_ENABLED,
         "semantic_query": query_plan.semantic_query,
         "scope_mode": query_plan.scope_mode,
         "query_route": query_plan.route,
@@ -1393,7 +1418,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
         )
         timings["milvus_hybrid_ms"] = _elapsed_ms(stage_start)
 
-        if query_plan.scope_mode == "boost":
+        if QUERY_PLAN_ENABLED and query_plan.scope_mode == "boost":
             retrieved = _apply_filename_boost(query_plan, retrieved)
             boosted_count = sum(1 for doc in retrieved if doc.get("filename_boost_applied"))
             global_trace["filename_boost_applied"] = boosted_count > 0
@@ -1443,7 +1468,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
         try:
             current_stage = "embed_dense_fallback"
             stage_start = time.perf_counter()
-            dense_embeddings = _embedding_service.get_embeddings([query])
+            dense_embeddings = _embedding_service.get_embeddings([search_query])
             dense_embedding = dense_embeddings[0]
             fallback_dense_ms = _elapsed_ms(stage_start)
             if "embed_dense_ms" in timings:
@@ -1461,7 +1486,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
             )
             timings["milvus_dense_fallback_ms"] = _elapsed_ms(stage_start)
 
-            if query_plan.scope_mode == "boost":
+            if QUERY_PLAN_ENABLED and query_plan.scope_mode == "boost":
                 retrieved = _apply_filename_boost(query_plan, retrieved)
                 boosted_count = sum(1 for doc in retrieved if doc.get("filename_boost_applied"))
                 global_trace["filename_boost_applied"] = boosted_count > 0

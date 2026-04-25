@@ -175,8 +175,8 @@ Every run validates the dataset schema before retrieval starts and writes datase
 | --- | --- | --- |
 | `B0_legacy` | Current production configuration, no evaluation env overrides | none |
 | `B0` | Compatibility baseline from earlier matrices | `RERANK_TOP_N=0` |
-| `S1_linear` | Linear path: gate off + fallback off | `RAG_FALLBACK_ENABLED=false` |
-| `S2` | + QueryPlan + doc scope 80/20 parallel | `DOC_SCOPE_MATCH_FILTER=0.85`, `DOC_SCOPE_GLOBAL_RESERVE_WEIGHT=0.2` |
+| `S1_linear` | Linear path: gate off + fallback off, QueryPlan/doc-scope off | `RAG_FALLBACK_ENABLED=false`, `QUERY_PLAN_ENABLED=false` |
+| `S2` | + QueryPlan + doc scope 80/20 parallel | `QUERY_PLAN_ENABLED=true`, `DOC_SCOPE_MATCH_FILTER=0.85`, `DOC_SCOPE_GLOBAL_RESERVE_WEIGHT=0.2` |
 | `S2H` | + heading lexical scoring | `HEADING_LEXICAL_ENABLED=true`, `HEADING_LEXICAL_WEIGHT=0.20` |
 | `S2HR` | + metadata-aware rerank pair enrichment | `RERANK_PAIR_ENRICHMENT_ENABLED=true` |
 | `S3` | + retrieval_text reindex + full enrichment | `EVAL_RETRIEVAL_TEXT_MODE=title_context_filename` |

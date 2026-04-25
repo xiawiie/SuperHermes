@@ -16,6 +16,32 @@ def _as_set(values: list[str] | None) -> set[str]:
     return {str(item) for item in values or [] if str(item)}
 
 
+def _page_candidates(doc: dict) -> set[str]:
+    pages: set[str] = set()
+
+    def add_page(value: Any) -> int | None:
+        try:
+            page = int(value)
+        except (TypeError, ValueError):
+            return None
+        pages.add(str(page))
+        pages.add(str(page + 1))
+        return page
+
+    page_number = add_page(doc.get("page_number"))
+    page_start = add_page(doc.get("page_start"))
+    page_end = add_page(doc.get("page_end"))
+
+    if page_start is not None and page_end is not None and page_end >= page_start:
+        for page in range(page_start, min(page_end, page_start + 20) + 1):
+            pages.add(str(page))
+            pages.add(str(page + 1))
+    elif page_number is None and page_start is None and page_end is None:
+        return pages
+
+    return pages
+
+
 _NUMERAL_NE = r"(?<![一二三四五六七八九十百千万零两\d])"
 _NUMERAL_NLA = r"(?![一二三四五六七八九十百千万零两\d])"
 
@@ -117,7 +143,14 @@ def classify_failure(
             ["确保 RAG 主链路稳定输出 retrieved_chunks 和基础置信度字段。"],
         )
 
-    has_ground_truth = bool(expected_chunk_ids or expected_root_ids or expected_anchors or expected_keywords or expected_files)
+    has_ground_truth = bool(
+        expected_chunk_ids
+        or expected_root_ids
+        or expected_anchors
+        or expected_keywords
+        or expected_files
+        or expected_pages
+    )
 
     # Check top5 for hard negative confusion
     top5_chunks = rag_trace.get("retrieved_chunks", [])[:5]
@@ -178,13 +211,7 @@ def classify_failure(
         top5_pages = set()
         for c in top5_chunks:
             if str(c.get("filename") or "") in expected_file_set:
-                pn = c.get("page_number")
-                if pn is not None:
-                    top5_pages.add(str(pn))
-                    try:
-                        top5_pages.add(str(int(pn) + 1))
-                    except (ValueError, TypeError):
-                        pass
+                top5_pages |= _page_candidates(c)
         if not (expected_pages_str & top5_pages):
             return _result(
                 "page_miss",
@@ -196,6 +223,18 @@ def classify_failure(
                 },
                 ["检查文档分页是否正确，chunk 是否包含页码元数据，reranker 是否给正确页码更高分数。"],
             )
+
+    if expected_file_set and file_in_top5:
+        return _result(
+            "ok",
+            "none",
+            {
+                "expected_files": sorted(expected_file_set),
+                "top5_files": sorted(top5_files),
+                "expected_pages": sorted(str(p) for p in expected_pages or []),
+            },
+            [],
+        )
 
     # Legacy match checks for non-file-based ground truth
     final_match = _matches_expected(
