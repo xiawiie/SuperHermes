@@ -22,7 +22,10 @@ class RagPipelineFastPathTests(unittest.TestCase):
             },
         }
 
-        with patch("rag_pipeline._get_grader_model", side_effect=AssertionError("grader should not be called")):
+        with (
+            patch.object(rag_pipeline, "RAG_FALLBACK_ENABLED", True),
+            patch("rag_pipeline._get_grader_model", side_effect=AssertionError("grader should not be called")),
+        ):
             result = rag_pipeline.grade_documents_node(state)
 
         self.assertEqual(result["route"], "generate_answer")
@@ -38,7 +41,10 @@ class RagPipelineFastPathTests(unittest.TestCase):
             },
         }
 
-        with patch("rag_pipeline._get_grader_model", side_effect=AssertionError("grader should not be called")):
+        with (
+            patch.object(rag_pipeline, "RAG_FALLBACK_ENABLED", True),
+            patch("rag_pipeline._get_grader_model", side_effect=AssertionError("grader should not be called")),
+        ):
             result = rag_pipeline.grade_documents_node(state)
 
         self.assertEqual(result["route"], "rewrite_question")

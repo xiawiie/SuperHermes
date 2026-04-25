@@ -29,6 +29,19 @@ class RedisCache:
         except Exception:
             return None
 
+    def get_string(self, key: str) -> Optional[str]:
+        try:
+            value = self._get_client().get(self._key(key))
+            return value if value else None
+        except Exception:
+            return None
+
+    def incr(self, key: str) -> Optional[int]:
+        try:
+            return int(self._get_client().incr(self._key(key)))
+        except Exception:
+            return None
+
     def get_many_json(self, keys: list[str]) -> dict[str, Any]:
         if not keys:
             return {}

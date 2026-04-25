@@ -23,7 +23,7 @@
 - `scripts/analyze_rag_misses.py`: miss classification report and rollups.
 - `scripts/derive_natural_query_subset.py`: open-retrieval-natural dataset derivation.
 - `docs/rag_evaluation.md`: runbook, gates, metrics, diagnostics, roadmap.
-- `.env.example`: default-off experimental flags.
+- `.env`: runtime default-off experimental flags for this workspace; `.env.example` remains only a template/reference if already touched by adjacent work.
 - `tests/test_*.py`: focused regression coverage for every v4 boundary.
 
 ## Task Board
@@ -121,7 +121,11 @@ def test_v4_variant_names_are_available():
     assert VARIANT_CONFIGS["S1_linear"]["env"]["CONFIDENCE_GATE_ENABLED"] == "false"
     assert VARIANT_CONFIGS["S1_linear"]["env"]["RAG_FALLBACK_ENABLED"] == "false"
     assert VARIANT_CONFIGS["S2"]["env"]["DOC_SCOPE_GLOBAL_RESERVE_WEIGHT"] == "0.2"
+    assert VARIANT_CONFIGS["S2H"]["env"]["HEADING_LEXICAL_ENABLED"] == "true"
+    assert VARIANT_CONFIGS["S2H"]["env"]["HEADING_LEXICAL_WEIGHT"] == "0.20"
     assert VARIANT_CONFIGS["S2HR"]["env"]["RERANK_PAIR_ENRICHMENT_ENABLED"] == "true"
+    assert VARIANT_CONFIGS["S3"]["env"]["EVAL_RETRIEVAL_TEXT_MODE"] == "title_context_filename"
+    assert VARIANT_CONFIGS["S3"]["requires_reindex"] is True
 ```
 
 - [ ] **Step 2: Run the variant test and confirm it fails before implementation**
@@ -179,7 +183,7 @@ def _fmt_qrels_missing(value: object) -> str:
     return "n/a (qrels missing)"
 ```
 
-Use it for `Chunk@5` and `Root@5` in the main metrics table when chunk/root qrels are absent.
+Use it for `Chunk@5` and `Root@5` in the main metrics table, paired comparisons, and diagnostics when chunk/root qrels are absent.
 
 - [ ] **Step 5: Run evaluation tests**
 
@@ -408,7 +412,16 @@ def query_unique_filenames(self, filter_expr: str = "") -> list[str]:
     return names
 ```
 
-- [ ] **Step 6: Run QueryPlan and filename tests**
+- [ ] **Step 6: Implement filename registry cache boundaries**
+
+`get_filename_registry()` must use:
+
+- Redis logical key `filename_registry:{MILVUS_COLLECTION}:v{milvus_index_version}` under the existing `superhermes:` prefix, yielding `superhermes:filename_registry:{MILVUS_COLLECTION}:v{milvus_index_version}` in Redis.
+- In-process LRU/TTL cache keyed by the same collection/version pair.
+- `DOC_SCOPE_FILENAME_REGISTRY_REFRESH_SECONDS=600` default refresh interval.
+- `milvus_index_version` invalidation via the existing RedisCache key used by Milvus writes/deletes.
+
+- [ ] **Step 7: Run QueryPlan and filename tests**
 
 Run:
 
@@ -494,7 +507,18 @@ For file filtering, use existing `_build_filename_filter()` or an equivalent quo
 scoped_filter = f"{filter_expr} and {filename_filter}"
 ```
 
-- [ ] **Step 5: Add trace fields**
+- [ ] **Step 5: Implement boost mode without hard filtering**
+
+When `query_plan.scope_mode == "boost"`, do not build a Milvus filename filter. Run the global hybrid path using `semantic_query`, then apply `_apply_filename_boost()` before rerank:
+
+```python
+if query_plan.scope_mode == "boost":
+    retrieved = _apply_filename_boost(query_plan, retrieved)
+```
+
+The boost must be traceable with `filename_boost_applied` and `filename_boosted_candidate_count`.
+
+- [ ] **Step 6: Add trace fields**
 
 Set:
 
@@ -512,7 +536,7 @@ rerank_meta.update({
 })
 ```
 
-- [ ] **Step 6: Run scoped retrieval tests**
+- [ ] **Step 7: Run scoped retrieval tests**
 
 Run:
 
@@ -577,7 +601,7 @@ Before calling local/API/Ollama reranker, build texts with:
 
 ```python
 pair_texts = [
-    _build_enriched_pair(doc) if RERANK_PAIR_ENRICHMENT_ENABLED else _doc_retrieval_text(doc)
+    _rerank_pair_text(doc, enrichment_enabled=pair_enrichment_enabled)
     for doc in docs_for_rerank
 ]
 ```
@@ -587,10 +611,10 @@ pair_texts = [
 Implement:
 
 ```python
-def _rerank_doc_signatures(docs: list[dict]) -> list[dict]:
+def _rerank_doc_signatures(docs: list[dict], enrichment_enabled: bool) -> list[dict]:
     signatures = []
     for doc in docs:
-        pair_text = _build_enriched_pair(doc) if RERANK_PAIR_ENRICHMENT_ENABLED else _doc_retrieval_text(doc)
+        pair_text = _build_enriched_pair(doc) if enrichment_enabled else _doc_retrieval_text(doc)
         signatures.append({
             "chunk_id": str(doc.get("chunk_id") or doc.get("id") or ""),
             "pair_text_sha1": _sha1_text(pair_text),
@@ -621,13 +645,12 @@ Expected: heading and enrichment tests pass; cache key changes when enrichment o
 Ensure tests validate exact categories:
 
 ```python
-VALID_CATEGORIES = {
+VALID_MISS_CATEGORIES = {
     "file_recall_miss",
     "page_miss",
     "ranking_miss",
     "hard_negative_confusion",
     "low_confidence",
-    "none",
 }
 ```
 
@@ -640,10 +663,10 @@ if top5 and hard_negative_files and all(doc.get("filename") in hard_negative_fil
     return "hard_negative_confusion"
 if not candidate_file_hit:
     return "file_recall_miss"
-if candidate_file_hit and not candidate_page_hit:
-    return "page_miss"
-if candidate_page_hit and not top5_page_hit:
+if candidate_file_hit and not top5_file_hit:
     return "ranking_miss"
+if top5_file_hit and expected_pages and not top5_page_hit:
+    return "page_miss"
 if top1_score < low_confidence_threshold:
     return "low_confidence"
 return "none"
@@ -659,11 +682,13 @@ In `scripts/analyze_rag_misses.py`, output:
 
 ```python
 {
-    "category": category,
-    "candidate_recall_bucket": bucket,
-    "anchor_hit": anchor_hit,
-    "top_wrong_files": top_wrong_files,
-    "rerank_drop": rerank_drop,
+    "category_counts": category_counts,
+    "cand_recall_buckets": buckets,
+    "fuzzy_histogram": title_filename_ratios,
+    "family_confusion": hard_negative_or_family_confusion,
+    "anchor_hit_rate": anchor_hit_rate,
+    "rerank_drop_top20": rerank_drop_top20,
+    "false_retrieval_top10": false_retrieval_top10,
 }
 ```
 
@@ -783,7 +808,7 @@ Run:
 uv run python scripts\evaluate_rag_matrix.py --dataset-profile smoke --variants B0_legacy,S1_linear,S2 --skip-reindex --limit 10 --run-id rag-v4-smoke
 ```
 
-Expected: report files are created under `.jbeval/reports/rag-v4-smoke`; `S1_linear` has `fallback_executed=0`.
+Expected: report files are created under `.jbeval/reports/rag-v4-smoke`; `S1_linear` has `fallback_executed=0`, and its P50 is reported against `B0_legacy` rather than accepted on fallback suppression alone.
 
 - [ ] **Step 3: Run frozen evaluation if services are available**
 
@@ -867,4 +892,3 @@ Report:
 - test commands and results
 - evaluation report paths and key metrics
 - remaining risks
-

@@ -1,5 +1,6 @@
 """文本向量化服务 - 支持密集向量和稀疏向量（BM25），词表与 df 持久化 + 增量更新"""
 import json
+import logging
 import math
 import os
 import re
@@ -12,14 +13,47 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-_DEFAULT_STATE_PATH = Path(__file__).resolve().parent.parent / "data" / "bm25_state.json"
+def _default_state_path() -> Path:
+    collection = os.getenv("MILVUS_COLLECTION", "embeddings_collection")
+    text_mode = os.getenv("EVAL_RETRIEVAL_TEXT_MODE", "title_context")
+    return Path(__file__).resolve().parent.parent / "data" / f"bm25_state_{collection}_{text_mode}.json"
+
+
+_DEFAULT_STATE_PATH = _default_state_path()
+
+
+_jieba_initialized = False
+
+
+def _jieba_cut(text: str) -> list[str]:
+    global _jieba_initialized
+    if not _jieba_initialized:
+        import jieba
+
+        jieba.setLogLevel(logging.WARNING)
+        _jieba_initialized = True
+    import jieba
+
+    return list(jieba.cut(text))
 
 
 def _create_dense_embedder() -> Any:
+    provider = os.getenv("EMBEDDING_PROVIDER", "local")
+
+    if provider == "ollama":
+        from langchain_ollama import OllamaEmbeddings
+
+        model_name = os.getenv("EMBEDDING_MODEL", "bge-m3")
+        base_url = os.getenv("EMBEDDING_BASE_URL", "http://localhost:11434")
+        return OllamaEmbeddings(model=model_name, base_url=base_url)
+
     from langchain_huggingface import HuggingFaceEmbeddings
 
     model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
-    device = os.getenv("EMBEDDING_DEVICE", "cpu")
+    device = os.getenv("EMBEDDING_DEVICE", "auto")
+    if device == "auto":
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     return HuggingFaceEmbeddings(
         model_name=model_name,
         model_kwargs={"device": device},
@@ -33,7 +67,8 @@ class EmbeddingService:
     def __init__(self, state_path: Path | str | None = None):
         self._embedder = None
         self._embedder_lock = threading.Lock()
-        self._state_path = Path(state_path or os.getenv("BM25_STATE_PATH", _DEFAULT_STATE_PATH))
+        default_state_path = _default_state_path()
+        self._state_path = Path(state_path or os.getenv("BM25_STATE_PATH", str(default_state_path)))
         self._lock = threading.Lock()
 
         # BM25 参数
@@ -150,20 +185,28 @@ class EmbeddingService:
 
     def tokenize(self, text: str) -> list[str]:
         text = text.lower()
-        tokens = []
+        tokens: list[str] = []
         chinese_pattern = re.compile(r"[\u4e00-\u9fff]")
-        english_pattern = re.compile(r"[a-zA-Z]+")
+        alnum_pattern = re.compile(r"[a-z0-9][a-z0-9\-]*[a-z0-9]|[a-z0-9]")
         i = 0
         while i < len(text):
             char = text[i]
             if chinese_pattern.match(char):
-                tokens.append(char)
-                i += 1
-            elif english_pattern.match(char):
-                match = english_pattern.match(text[i:])
+                j = i
+                while j < len(text) and chinese_pattern.match(text[j]):
+                    j += 1
+                segment = text[i:j]
+                for word in _jieba_cut(segment):
+                    if len(word) >= 2:
+                        tokens.append(word)
+                i = j
+            elif char.isascii() and (char.isalnum() or char == "-"):
+                match = alnum_pattern.match(text[i:])
                 if match:
                     tokens.append(match.group())
                     i += len(match.group())
+                else:
+                    i += 1
             else:
                 i += 1
         return tokens

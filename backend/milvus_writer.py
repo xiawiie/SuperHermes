@@ -1,6 +1,7 @@
 """Write chunk documents into Milvus with dense and sparse embeddings."""
 from __future__ import annotations
 
+from cache import cache
 from embedding import EmbeddingService, embedding_service as _default_embedding_service
 from milvus_client import MilvusManager
 
@@ -25,6 +26,7 @@ class MilvusWriter:
         self.milvus_manager.init_collection()
 
         total = len(documents)
+        inserted_any = False
         for i in range(0, total, batch_size):
             batch = documents[i:i + batch_size]
             prepared_batch = self._prepare_batch(batch)
@@ -58,6 +60,10 @@ class MilvusWriter:
             ]
 
             self.milvus_manager.insert(insert_data)
+            inserted_any = True
+
+        if inserted_any:
+            cache.incr("milvus_index_version")
 
     def _prepare_batch(self, batch: list[dict]) -> list[tuple[dict, list[float], dict]]:
         texts = [doc.get("retrieval_text") or doc["text"] for doc in batch]
