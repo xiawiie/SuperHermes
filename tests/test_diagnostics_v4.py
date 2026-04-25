@@ -99,6 +99,31 @@ class TestFiveCategoryDiagnostics:
         # Without expected_pages, it should match on file + keyword
         assert result["category"] in {"ok", "ranking_miss"}
 
+    def test_file_only_hit_is_ok(self):
+        result = classify_failure(
+            query="test",
+            rag_trace={
+                "retrieved_chunks": [{"filename": "correct.pdf", "score": 0.9}],
+                "candidates_before_rerank": [{"filename": "correct.pdf", "score": 0.9}],
+            },
+            expected_files=["correct.pdf"],
+        )
+
+        assert result["category"] == "ok"
+
+    def test_page_match_uses_page_start_end(self):
+        result = classify_failure(
+            query="test",
+            rag_trace={
+                "retrieved_chunks": [{"filename": "correct.pdf", "page_start": 4, "page_end": 6, "score": 0.9}],
+                "candidates_before_rerank": [{"filename": "correct.pdf", "page_start": 4, "page_end": 6}],
+            },
+            expected_files=["correct.pdf"],
+            expected_pages=[5],
+        )
+
+        assert result["category"] == "ok"
+
 
 class TestMissAnalysisScript:
     def test_stage_candidates_drive_ranking_miss_classification(self):
@@ -118,3 +143,18 @@ class TestMissAnalysisScript:
         )
 
         assert report["category_counts"] == {"ranking_miss": 1}
+
+    def test_results_rows_with_file_page_hit_classify_ok(self):
+        report = analyze_misses(
+            [
+                {
+                    "sample_id": "s1",
+                    "query": "q",
+                    "expected": {"expected_files": ["correct.pdf"], "expected_pages": [5]},
+                    "metrics": {"file_page_hit_at_5": True},
+                    "retrieved_chunks": [{"filename": "correct.pdf", "page_start": 4, "page_end": 6, "score": 0.9}],
+                }
+            ]
+        )
+
+        assert report["category_counts"] == {"ok": 1}

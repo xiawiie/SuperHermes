@@ -77,6 +77,45 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         ):
             self.assertEqual(rag_utils._effective_rerank_top_n(top_k=5, candidate_count=80), 10)
 
+    def test_cpu_rerank_top_n_cap_applies_when_device_auto_resolves_to_cpu(self):
+        with (
+            patch.object(rag_utils, "RERANK_DEVICE", "auto"),
+            patch.object(rag_utils, "RERANK_TOP_N", 30),
+            patch.object(rag_utils, "RERANK_CPU_TOP_N_CAP", 10),
+            patch.object(rag_utils, "_rerank_device_tier", return_value="cpu"),
+        ):
+            self.assertEqual(rag_utils._effective_rerank_top_n(top_k=5, candidate_count=80), 10)
+
+    def test_rerank_input_cap_is_a_hard_limit(self):
+        with (
+            patch.object(rag_utils, "RERANK_INPUT_K_CPU", 10),
+            patch.object(rag_utils, "_rerank_device_tier", return_value="cpu"),
+        ):
+            input_k, device_tier, cap = rag_utils._effective_rerank_input_k(rerank_top_n=30, candidate_count=80)
+
+        self.assertEqual(device_tier, "cpu")
+        self.assertEqual(cap, 10)
+        self.assertEqual(input_k, 10)
+
+    def test_query_plan_disabled_does_not_load_filename_registry_or_change_query(self):
+        docs = [{"text": "d1", "filename": "manual.pdf", "chunk_id": "c1", "score": 0.9}]
+
+        with (
+            patch.object(rag_utils, "QUERY_PLAN_ENABLED", False),
+            patch.object(rag_utils._embedding_service, "get_embeddings", return_value=[[0.1, 0.2]]) as dense,
+            patch.object(rag_utils._embedding_service, "get_sparse_embedding", return_value={1: 0.5}) as sparse,
+            patch.object(rag_utils, "get_filename_registry", side_effect=AssertionError("registry should not load")),
+            patch.object(rag_utils._milvus_manager, "hybrid_retrieve", return_value=docs),
+            patch("rag_utils._apply_structure_rerank", side_effect=lambda docs, top_k: (docs[:top_k], {"structure_rerank_enabled": False, "structure_rerank_applied": False})),
+            patch("rag_utils._evaluate_retrieval_confidence", return_value={"confidence_gate_enabled": False, "fallback_required": False, "confidence_reasons": []}),
+        ):
+            result = rag_utils.retrieve_documents("《Manual》中，如何配置？", top_k=1)
+
+        dense.assert_called_with(["《Manual》中，如何配置？"])
+        sparse.assert_called_with("《Manual》中，如何配置？")
+        self.assertFalse(result["meta"]["query_plan_enabled"])
+        self.assertEqual(result["meta"]["semantic_query"], "《Manual》中，如何配置？")
+
     def test_local_reranker_input_cap_limits_predict_pairs(self):
         class FakeReranker:
             def __init__(self):
@@ -96,6 +135,7 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             patch.object(rag_utils, "RERANK_TOP_N", 0),
             patch.object(rag_utils, "RERANK_CPU_TOP_N_CAP", 0),
             patch.object(rag_utils, "RERANK_INPUT_K_CPU", 10),
+            patch.object(rag_utils, "RERANK_CACHE_ENABLED", False),
             patch.object(rag_utils, "_get_local_reranker", return_value=fake_reranker),
         ):
             reranked, meta = rag_utils._rerank_documents("query", docs, top_k=5)
@@ -130,6 +170,7 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             patch.object(rag_utils, "RERANK_DEVICE", "cuda"),
             patch.object(rag_utils, "RERANK_TOP_N", 0),
             patch.object(rag_utils, "RERANK_INPUT_K_GPU", 7),
+            patch.object(rag_utils, "RERANK_CACHE_ENABLED", False),
             patch("rag_utils.requests.post", side_effect=fake_post),
         ):
             reranked, meta = rag_utils._rerank_documents("query", docs, top_k=4)

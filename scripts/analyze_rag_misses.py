@@ -49,6 +49,32 @@ def _normalize_filename(name: str) -> str:
     return base
 
 
+def _page_candidates(doc: dict) -> set[str]:
+    pages: set[str] = set()
+
+    def add_page(value: Any) -> int | None:
+        try:
+            page = int(value)
+        except (TypeError, ValueError):
+            return None
+        pages.add(str(page))
+        pages.add(str(page + 1))
+        return page
+
+    page_number = add_page(doc.get("page_number"))
+    page_start = add_page(doc.get("page_start"))
+    page_end = add_page(doc.get("page_end"))
+
+    if page_start is not None and page_end is not None and page_end >= page_start:
+        for page in range(page_start, min(page_end, page_start + 20) + 1):
+            pages.add(str(page))
+            pages.add(str(page + 1))
+    elif page_number is None and page_start is None and page_end is None:
+        return pages
+
+    return pages
+
+
 def _family_prefix(filename: str) -> str:
     """Extract product family prefix for confusion analysis."""
     norm = _normalize_filename(filename)
@@ -81,6 +107,10 @@ def _classify_miss(
         or stage_candidates.get("before_rerank")
         or []
     )
+    candidates_known = (
+        "candidates_before_rerank" in trace
+        or "before_rerank" in stage_candidates
+    )
     top5_chunks = row.get("retrieved_chunks") or []
     top5_files = {str(c.get("filename") or "") for c in top5_chunks}
     candidate_files = {str(c.get("filename") or "") for c in candidates_before}
@@ -90,12 +120,12 @@ def _classify_miss(
         return "hard_negative_confusion"
 
     # file_recall_miss: correct file not in candidates at all
-    if expected_files and not (expected_files & candidate_files):
+    if expected_files and candidates_known and not (expected_files & candidate_files):
         return "file_recall_miss"
 
     # ranking_miss: correct file in candidates but not in top5
     cand_recall = metrics.get("candidate_recall_before_rerank")
-    if expected_files and (expected_files & candidate_files) and not (expected_files & top5_files):
+    if expected_files and candidates_known and (expected_files & candidate_files) and not (expected_files & top5_files):
         return "ranking_miss"
 
     # page_miss: correct file in top5 but page doesn't match
@@ -105,12 +135,11 @@ def _classify_miss(
             top5_pages = set()
             for c in top5_chunks:
                 if str(c.get("filename") or "") in expected_files:
-                    pn = c.get("page_number")
-                    if pn is not None:
-                        top5_pages.add(str(pn))
-                        top5_pages.add(str(int(pn) + 1) if isinstance(pn, (int, float)) else str(pn))
+                    top5_pages |= _page_candidates(c)
             if not (expected_pages & top5_pages):
                 return "page_miss"
+            return "ok"
+        return "ok"
 
     # low_confidence: top1 score is very low
     top1_score = None

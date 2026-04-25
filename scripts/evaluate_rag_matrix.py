@@ -234,6 +234,7 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "CONFIDENCE_GATE_ENABLED": "false",
             "ENABLE_ANCHOR_GATE": "false",
             "RAG_FALLBACK_ENABLED": "false",
+            "QUERY_PLAN_ENABLED": "false",
         },
     },
     "S1": {
@@ -246,6 +247,7 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "CONFIDENCE_GATE_ENABLED": "false",
             "ENABLE_ANCHOR_GATE": "false",
             "RAG_FALLBACK_ENABLED": "false",
+            "QUERY_PLAN_ENABLED": "false",
         },
     },
     "S2": {
@@ -258,6 +260,7 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "CONFIDENCE_GATE_ENABLED": "false",
             "ENABLE_ANCHOR_GATE": "false",
             "RAG_FALLBACK_ENABLED": "false",
+            "QUERY_PLAN_ENABLED": "true",
             "DOC_SCOPE_MATCH_FILTER": "0.85",
             "DOC_SCOPE_MATCH_BOOST": "0.60",
             "DOC_SCOPE_GLOBAL_RESERVE_WEIGHT": "0.2",
@@ -273,6 +276,7 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "CONFIDENCE_GATE_ENABLED": "false",
             "ENABLE_ANCHOR_GATE": "false",
             "RAG_FALLBACK_ENABLED": "false",
+            "QUERY_PLAN_ENABLED": "true",
             "DOC_SCOPE_MATCH_FILTER": "0.85",
             "DOC_SCOPE_MATCH_BOOST": "0.60",
             "DOC_SCOPE_GLOBAL_RESERVE_WEIGHT": "0.2",
@@ -290,6 +294,7 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "CONFIDENCE_GATE_ENABLED": "false",
             "ENABLE_ANCHOR_GATE": "false",
             "RAG_FALLBACK_ENABLED": "false",
+            "QUERY_PLAN_ENABLED": "true",
             "DOC_SCOPE_MATCH_FILTER": "0.85",
             "DOC_SCOPE_MATCH_BOOST": "0.60",
             "DOC_SCOPE_GLOBAL_RESERVE_WEIGHT": "0.2",
@@ -308,6 +313,7 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "CONFIDENCE_GATE_ENABLED": "false",
             "ENABLE_ANCHOR_GATE": "false",
             "RAG_FALLBACK_ENABLED": "false",
+            "QUERY_PLAN_ENABLED": "true",
             "DOC_SCOPE_MATCH_FILTER": "0.85",
             "DOC_SCOPE_MATCH_BOOST": "0.60",
             "DOC_SCOPE_GLOBAL_RESERVE_WEIGHT": "0.2",
@@ -440,14 +446,29 @@ def _doc_text(doc: dict) -> str:
 
 
 def _doc_page_candidates(doc: dict) -> set[str]:
-    raw_page = doc.get("page_number")
     pages: set[str] = set()
-    try:
-        page = int(raw_page)
-    except (TypeError, ValueError):
+
+    def add_page(value: Any) -> int | None:
+        try:
+            page = int(value)
+        except (TypeError, ValueError):
+            return None
+        pages.add(str(page))
+        pages.add(str(page + 1))
+        return page
+
+    page_number = add_page(doc.get("page_number"))
+    page_start = add_page(doc.get("page_start"))
+    page_end = add_page(doc.get("page_end"))
+
+    if page_start is not None and page_end is not None and page_end >= page_start:
+        # Keep the candidate set bounded; long ranges usually indicate bad metadata.
+        for page in range(page_start, min(page_end, page_start + 20) + 1):
+            pages.add(str(page))
+            pages.add(str(page + 1))
+    elif page_number is None and page_start is None and page_end is None:
         return pages
-    pages.add(str(page))
-    pages.add(str(page + 1))
+
     return pages
 
 
@@ -472,9 +493,9 @@ def _qrel_ids_from_contexts(contexts: Any) -> set[str]:
             if value:
                 ids.add(str(value))
         file_name = item.get("file_name") or item.get("filename")
-        page_number = item.get("page_number")
-        if file_name and page_number is not None:
-            ids.add(f"{file_name}::p{page_number}")
+        if file_name:
+            for page in _doc_page_candidates(item):
+                ids.add(f"{file_name}::p{page}")
     return ids
 
 
@@ -911,20 +932,13 @@ def summarize_results(rows: list[dict], variants: list[str]) -> dict[str, Any]:
         rewrite_counts = Counter(row.get("rewrite_strategy") or "none" for row in variant_rows)
 
         file_hits = [row for row in variant_rows if (row.get("metrics") or {}).get("file_hit_at_5")]
-        file_page_hit_count = 0
-        for row in variant_rows:
-            metrics = row.get("metrics") or {}
-            if metrics.get("file_hit_at_5") and metrics.get("page_hit_at_5"):
-                file_page_hit_count += 1
-        file_page_hit_at_5 = (file_page_hit_count / len(variant_rows)) if variant_rows else None
-
         summary["variants"][variant] = {
             "rows": len(variant_rows),
             "hit_at_5": _average(variant_rows, "hit_at_5"),
             "initial_retrieval_hit_at_5": _average(variant_rows, "initial_retrieval_hit_at_5"),
             "final_retrieval_hit_at_5": _average(variant_rows, "final_retrieval_hit_at_5"),
             "file_hit_at_5": _average(variant_rows, "file_hit_at_5"),
-            "file_page_hit_at_5": file_page_hit_at_5,
+            "file_page_hit_at_5": _average(variant_rows, "file_page_hit_at_5"),
             "page_hit_at_5": _average(variant_rows, "page_hit_at_5"),
             "chunk_hit_at_5": _QRELS_NA,
             "root_hit_at_5": _QRELS_NA,
@@ -1078,6 +1092,8 @@ def _summarize_doc(doc: dict) -> dict[str, Any]:
         "section_path": doc.get("section_path"),
         "filename": doc.get("filename"),
         "page_number": doc.get("page_number"),
+        "page_start": doc.get("page_start"),
+        "page_end": doc.get("page_end"),
         "score": doc.get("score"),
         "rerank_score": doc.get("rerank_score"),
         "final_score": doc.get("final_score"),

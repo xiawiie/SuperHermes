@@ -99,6 +99,23 @@ class TestHeadingLexicalScoring:
         result = _apply_heading_lexical_scoring(plan, chunks)
         assert result[0]["chunk_id"] == "c1"
 
+    def test_anchor_id_boost(self):
+        """Anchors matching anchor_id should also provide extra boost."""
+        plan = _make_query_plan(
+            heading_hint="配置",
+            scope_mode="filter",
+            semantic_query="完全不相关",
+            anchors=["附录A"],
+        )
+        chunks = [
+            {"chunk_id": "c1", "section_path": "", "section_title": "", "anchor_id": "附录A"},
+            {"chunk_id": "c2", "section_path": "", "section_title": "其它内容", "anchor_id": ""},
+        ]
+
+        result = _apply_heading_lexical_scoring(plan, chunks)
+
+        assert result[0]["chunk_id"] == "c1"
+
     def test_empty_candidates(self):
         """Empty candidates list returns empty."""
         plan = _make_query_plan(heading_hint="安装配置", scope_mode="filter")

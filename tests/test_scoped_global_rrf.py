@@ -8,7 +8,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from query_plan import QueryPlan
-from rag_utils import _apply_filename_boost, _weighted_rrf_merge
+from rag_utils import _apply_filename_boost, _build_filename_filter, _weighted_rrf_merge
 
 
 def _make_chunk(chunk_id: str, score: float, filename: str = "a.pdf", page: int = 1):
@@ -117,3 +117,11 @@ class TestFilenameBoost:
 
         assert [item["chunk_id"] for item in result] == ["other", "target"]
         assert "filename_boost_applied" not in result[1]
+
+
+class TestFilenameFilter:
+    def test_filename_filter_escapes_quotes_and_backslashes(self):
+        expr = _build_filename_filter(['manual "quoted" \\ path.pdf'])
+
+        assert 'manual \\"quoted\\" \\\\ path.pdf' in expr
+        assert expr.startswith("filename in [")
