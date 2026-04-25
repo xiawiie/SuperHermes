@@ -87,8 +87,8 @@ The v4 changes add narrowly scoped modules and helpers:
 
 Status: pending audit and completion
 
-- Keep historical baselines stable.
-- Add or verify `B0_legacy`, `S1`, `S2`, `S2H`, `S2HR`, and `S3` variants.
+- Keep historical baselines stable: do not redefine existing historical B0 results.
+- Add or verify `B0_legacy`, `S1_linear`, `S2`, `S2H`, `S2HR`, and `S3` variants.
 - Make primary metrics:
   - File@5
   - File+Page@5
@@ -179,7 +179,7 @@ Status: documentation only
 
 ## Acceptance Gates
 
-### S1
+### S1_linear
 
 - `fallback_executed=0`
 - P50 returns close to the current linear baseline
@@ -241,13 +241,13 @@ Run focused tests first:
 Then run smoke evaluation:
 
 ```powershell
-uv run python scripts\evaluate_rag_matrix.py --dataset-profile smoke --variants B0,S1,S2 --skip-reindex --limit 10 --run-id rag-v4-smoke
+uv run python scripts\evaluate_rag_matrix.py --dataset-profile smoke --variants B0_legacy,S1_linear,S2 --skip-reindex --limit 10 --run-id rag-v4-smoke
 ```
 
 Then run frozen evaluation:
 
 ```powershell
-uv run python scripts\evaluate_rag_matrix.py --dataset-profile frozen --variants B0,S1,S2,S2H,S2HR --skip-reindex --run-id rag-v4-frozen
+uv run python scripts\evaluate_rag_matrix.py --dataset-profile frozen --variants B0_legacy,S1_linear,S2,S2H,S2HR --skip-reindex --run-id rag-v4-frozen
 ```
 
 Gold and natural dataset runs are the final verification when Milvus, Redis, local embedding, and rerank services are available.
@@ -260,4 +260,3 @@ Gold and natural dataset runs are the final verification when Milvus, Redis, loc
 - Keep public function names stable where tests or runtime code already refer to them.
 - Commit only intentionally staged files.
 - Final implementation report must include changed files, simplifications made, verification evidence, and remaining risks.
-
