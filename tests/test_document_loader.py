@@ -61,6 +61,43 @@ class DocumentLoaderRetrievalTextTests(unittest.TestCase):
 
         self.assertEqual(text, "原始正文")
 
+    def test_title_context_filename_includes_metadata_prefix(self):
+        with patch.dict("os.environ", {"EVAL_RETRIEVAL_TEXT_MODE": "title_context_filename"}):
+            loader = DocumentLoader()
+
+        text = loader._make_retrieval_text(
+            raw_text="raw",
+            body="正文内容",
+            current_title="安装步骤",
+            parent_title="部署",
+            filename="H3C Manual.pdf",
+            page_start=7,
+            anchor_id="附录A",
+        )
+
+        self.assertIn("[文档: H3C Manual]", text)
+        self.assertIn("[章节: 安装步骤]", text)
+        self.assertIn("[页: 7]", text)
+        self.assertIn("[锚点: 附录A]", text)
+        self.assertLessEqual(len(text), 4000)
+
+    def test_title_context_filename_truncates_to_milvus_limit(self):
+        with patch.dict("os.environ", {"EVAL_RETRIEVAL_TEXT_MODE": "title_context_filename"}):
+            loader = DocumentLoader()
+
+        text = loader._make_retrieval_text(
+            raw_text="raw",
+            body="x" * 5000,
+            current_title="安装步骤",
+            parent_title=None,
+            filename="H3C Manual.pdf",
+            page_start=7,
+            anchor_id="附录A",
+        )
+
+        self.assertLessEqual(len(text), 4000)
+        self.assertIn("[truncated]", text)
+
 
 if __name__ == "__main__":
     unittest.main()

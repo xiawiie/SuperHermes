@@ -9,11 +9,20 @@ from typing import Any, Callable
 from dotenv import load_dotenv
 from pymilvus import AnnSearchRequest, DataType, MilvusClient, RRFRanker
 
+from cache import cache
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 QUERY_MAX_LIMIT = 16384
+
+
+def _effective_hnsw_ef(search_ef: int, limit: int) -> int:
+    """Return an HNSW ef value that satisfies Milvus ef > k/limit."""
+    safe_limit = max(1, int(limit or 1))
+    safe_ef = max(1, int(search_ef or 1))
+    return max(safe_ef, safe_limit + 1)
 
 RECOVERABLE_MILVUS_ERROR_SNIPPETS = (
     "Cannot invoke RPC on closed channel",
@@ -223,6 +232,21 @@ class MilvusManager:
 
         return out
 
+    def query_unique_filenames(self, filter_expr: str = "") -> list[str]:
+        """Return distinct filenames from the collection matching the filter."""
+        all_rows = self.query_all(
+            filter_expr=filter_expr,
+            output_fields=["filename"],
+        )
+        seen = set()
+        result = []
+        for row in all_rows:
+            f = str(row.get("filename") or "")
+            if f and f not in seen:
+                seen.add(f)
+                result.append(f)
+        return result
+
     def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[dict]:
         ids = [item for item in chunk_ids if item]
         if not ids:
@@ -257,6 +281,8 @@ class MilvusManager:
         sparse_embedding: dict,
         top_k: int = 5,
         rrf_k: int = 60,
+        search_ef: int = 64,
+        sparse_drop_ratio: float = 0.2,
         filter_expr: str = "",
     ) -> list[dict]:
         output_fields = [
@@ -279,18 +305,21 @@ class MilvusManager:
             "anchor_id",
         ]
 
+        search_limit = max(1, top_k * 2)
+        effective_search_ef = _effective_hnsw_ef(search_ef, search_limit)
+
         dense_search = AnnSearchRequest(
             data=[dense_embedding],
             anns_field="dense_embedding",
-            param={"metric_type": "IP", "params": {"ef": 64}},
-            limit=max(1, top_k * 2),
+            param={"metric_type": "IP", "params": {"ef": effective_search_ef}},
+            limit=search_limit,
             expr=filter_expr,
         )
         sparse_search = AnnSearchRequest(
             data=[sparse_embedding],
             anns_field="sparse_embedding",
-            param={"metric_type": "IP", "params": {"drop_ratio_search": 0.2}},
-            limit=max(1, top_k * 2),
+            param={"metric_type": "IP", "params": {"drop_ratio_search": sparse_drop_ratio}},
+            limit=search_limit,
             expr=filter_expr,
         )
         reranker = RRFRanker(k=rrf_k)
@@ -339,14 +368,16 @@ class MilvusManager:
         self,
         dense_embedding: list[float],
         top_k: int = 5,
+        search_ef: int = 64,
         filter_expr: str = "",
     ) -> list[dict]:
+        effective_search_ef = _effective_hnsw_ef(search_ef, top_k)
         results = self._call_with_reconnect(
             lambda client: client.search(
                 collection_name=self.collection_name,
                 data=[dense_embedding],
                 anns_field="dense_embedding",
-                search_params={"metric_type": "IP", "params": {"ef": 64}},
+                search_params={"metric_type": "IP", "params": {"ef": effective_search_ef}},
                 limit=top_k,
                 output_fields=[
                     "text",
@@ -403,13 +434,15 @@ class MilvusManager:
         return formatted_results
 
     def delete(self, filter_expr: str) -> Any:
-        return self._call_with_reconnect(
+        result = self._call_with_reconnect(
             lambda client: client.delete(
                 collection_name=self.collection_name,
                 filter=filter_expr,
             ),
             operation_name="delete",
         )
+        cache.incr("milvus_index_version")
+        return result
 
     def has_collection(self) -> bool:
         return self._call_with_reconnect(
@@ -423,3 +456,4 @@ class MilvusManager:
                 client.drop_collection(self.collection_name)
 
         self._call_with_reconnect(operation, operation_name="drop_collection")
+        cache.incr("milvus_index_version")

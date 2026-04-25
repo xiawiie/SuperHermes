@@ -69,7 +69,7 @@ def custom_evaluator(run_outputs: dict, reference_outputs: dict) -> bool:
 def target_function(inputs: dict) -> dict:
     question = inputs["question"]
     # 每条评估样本使用独立会话，避免上下文串扰
-    session_id = f"langsmith_eval_{uuid4().he   x}"
+    session_id = f"langsmith_eval_{uuid4().hex}"
     result = chat_with_agent(
         user_text=question,
         user_id="langsmith_eval_user",

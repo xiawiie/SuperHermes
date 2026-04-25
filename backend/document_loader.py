@@ -3,14 +3,73 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from typing import Dict, List
 
-from langchain_community.document_loaders import (
-    Docx2txtLoader,
-    PyPDFLoader,
-    UnstructuredExcelLoader,
-)
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+@dataclass
+class _SplitDocument:
+    page_content: str
+    metadata: dict
+
+
+class RecursiveCharacterTextSplitter:
+    """Small local splitter with the subset of LangChain's API used here.
+
+    Keeping this local avoids importing langchain_text_splitters at module import
+    time, which currently pulls sentence-transformers/pyarrow native modules on
+    Windows before document loading is even requested.
+    """
+
+    def __init__(
+        self,
+        chunk_size: int,
+        chunk_overlap: int,
+        add_start_index: bool = False,
+        separators: list[str] | None = None,
+    ):
+        self.chunk_size = max(1, int(chunk_size))
+        self.chunk_overlap = max(0, min(int(chunk_overlap), self.chunk_size - 1))
+        self.add_start_index = add_start_index
+        self.separators = separators or ["\n\n", "\n", "。", "；", "，", " ", ""]
+
+    def _best_split_end(self, text: str, start: int, hard_end: int) -> int:
+        if hard_end >= len(text):
+            return len(text)
+        minimum = start + max(1, self.chunk_size // 2)
+        for sep in self.separators:
+            if not sep:
+                continue
+            pos = text.rfind(sep, start, hard_end)
+            if pos >= minimum:
+                return pos + len(sep)
+        return hard_end
+
+    def split_text(self, text: str) -> list[tuple[str, int]]:
+        value = text or ""
+        chunks: list[tuple[str, int]] = []
+        start = 0
+        while start < len(value):
+            hard_end = min(len(value), start + self.chunk_size)
+            end = self._best_split_end(value, start, hard_end)
+            chunk = value[start:end].strip()
+            if chunk:
+                chunks.append((chunk, start))
+            if end >= len(value):
+                break
+            start = max(start + 1, end - self.chunk_overlap)
+        return chunks
+
+    def create_documents(self, texts: list[str], metadatas: list[dict] | None = None) -> list[_SplitDocument]:
+        docs: list[_SplitDocument] = []
+        metadatas = metadatas or [{} for _ in texts]
+        for text, metadata in zip(texts, metadatas):
+            for chunk, start_index in self.split_text(text):
+                next_metadata = dict(metadata or {})
+                if self.add_start_index:
+                    next_metadata["start_index"] = start_index
+                docs.append(_SplitDocument(page_content=chunk, metadata=next_metadata))
+        return docs
 
 
 class DocumentLoader:
@@ -117,14 +176,83 @@ class DocumentLoader:
         body: str,
         current_title: str | None,
         parent_title: str | None,
+        filename: str | None = None,
+        page_start: int | str | None = None,
+        anchor_id: str | None = None,
     ) -> str:
         if self.retrieval_text_mode == "raw":
             return (raw_text or body or "").strip()
+        if self.retrieval_text_mode == "title_context_filename":
+            return self._compose_retrieval_text_filename(
+                body=body,
+                current_title=current_title,
+                parent_title=parent_title,
+                filename=filename,
+                page_start=page_start,
+                anchor_id=anchor_id,
+            )
         return self._compose_retrieval_text(
             body=body,
             current_title=current_title,
             parent_title=parent_title,
         )
+
+    def _compose_retrieval_text_filename(
+        self,
+        body: str,
+        current_title: str | None,
+        parent_title: str | None,
+        filename: str | None = None,
+        page_start: int | str | None = None,
+        anchor_id: str | None = None,
+    ) -> str:
+        """title_context_filename mode: [文档: x] [章节: y] [页: z] [锚点: a]\\nheading\\nbody"""
+        content = (body or "").strip()
+        current = self._normalize_title(current_title)
+        parent = self._normalize_title(parent_title)
+        if not self._is_informative_title(current):
+            current = ""
+        if not self._is_informative_title(parent):
+            parent = ""
+
+        if current and parent and current.lower() in {"概述", "说明", "注意事项", "简介"}:
+            heading = f"{parent} > {current}"
+        elif current:
+            heading = current
+        elif parent:
+            heading = parent
+        else:
+            heading = ""
+
+        prefix_parts = []
+        source_filename = filename or getattr(self, "_current_filename", "")
+        if source_filename:
+            short_fn = os.path.splitext(os.path.basename(str(source_filename)))[0]
+            prefix_parts.append(f"[文档: {short_fn}]")
+        if heading:
+            prefix_parts.append(f"[章节: {heading}]")
+        if page_start not in (None, ""):
+            prefix_parts.append(f"[页: {page_start}]")
+        if anchor_id:
+            prefix_parts.append(f"[锚点: {anchor_id}]")
+
+        prefix = " ".join(prefix_parts)
+
+        if prefix and heading and content:
+            text = f"{prefix} {heading}\n{content}"
+        elif prefix and content:
+            text = f"{prefix} {content}"
+        elif heading and content:
+            text = f"{heading}\n{content}"
+        else:
+            text = heading or content
+
+        # Truncate to 4000 chars (Milvus max_length)
+        if len(text) > 4000:
+            half = 2000
+            text = text[:half] + "\n...[truncated]...\n" + text[-(4000 - half - 20):]
+
+        return text
 
     @classmethod
     def _heading_depth(cls, line: str) -> int:
@@ -209,7 +337,15 @@ class DocumentLoader:
                 {
                     **base_doc,
                     "text": root_text,
-                    "retrieval_text": root_text,
+                    "retrieval_text": self._make_retrieval_text(
+                        raw_text=root_text,
+                        body=root_text,
+                        current_title="",
+                        parent_title=None,
+                        filename=filename,
+                        page_start=page_number,
+                        anchor_id="",
+                    ),
                     "chunk_id": root_id,
                     "parent_chunk_id": "",
                     "root_chunk_id": root_id,
@@ -237,7 +373,15 @@ class DocumentLoader:
                     {
                         **base_doc,
                         "text": leaf_text,
-                        "retrieval_text": leaf_text,
+                        "retrieval_text": self._make_retrieval_text(
+                            raw_text=leaf_text,
+                            body=leaf_text,
+                            current_title="",
+                            parent_title=None,
+                            filename=filename,
+                            page_start=page_number,
+                            anchor_id="",
+                        ),
                         "chunk_id": leaf_id,
                         "parent_chunk_id": root_id,
                         "root_chunk_id": root_id,
@@ -281,6 +425,9 @@ class DocumentLoader:
                     body=body,
                     current_title=section["title"],
                     parent_title=section["parent_title"],
+                    filename=filename,
+                    page_start=section["page_start"],
+                    anchor_id=section["anchor_id"],
                 ),
                 "chunk_id": root_id,
                 "parent_chunk_id": "",
@@ -312,6 +459,9 @@ class DocumentLoader:
                             body=leaf_text,
                             current_title=section["title"],
                             parent_title=section["parent_title"],
+                            filename=filename,
+                            page_start=section["page_start"],
+                            anchor_id=section["anchor_id"],
                         ),
                         "chunk_id": self._make_chunk_id(filename, f"s{section['section_index']}", 3, leaf_index),
                         "parent_chunk_id": root_id,
@@ -398,12 +548,18 @@ class DocumentLoader:
 
         if file_lower.endswith(".pdf"):
             doc_type = "PDF"
+            from langchain_community.document_loaders.pdf import PyPDFLoader
+
             loader = PyPDFLoader(file_path)
         elif file_lower.endswith((".docx", ".doc")):
             doc_type = "Word"
+            from langchain_community.document_loaders.word_document import Docx2txtLoader
+
             loader = Docx2txtLoader(file_path)
         elif file_lower.endswith((".xlsx", ".xls")):
             doc_type = "Excel"
+            from langchain_community.document_loaders.excel import UnstructuredExcelLoader
+
             loader = UnstructuredExcelLoader(file_path)
         else:
             raise ValueError(f"Unsupported file type: {filename}")

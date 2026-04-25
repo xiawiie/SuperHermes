@@ -98,8 +98,17 @@ def classify_failure(
     expected_root_ids: list[str] | None = None,
     expected_anchors: list[str] | None = None,
     expected_keywords: list[str] | None = None,
+    expected_files: list[str] | None = None,
+    expected_pages: list[str] | None = None,
+    hard_negative_files: list[str] | None = None,
 ) -> DiagnosticResult:
-    """Classify a RAG failure using the smallest reliable evidence set."""
+    """Classify a RAG failure into one of five categories:
+    - file_recall_miss: correct file not in candidates
+    - page_miss: correct file in top5 but wrong page
+    - ranking_miss: correct candidate exists but rerank dropped it
+    - hard_negative_confusion: all top5 from hard negatives
+    - low_confidence: top1 score below threshold
+    """
     if not rag_trace or "retrieved_chunks" not in rag_trace:
         return _result(
             "insufficient_trace",
@@ -108,7 +117,87 @@ def classify_failure(
             ["确保 RAG 主链路稳定输出 retrieved_chunks 和基础置信度字段。"],
         )
 
-    has_ground_truth = bool(expected_chunk_ids or expected_root_ids or expected_anchors or expected_keywords)
+    has_ground_truth = bool(expected_chunk_ids or expected_root_ids or expected_anchors or expected_keywords or expected_files)
+
+    # Check top5 for hard negative confusion
+    top5_chunks = rag_trace.get("retrieved_chunks", [])[:5]
+    top5_files = {str(c.get("filename") or "") for c in top5_chunks}
+    hard_neg_set = _as_set(hard_negative_files)
+    expected_file_set = _as_set(expected_files)
+
+    # hard_negative_confusion: all top5 from hard negatives
+    if hard_neg_set and top5_files and top5_files.issubset(hard_neg_set):
+        return _result(
+            "hard_negative_confusion",
+            "rerank",
+            {
+                "top5_files": sorted(top5_files),
+                "hard_negative_files": sorted(hard_neg_set),
+                "expected_files": sorted(expected_file_set),
+            },
+            ["检查 reranker 是否能有效区分 hard negative 和正确文档；考虑添加 filename boost 或产品族惩罚。"],
+        )
+
+    # Check if correct file is in top5
+    file_in_top5 = bool(expected_file_set & top5_files) if expected_file_set else None
+
+    # Check if correct file is in candidates (before rerank)
+    before = rag_trace.get("candidates_before_rerank") or []
+    before_files = {str(c.get("filename") or "") for c in before}
+    file_in_candidates = bool(expected_file_set & before_files) if expected_file_set else None
+
+    # file_recall_miss: correct file not in candidates at all
+    if expected_file_set and not file_in_candidates:
+        return _result(
+            "file_recall_miss",
+            "recall",
+            {
+                "expected_files": sorted(expected_file_set),
+                "top5_files": sorted(top5_files),
+                "candidate_file_count": len(before_files),
+            },
+            ["调整 embedding/sparse 检索范围，检查 filename registry 和 query plan 路由。"],
+        )
+
+    # ranking_miss: correct file in candidates but not in top5
+    if expected_file_set and file_in_candidates and not file_in_top5:
+        return _result(
+            "ranking_miss",
+            "rerank",
+            {
+                "expected_files": sorted(expected_file_set),
+                "file_in_candidates": True,
+                "file_in_top5": False,
+            },
+            ["扩大 rerank 候选范围，检查 reranker 是否正确排序含正确文件的候选。"],
+        )
+
+    # page_miss: correct file in top5 but wrong page
+    if expected_file_set and file_in_top5 and expected_pages:
+        expected_pages_str = {str(p) for p in expected_pages}
+        top5_pages = set()
+        for c in top5_chunks:
+            if str(c.get("filename") or "") in expected_file_set:
+                pn = c.get("page_number")
+                if pn is not None:
+                    top5_pages.add(str(pn))
+                    try:
+                        top5_pages.add(str(int(pn) + 1))
+                    except (ValueError, TypeError):
+                        pass
+        if not (expected_pages_str & top5_pages):
+            return _result(
+                "page_miss",
+                "rerank",
+                {
+                    "expected_files": sorted(expected_file_set),
+                    "expected_pages": sorted(expected_pages_str),
+                    "top5_pages_for_expected_files": sorted(top5_pages),
+                },
+                ["检查文档分页是否正确，chunk 是否包含页码元数据，reranker 是否给正确页码更高分数。"],
+            )
+
+    # Legacy match checks for non-file-based ground truth
     final_match = _matches_expected(
         rag_trace.get("retrieved_chunks", []),
         expected_chunk_ids=expected_chunk_ids,
@@ -126,6 +215,25 @@ def classify_failure(
                 "confidence_reasons": rag_trace.get("confidence_reasons") or [],
             },
             [],
+        )
+
+    # low_confidence: top1 score is very low
+    top1_score = None
+    for c in top5_chunks:
+        s = c.get("score") or c.get("rerank_score") or c.get("final_score")
+        if s is not None:
+            top1_score = float(s)
+            break
+    if top1_score is not None and top1_score < 0.20:
+        return _result(
+            "low_confidence",
+            "confidence_gate",
+            {
+                "top1_score": top1_score,
+                "fallback_required": bool(rag_trace.get("fallback_required")),
+                "confidence_reasons": rag_trace.get("confidence_reasons") or [],
+            },
+            ["检索结果置信度过低，检查 query 是否有效、embedding 是否退化、索引是否过期。"],
         )
 
     if rag_trace.get("fallback_required") or rag_trace.get("confidence_reasons"):
@@ -148,60 +256,57 @@ def classify_failure(
             "insufficient_trace",
             "unknown",
             {"reason": "missing_ground_truth", "query": query},
-            ["线上无标准答案时只能做候选归因；离线评估请提供 expected_root_ids、expected_anchors 或 expected_keywords。"],
+            ["线上无标准答案时只能做候选归因；离线评估请提供 expected_files、expected_anchors 或 expected_keywords。"],
         )
 
-    before = rag_trace.get("candidates_before_rerank")
-    after_rerank = rag_trace.get("candidates_after_rerank")
-    after_structure = rag_trace.get("candidates_after_structure_rerank")
-    if before is None or after_rerank is None or after_structure is None:
+    # Root/chunk/anchor/keyword ground truth: attribute recall vs rerank when candidate lists exist
+    if rag_trace.get("candidates_before_rerank") is None:
         return _result(
             "insufficient_trace",
             "unknown",
             {
-                "reason": "missing_candidate_stage_trace",
-                "has_before_rerank": before is not None,
-                "has_after_rerank": after_rerank is not None,
-                "has_after_structure": after_structure is not None,
+                "reason": "missing_prerank_candidates",
+                "query": query,
+                "final_match": final_match,
             },
-            ["在评估模式下记录 candidates_before_rerank、candidates_after_rerank 和 candidates_after_structure_rerank。"],
+            ["补充 candidates_before_rerank / candidates_after_rerank 以便区分召回失败与排序失败。"],
         )
 
     before_match = _matches_expected(before, expected_chunk_ids, expected_root_ids, expected_anchors, expected_keywords)
+    after_rerank = rag_trace.get("candidates_after_rerank") or []
+    after_rerank_match = _matches_expected(after_rerank, expected_chunk_ids, expected_root_ids, expected_anchors, expected_keywords)
+
     if not before_match["matched"]:
         return _result(
-            "recall_miss",
+            "file_recall_miss",
             "recall",
-            {"candidate_match": before_match},
-            ["调整 chunking 边界、retrieval_text、dense/sparse candidate 范围，并检查 embedding/sparse 信号。"],
+            {
+                "final_match": final_match,
+                "before_rerank_match": before_match,
+                "after_rerank_match": after_rerank_match,
+            },
+            ["扩大检索召回（embedding/sparse/查询改写），确认黄金片段是否进入 rerank 前候选。"],
         )
 
-    after_rerank_match = _matches_expected(after_rerank, expected_chunk_ids, expected_root_ids, expected_anchors, expected_keywords)
-    if not after_rerank_match["matched"]:
+    if before_match["matched"] and not final_match["matched"]:
         return _result(
             "ranking_miss",
             "rerank",
-            {"before_rerank_match": before_match, "after_rerank_match": after_rerank_match},
-            ["扩大 rerank 候选范围，检查 reranker 输入是否正确使用 retrieval_text。"],
-        )
-
-    after_structure_match = _matches_expected(after_structure, expected_chunk_ids, expected_root_ids, expected_anchors, expected_keywords)
-    if not after_structure_match["matched"]:
-        return _result(
-            "ranking_miss",
-            "structure_rerank",
-            {"after_rerank_match": after_rerank_match, "after_structure_match": after_structure_match},
-            ["调整 STRUCTURE_RERANK_ROOT_WEIGHT、SAME_ROOT_CAP，并检查是否被错误 root 压制。"],
+            {
+                "final_match": final_match,
+                "before_rerank_match": before_match,
+                "after_rerank_match": after_rerank_match,
+            },
+            ["候选阶段曾命中但最终未命中；检查 rerank / structure_rerank 与 top-k 截断。"],
         )
 
     return _result(
-        "mixed_failure",
+        "ranking_miss",
         "unknown",
         {
             "final_match": final_match,
             "before_rerank_match": before_match,
             "after_rerank_match": after_rerank_match,
-            "after_structure_match": after_structure_match,
         },
         ["候选阶段曾命中但最终未命中；先复查 final top-k 组装，再检查排序与去重逻辑。"],
     )
