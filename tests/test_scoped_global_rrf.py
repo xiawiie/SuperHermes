@@ -1,13 +1,10 @@
 """Tests for scoped/global weighted RRF merging in rag_utils._weighted_rrf_merge."""
 from __future__ import annotations
 
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
-from query_plan import QueryPlan
-from rag_utils import _apply_filename_boost, _build_filename_filter, _weighted_rrf_merge
+from backend.rag.query_plan import QueryPlan
+from backend.rag.utils import _apply_filename_boost, _build_filename_filter, _weighted_rrf_merge
 
 
 def _make_chunk(chunk_id: str, score: float, filename: str = "a.pdf", page: int = 1):

@@ -1,14 +1,11 @@
-import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
-sys.path.insert(0, str(BACKEND_DIR))
 
-from milvus_client import MilvusManager  # noqa: E402
+from backend.infra.vector_store.milvus_client import MilvusManager  # noqa: E402
 
 
 class FlakyMilvusClient:
@@ -33,7 +30,7 @@ class MilvusManagerReconnectTests(unittest.TestCase):
             self.assertEqual(uri, "http://127.0.0.1:19530")
             return clients.pop(0)
 
-        with patch("milvus_client.MilvusClient", side_effect=client_factory) as factory:
+        with patch("backend.infra.vector_store.milvus_client.MilvusClient", side_effect=client_factory) as factory:
             manager = MilvusManager()
             manager.host = "127.0.0.1"
             manager.port = "19530"
@@ -55,7 +52,7 @@ class MilvusManagerReconnectTests(unittest.TestCase):
             self.assertEqual(uri, "http://127.0.0.1:19530")
             return clients.pop(0)
 
-        with patch("milvus_client.MilvusClient", side_effect=client_factory) as factory:
+        with patch("backend.infra.vector_store.milvus_client.MilvusClient", side_effect=client_factory) as factory:
             manager = MilvusManager()
             manager.host = "127.0.0.1"
             manager.port = "19530"

@@ -4,10 +4,9 @@ from __future__ import annotations
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from rag_diagnostics import classify_failure
+from backend.rag.diagnostics import classify_failure
 from scripts.analyze_rag_misses import analyze_misses
 
 

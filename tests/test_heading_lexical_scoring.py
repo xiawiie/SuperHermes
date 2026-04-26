@@ -1,13 +1,10 @@
 """Tests for heading lexical scoring in rag_utils._apply_heading_lexical_scoring."""
 from __future__ import annotations
 
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
-from query_plan import QueryPlan
-from rag_utils import _apply_heading_lexical_scoring
+from backend.rag.query_plan import QueryPlan
+from backend.rag.utils import _apply_heading_lexical_scoring
 
 
 def _make_query_plan(heading_hint="", scope_mode="filter", semantic_query="", anchors=None):

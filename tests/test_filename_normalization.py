@@ -1,12 +1,9 @@
 """Tests for filename normalization via query_plan._normalize_filename."""
 from __future__ import annotations
 
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
-from query_plan import _normalize_filename
+from backend.rag.query_plan import _normalize_filename
 
 
 class TestFilenameNormalization:

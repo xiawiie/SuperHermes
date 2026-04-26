@@ -1,13 +1,10 @@
-import sys
 import unittest
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
-sys.path.insert(0, str(BACKEND_DIR))
 
-from rag_diagnostics import classify_failure  # noqa: E402
+from backend.rag.diagnostics import classify_failure  # noqa: E402
 
 
 class RagDiagnosticsTests(unittest.TestCase):
@@ -96,7 +93,7 @@ class RagDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result["failed_stage"], "rerank")
 
     def test_anchor_text_match_uses_boundary_aware_check(self):
-        from rag_diagnostics import _anchor_in_text
+        from backend.rag.diagnostics import _anchor_in_text
 
         self.assertTrue(_anchor_in_text("第一条", "第一条 为了保护民事主体的合法权益"))
         self.assertTrue(_anchor_in_text("1.2", "1.2 系统配置"))

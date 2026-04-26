@@ -8,7 +8,6 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
 
 
 class BootstrapTests(unittest.TestCase):
@@ -26,10 +25,10 @@ class BootstrapTests(unittest.TestCase):
         env = os.environ.copy()
         env.pop("DATABASE_URL", None)
         env.pop("FALLBACK_DATABASE_URL", None)
-        env["PYTHONPATH"] = str(BACKEND_DIR)
+        env["PYTHONPATH"] = str(PROJECT_ROOT)
 
         result = self.run_python(
-            "import database; print(database.DATABASE_URL)",
+            "from backend.infra.db import database; print(database.DATABASE_URL)",
             env=env,
         )
 
@@ -44,14 +43,14 @@ class BootstrapTests(unittest.TestCase):
         fallback_path = PROJECT_ROOT / "data" / "test-bootstrap-fallback.db"
         env["DATABASE_URL"] = "postgresql+psycopg2://postgres:wrong-password@127.0.0.1:5432/langchain_app"
         env["FALLBACK_DATABASE_URL"] = f"sqlite:///{fallback_path.as_posix()}"
-        env["PYTHONPATH"] = str(BACKEND_DIR)
+        env["PYTHONPATH"] = str(PROJECT_ROOT)
         fallback_path.unlink(missing_ok=True)
 
         try:
             result = self.run_python(
                 "\n".join(
                     [
-                        "import database",
+                        "from backend.infra.db import database",
                         "database.init_db()",
                         "print(database.DATABASE_URL)",
                         "print(database.DATABASE_FALLBACK_USED)",
@@ -106,10 +105,10 @@ class BootstrapTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
-            env["PYTHONPATH"] = os.pathsep.join([str(stub_root), str(BACKEND_DIR)])
+            env["PYTHONPATH"] = os.pathsep.join([str(stub_root), str(PROJECT_ROOT)])
 
             result = self.run_python(
-                "import app; print(app.app.title)",
+                "from backend.app import app; print(app.title)",
                 env=env,
             )
         finally:

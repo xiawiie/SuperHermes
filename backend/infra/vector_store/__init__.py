@@ -1,0 +1,1 @@
+"""Vector-store infrastructure adapters."""

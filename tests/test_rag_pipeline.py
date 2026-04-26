@@ -1,4 +1,3 @@
-import sys
 import time
 import unittest
 from pathlib import Path
@@ -7,10 +6,8 @@ from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
-sys.path.insert(0, str(BACKEND_DIR))
 
-import rag_pipeline  # noqa: E402
+import backend.rag.pipeline as rag_pipeline  # noqa: E402
 
 
 class FakeStructuredGrader:
@@ -41,7 +38,7 @@ class RagPipelinePromptTests(unittest.TestCase):
 
         with (
             patch.object(rag_pipeline, "RAG_FALLBACK_ENABLED", True),
-            patch("rag_pipeline._get_grader_model", return_value=grader),
+            patch("backend.rag.pipeline._get_grader_model", return_value=grader),
         ):
             result = rag_pipeline.grade_documents_node(state)
 
@@ -67,7 +64,7 @@ class RagPipelinePromptTests(unittest.TestCase):
             time.sleep(0.05)
             return {"docs": [{"text": "late", "filename": "b.pdf", "chunk_id": "late"}], "meta": {}}
 
-        with patch("rag_pipeline.retrieve_documents", side_effect=slow_retrieve):
+        with patch("backend.rag.pipeline.retrieve_documents", side_effect=slow_retrieve):
             result = rag_pipeline.retrieve_expanded(state)
 
         self.assertEqual(result["docs"], initial_docs)
@@ -103,7 +100,7 @@ class RagPipelinePromptTests(unittest.TestCase):
             }
 
         started = time.perf_counter()
-        with patch("rag_pipeline.retrieve_documents", side_effect=slow_retrieve):
+        with patch("backend.rag.pipeline.retrieve_documents", side_effect=slow_retrieve):
             result = rag_pipeline.retrieve_expanded(state)
         elapsed = time.perf_counter() - started
 

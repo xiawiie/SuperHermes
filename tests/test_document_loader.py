@@ -1,14 +1,11 @@
-import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
-sys.path.insert(0, str(BACKEND_DIR))
 
-from document_loader import DocumentLoader  # noqa: E402
+from backend.documents.loader import DocumentLoader  # noqa: E402
 
 
 class DocumentLoaderRetrievalTextTests(unittest.TestCase):

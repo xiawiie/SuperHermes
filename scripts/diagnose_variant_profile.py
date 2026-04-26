@@ -14,13 +14,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
 
-from backend.filename_normalization import normalize_filename_for_match  # noqa: E402
+from backend.shared.filename_normalization import normalize_filename_for_match  # noqa: E402
 
 
 @dataclass(frozen=True)

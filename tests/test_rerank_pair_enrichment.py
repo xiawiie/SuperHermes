@@ -1,12 +1,9 @@
 """Tests for rerank pair enrichment and cache key behavior."""
 from __future__ import annotations
 
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
-from rag_utils import (
+from backend.rag.utils import (
     _rerank_doc_signatures,
     _rerank_cache_key,
     _build_enriched_pair,

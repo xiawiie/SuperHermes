@@ -2,22 +2,20 @@
 from __future__ import annotations
 
 import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 
 class TestBM25StateIsolation:
     def test_default_state_path_includes_collection(self):
         collection = os.getenv("MILVUS_COLLECTION", "embeddings_collection")
         text_mode = os.getenv("EVAL_RETRIEVAL_TEXT_MODE", "title_context")
-        from embedding import _DEFAULT_STATE_PATH
+        from backend.infra.embedding import _DEFAULT_STATE_PATH
         expected_name = f"bm25_state_{collection}_{text_mode}.json"
         assert _DEFAULT_STATE_PATH.name == expected_name
 
     def test_different_collection_different_path(self):
         """Verify that changing MILVUS_COLLECTION changes new service state paths."""
-        from embedding import EmbeddingService
+        from backend.infra.embedding import EmbeddingService
 
         old_collection = os.environ.get("MILVUS_COLLECTION")
         old_text_mode = os.environ.get("EVAL_RETRIEVAL_TEXT_MODE")
@@ -48,7 +46,7 @@ class TestBM25StateIsolation:
 
     def test_state_path_format(self):
         """Verify state path follows bm25_state_{collection}_{mode}.json pattern."""
-        from embedding import _DEFAULT_STATE_PATH
+        from backend.infra.embedding import _DEFAULT_STATE_PATH
         name = _DEFAULT_STATE_PATH.name
         assert name.startswith("bm25_state_")
         assert name.endswith(".json")
@@ -62,7 +60,7 @@ class TestBM25StateIsolation:
         old = os.environ.get("BM25_STATE_PATH")
         try:
             os.environ["BM25_STATE_PATH"] = custom_path
-            from embedding import EmbeddingService
+            from backend.infra.embedding import EmbeddingService
             svc = EmbeddingService()
             # On Windows, Path normalizes slashes; compare Path objects
             assert str(svc._state_path).replace("\\", "/") == custom_path.replace("\\", "/")

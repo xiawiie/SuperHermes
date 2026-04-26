@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import hashlib
@@ -16,14 +16,11 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
 
-from filename_normalization import normalize_filename_for_match, raw_filename_basename  # noqa: E402
+from backend.shared.filename_normalization import normalize_filename_for_match, raw_filename_basename  # noqa: E402
 from scripts.rag_eval.variants import (  # noqa: E402
     DATASET_DIR,
     DEFAULT_CANONICAL_CORPUS,
@@ -47,6 +44,14 @@ from scripts.rag_eval.metrics import (  # noqa: E402
     summarize_results as _summarize_results,
 )
 from scripts.rag_eval.io import load_jsonl as _load_jsonl, write_jsonl as _write_jsonl  # noqa: E402
+from scripts.rag_eval.common import (  # noqa: E402
+    as_list as _common_as_list,
+    doc_filename_norm as _common_doc_filename_norm,
+    normalized_filename_set as _common_normalized_filename_set,
+    percentile_values as _common_percentile_values,
+    present as _common_present,
+    rate as _common_rate,
+)
 from scripts.rag_eval.preflight import (  # noqa: E402
     validate_eval_dataset_records as _validate_eval_dataset_records,
 )
@@ -59,14 +64,7 @@ _QRELS_NA = "n/a (qrels missing)"
 
 
 def _as_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item) for item in value if str(item)]
-    if isinstance(value, tuple):
-        return [str(item) for item in value if str(item)]
-    text = str(value)
-    return [text] if text else []
+    return _common_as_list(value)
 
 
 def _sha256_file(path: Path) -> str:
@@ -116,16 +114,11 @@ def _expected_files_from_records(records: list[dict]) -> set[str]:
 
 
 def _normalized_filename_set(values: Any) -> set[str]:
-    normalized: set[str] = set()
-    for item in _as_list(values):
-        value = normalize_filename_for_match(item)
-        if value:
-            normalized.add(value)
-    return normalized
+    return _common_normalized_filename_set(values)
 
 
 def _doc_filename_norm(doc: dict) -> str:
-    return normalize_filename_for_match(doc.get("filename"))
+    return _common_doc_filename_norm(doc)
 
 
 def _file_coverage_details(expected_files: set[str], indexed_files: set[str]) -> dict[str, Any]:
@@ -190,25 +183,15 @@ def _corpus_coverage_report(records: list[dict], documents_dir: Path) -> dict[st
 
 
 def _rate(count: int, total: int) -> float:
-    return (count / total) if total else 0.0
+    return _common_rate(count, total)
 
 
 def _percentile_values(values: list[float], percentile: float) -> float | None:
-    if not values:
-        return None
-    ordered = sorted(values)
-    if len(ordered) == 1:
-        return ordered[0]
-    rank = (len(ordered) - 1) * percentile
-    lower = int(math.floor(rank))
-    upper = int(math.ceil(rank))
-    if lower == upper:
-        return ordered[lower]
-    return ordered[lower] + (ordered[upper] - ordered[lower]) * (rank - lower)
+    return _common_percentile_values(values, percentile)
 
 
 def _present(value: Any) -> bool:
-    return value is not None and str(value).strip() != ""
+    return _common_present(value)
 
 
 def _metadata_coverage_report(rows: list[dict]) -> dict[str, Any]:
@@ -256,9 +239,7 @@ def _collection_coverage_report(records: list[dict], variant: str) -> dict[str, 
     os.environ["MILVUS_COLLECTION"] = env.get("MILVUS_COLLECTION") or "embeddings_collection"
     os.environ["RAG_INDEX_PROFILE"] = env.get("RAG_INDEX_PROFILE") or "legacy"
     try:
-        if str(BACKEND_DIR) not in sys.path:
-            sys.path.insert(0, str(BACKEND_DIR))
-        from milvus_client import MilvusManager
+        from backend.infra.vector_store.milvus_client import MilvusManager
 
         manager = MilvusManager()
         rows = manager.query_all(
@@ -1106,25 +1087,20 @@ def _graph_transition_metrics(
 
 
 def _ensure_backend_imports(mode: str) -> tuple[Any, Any, Any | None]:
-    if str(BACKEND_DIR) not in sys.path:
-        sys.path.insert(0, str(BACKEND_DIR))
-    from rag_diagnostics import classify_failure
-    from rag_utils import retrieve_documents
+    from backend.rag.diagnostics import classify_failure
+    from backend.rag.utils import retrieve_documents
 
     run_rag_graph = None
     if mode == "graph":
-        from rag_pipeline import run_rag_graph
+        from backend.rag.pipeline import run_rag_graph
 
     return classify_failure, retrieve_documents, run_rag_graph
 
 
 def _ensure_answer_eval_import() -> Any:
-    if str(BACKEND_DIR) not in sys.path:
-        sys.path.insert(0, str(BACKEND_DIR))
-    from answer_eval import evaluate_answer_end_to_end
+    from backend.evaluation.answer_eval import evaluate_answer_end_to_end
 
     return evaluate_answer_end_to_end
-
 
 def evaluate_sample(record: dict, variant: str, top_k: int, mode: str = "retrieval") -> dict[str, Any]:
     classify_failure, retrieve_documents, run_rag_graph = _ensure_backend_imports(mode)
