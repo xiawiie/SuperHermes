@@ -267,34 +267,6 @@ class MilvusManager:
                 result.append(f)
         return result
 
-    def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[dict]:
-        ids = [item for item in chunk_ids if item]
-        if not ids:
-            return []
-
-        quoted_ids = ", ".join([f'"{item}"' for item in ids])
-        filter_expr = f"chunk_id in [{quoted_ids}]"
-
-        return self.query(
-            filter_expr=filter_expr,
-            output_fields=[
-                "text",
-                "retrieval_text",
-                "filename",
-                "file_type",
-                "page_number",
-                "page_start",
-                "page_end",
-                "chunk_id",
-                "parent_chunk_id",
-                "root_chunk_id",
-                "chunk_level",
-                "chunk_role",
-                "chunk_idx",
-            ],
-            limit=len(ids),
-        )
-
     def hybrid_retrieve(
         self,
         dense_embedding: list[float],
@@ -465,11 +437,6 @@ class MilvusManager:
         cache.incr("milvus_index_version")
         return result
 
-    def has_collection(self) -> bool:
-        return self._call_with_reconnect(
-            lambda client: client.has_collection(self.collection_name),
-            operation_name="has_collection",
-        )
 
     def drop_collection(self) -> None:
         def operation(client: MilvusClient) -> None:

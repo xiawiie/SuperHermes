@@ -1,0 +1,776 @@
+{
+  "qrel_version": "v2.1",
+  "changed_row_count": 125,
+  "changes": [
+    {
+      "qid": "doc_gold_0014_762f7b76cd",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0025_38a0dbde6a",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0028_f05c4e6e66",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0033_5fc5d0f1e7",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0035_cf2a96634e",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0037_b61ac7f583",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0040_f39ea221b8",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0043_de79aaa8e4",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0046_44d2e04041",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0055_8e2b5ee183",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0068_0f579c89f6",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0070_f0c840fccb",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0076_97b7afbf62",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0079_3144428a37",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0082_e8ae94b122",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0086_b4236dce2b",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0091_32323870bf",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0098_977dcc96d3",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0109_893a2b758d",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0121_4737b58dd0",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0127_97255b0609",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0134_604bf7b062",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0138_2a23ef20a0",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0140_e2c9b4e599",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0143_880a50bbaa",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0146_63645ef991",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0148_a29058ee5a",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0153_c6123043ef",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0155_f42a837c4c",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0163_b0bd2359ec",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0169_9640308fdc",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0179_4014bca889",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0182_2d4e42f5cd",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0190_e3b92ea190",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0193_99a2bd6dfa",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0205_88a0adc48e",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0211_9ecd7fe3d9",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0214_bfdb810ccb",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0224_04307c6a20",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0227_577aae960e",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0233_ffb6cff77c",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0236_1db457fa8c",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0242_6f29766d4d",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0250_b4a0ffe3b2",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0251_0d2f317a10",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0115_a967d4d77a",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0135_2bccb557d1",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0002_13031c6bea",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0009_33635575dd",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0011_9532723baf",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0015_be9f22f224",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0029_276f59994d",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0031_6a819754e0",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0039_a4324e0831",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0041_689ab0f6c4",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0067_9ade40ced9",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0081_41b9d8727a",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0084_890a009c2e",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0087_601a1f722b",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0090_0bcbf4cc69",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0096_e576c61365",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0097_2f33a186e8",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0105_94e143f355",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0110_080f6da35a",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0112_1b6962d810",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0120_6d7e2cc013",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0126_f206a7cd04",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0129_75d1a41902",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0136_e23e6b31c0",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0139_c54ea53d76",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0142_56eacbf769",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0145_33ba5601e5",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0149_61d0d2f264",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0152_706df307a1",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0154_75b502bb63",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0171_f59f7e2382",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0173_fa0136b540",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0178_2807637356",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0181_6eda4a673d",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0191_1b392ce4dd",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0194_caaecab6b6",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0212_5460c71d57",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0223_22d49eb958",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0226_8d84ed5dc3",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0232_f846223cf5",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0235_8f6876be2d",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0238_b7eaaed2a8",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0241_8dfc7a6d6b",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0252_4989aed5dc",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0006_16afb3ebca",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0008_7709a60324",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0012_fedafd2c63",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0020_754be8ed49",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0027_31f2eb9a7b",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0032_998666c413",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0036_9b6a45a190",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0038_c89d13f694",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0042_0bf2a95189",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0069_3ce6373141",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0071_eca9fa4ac6",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0077_75cdbf26ed",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0085_13abca5e09",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0089_dd99803a3f",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0092_570f6f8afc",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0099_769f4a62eb",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0104_92c4dc9278",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0108_0deeaa0573",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0111_839f34b134",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0114_ca8eeebc0c",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0116_6824358267",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0119_0bbf2aa183",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0124_9e93b2fe6e",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0128_39b9f593e8",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0144_64d037c221",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0150_b6f0bf2092",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0151_c1741639e2",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0156_d8ccd53c3a",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0164_8e8a7cf2be",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0166_bfb7a086ec",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0170_54bad2e7d7",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0174_6e85064b4b",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0183_de091f0d9d",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0192_fe4e6308df",
+      "changed_fields": [
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0195_fc56e4b09f",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    },
+    {
+      "qid": "doc_gold_0213_77db9cb99e",
+      "changed_fields": [
+        "gold_chunk_ids",
+        "quality"
+      ]
+    }
+  ]
+}

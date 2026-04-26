@@ -9,6 +9,7 @@ import requests
 from dotenv import load_dotenv
 
 from cache import cache
+from json_utils import extract_json_object
 from milvus_client import MilvusManager
 from embedding import embedding_service as _embedding_service
 from query_plan import (
@@ -33,12 +34,9 @@ from rag_rerank import (
     RerankRuntime,
     apply_rerank_score_fusion as _rerank_apply_score_fusion,
     build_enriched_pair as _rerank_build_enriched_pair,
-    metadata_match_score as _rerank_metadata_match_score,
-    normalize_float_scores as _rerank_normalize_float_scores,
     rerank_documents as _run_rerank_documents,
     rerank_pair_text as _rerank_pair_text_impl,
     rerank_rrf_score as _rerank_rrf_score_impl,
-    scope_match_score as _rerank_scope_match_score,
 )
 from rag_retrieval import (
     annotate_scope_scores as _retrieval_annotate_scope_scores,
@@ -46,7 +44,6 @@ from rag_retrieval import (
     apply_heading_lexical_scoring as _retrieval_apply_heading_lexical_scoring,
     build_filename_filter as _retrieval_build_filename_filter,
     dedupe_docs as _retrieval_dedupe_docs,
-    doc_filename as _retrieval_doc_filename,
     weighted_rrf_merge as _retrieval_weighted_rrf_merge,
 )
 from rag_trace import candidate_identity, trace_text_hash
@@ -143,10 +140,6 @@ def _weighted_rrf_merge(
     return _retrieval_weighted_rrf_merge(result_sets, rrf_k=rrf_k)
 
 
-def _doc_filename(doc: dict) -> str:
-    return _retrieval_doc_filename(doc)
-
-
 def _apply_filename_boost(query_plan: QueryPlan, candidates: list[dict]) -> list[dict]:
     return _retrieval_apply_filename_boost(
         query_plan,
@@ -168,18 +161,6 @@ def _apply_heading_lexical_scoring(
         heading_lexical_weight=HEADING_LEXICAL_WEIGHT,
         milvus_rrf_k=MILVUS_RRF_K,
     )
-
-
-def _normalize_float_scores(values: list[float]) -> list[float]:
-    return _rerank_normalize_float_scores(values)
-
-
-def _metadata_match_score(doc: dict) -> float:
-    return _rerank_metadata_match_score(doc)
-
-
-def _scope_match_score(doc: dict) -> float:
-    return _rerank_scope_match_score(doc)
 
 
 def _rerank_rrf_score(doc: dict) -> float:
@@ -359,6 +340,9 @@ def _get_rerank_endpoint() -> str:
 
 def _elapsed_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000, 3)
+
+
+elapsed_ms = _elapsed_ms
 
 
 def _effective_candidate_k(top_k: int) -> int:
@@ -668,50 +652,6 @@ def _get_stepback_model():
     return _stepback_model
 
 
-def _generate_step_back_question(query: str) -> str:
-    model = _get_stepback_model()
-    if not model:
-        return ""
-    prompt = (
-        "请将用户的具体问题抽象成更高层次、更概括的‘退步问题’，"
-        "用于探寻背后的通用原理或核心概念。只输出退步问题一句话，不要解释。\n"
-        f"用户问题：{query}"
-    )
-    try:
-        return (model.invoke(prompt).content or "").strip()
-    except Exception:
-        return ""
-
-
-def _answer_step_back_question(step_back_question: str) -> str:
-    model = _get_stepback_model()
-    if not model or not step_back_question:
-        return ""
-    prompt = (
-        "请简要回答以下退步问题，提供通用原理/背景知识，"
-        "控制在120字以内。只输出答案，不要列出推理过程。\n"
-        f"退步问题：{step_back_question}"
-    )
-    try:
-        return (model.invoke(prompt).content or "").strip()
-    except Exception:
-        return ""
-
-
-def _extract_json_object(text: str) -> dict:
-    content = (text or "").strip()
-    if content.startswith("```"):
-        content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.IGNORECASE)
-        content = re.sub(r"\s*```$", "", content).strip()
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", content, flags=re.DOTALL)
-        if not match:
-            raise
-        return json.loads(match.group(0))
-
-
 def _generate_step_back_pair(query: str) -> tuple[str, str]:
     model = _get_stepback_model()
     if not model:
@@ -728,7 +668,7 @@ def _generate_step_back_pair(query: str) -> tuple[str, str]:
     )
     try:
         response = model.invoke(prompt)
-        payload = _extract_json_object(getattr(response, "content", response) or "")
+        payload = extract_json_object(getattr(response, "content", response) or "")
         step_back_question = str(payload.get("step_back_question") or "").strip()
         step_back_answer = str(payload.get("step_back_answer") or "").strip()
         return step_back_question, step_back_answer

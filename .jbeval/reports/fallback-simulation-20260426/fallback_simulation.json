@@ -1,0 +1,38 @@
+{
+  "rows": 125,
+  "strategies": {
+    "strict": {
+      "fallback_rate": 0.0,
+      "file_at_5": 0.92,
+      "file_page_at_5": 0.712,
+      "chunk_at_5": 0.456,
+      "optimistic_p50_ms": 1144.175900000846,
+      "optimistic_p95_ms": 1611.0898999904748,
+      "conservative_p50_ms": 1144.175900000846,
+      "conservative_p95_ms": 1611.0898999904748,
+      "quality_gain_per_10pct_fallback": 0.0
+    },
+    "medium": {
+      "fallback_rate": 0.0,
+      "file_at_5": 0.92,
+      "file_page_at_5": 0.712,
+      "chunk_at_5": 0.456,
+      "optimistic_p50_ms": 1144.175900000846,
+      "optimistic_p95_ms": 1611.0898999904748,
+      "conservative_p50_ms": 1144.175900000846,
+      "conservative_p95_ms": 1611.0898999904748,
+      "quality_gain_per_10pct_fallback": 0.0
+    },
+    "broad": {
+      "fallback_rate": 0.0,
+      "file_at_5": 0.92,
+      "file_page_at_5": 0.712,
+      "chunk_at_5": 0.456,
+      "optimistic_p50_ms": 1144.175900000846,
+      "optimistic_p95_ms": 1611.0898999904748,
+      "conservative_p50_ms": 1144.175900000846,
+      "conservative_p95_ms": 1611.0898999904748,
+      "quality_gain_per_10pct_fallback": 0.0
+    }
+  }
+}

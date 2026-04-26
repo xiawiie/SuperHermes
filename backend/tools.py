@@ -2,10 +2,7 @@ from typing import Optional
 import os
 import requests
 from dotenv import load_dotenv
-try:
-    from langchain_core.tools import tool
-except ImportError:
-    from langchain_core.tools import tool
+from langchain_core.tools import tool
 
 load_dotenv()
 
