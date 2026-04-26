@@ -11,12 +11,17 @@ const read = (file) => readFileSync(join(__dirname, file), "utf8");
 const index = read("index.html");
 const css = read("style.css");
 const script = read("script.js");
-const backendSchemas = read("../backend/schemas.py");
+const backendSchemas = read("../backend/contracts/schemas.py");
 const backendApi = read("../backend/api.py");
-const backendAgent = read("../backend/agent.py");
-const backendTools = read("../backend/tools.py");
-const backendRagPipeline = read("../backend/rag_pipeline.py");
-const backendRagUtils = read("../backend/rag_utils.py");
+const backendRouterAuth = read("../backend/routers/auth.py");
+const backendRouterChat = read("../backend/routers/chat.py");
+const backendRouterSessions = read("../backend/routers/sessions.py");
+const backendRouterDocuments = read("../backend/routers/documents.py");
+const backendAgent = read("../backend/chat/agent.py");
+const backendTools = read("../backend/chat/tools.py");
+const backendRagPipeline = read("../backend/rag/pipeline.py");
+const backendRagUtils = read("../backend/rag/utils.py");
+const backendRagRetrieval = read("../backend/rag/retrieval.py");
 
 function loadAppOptions() {
   let capturedOptions = null;
@@ -155,6 +160,18 @@ const checks = [
   {
     name: "keeps backend-facing API routes intact",
     run() {
+      assert.match(backendApi, /include_router/);
+      assert.match(backendRouterAuth, /\/auth\/register/);
+      assert.match(backendRouterAuth, /\/auth\/login/);
+      assert.match(backendRouterAuth, /\/auth\/me/);
+      assert.match(backendRouterChat, /\/chat/);
+      assert.match(backendRouterChat, /request\.context_files/);
+      assert.match(backendRouterChat, /run_chat_stream/);
+      assert.match(backendRouterSessions, /\/sessions/);
+      assert.match(backendRouterSessions, /storage\./);
+      assert.match(backendRouterDocuments, /\/documents\/upload/);
+      assert.match(backendRouterDocuments, /DocumentService/);
+      assert.match(backendRouterDocuments, /get_document_service/);
       [
         "/auth/me",
         "/auth/login",
@@ -381,12 +398,12 @@ const checks = [
     name: "threads attached context files through backend RAG filtering",
     run() {
       assert.match(backendSchemas, /context_files:\s*Optional\[List\[str\]\]/);
-      assert.match(backendApi, /request\.context_files/);
+      assert.match(backendRouterChat, /request\.context_files/);
       assert.match(backendAgent, /context_files/);
       assert.match(backendTools, /set_rag_context_files/);
       assert.match(backendTools, /run_rag_graph\(query,\s*context_files=/);
       assert.match(backendRagPipeline, /context_files/);
-      assert.match(backendRagUtils, /filename in \[/);
+      assert.match(backendRagRetrieval, /filename in \[/);
       assert.match(backendRagUtils, /retrieve_context_documents/);
       assert.match(backendRagPipeline, /attached_context_chunks/);
       assert.match(backendAgent, /_with_retrieved_context_instruction/);

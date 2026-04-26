@@ -1,4 +1,3 @@
-import sys
 import unittest
 from pathlib import Path
 
@@ -6,13 +5,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
-sys.path.insert(0, str(BACKEND_DIR))
 
-from database import Base  # noqa: E402
-from models import ParentChunk  # noqa: E402
-import parent_chunk_store as store_module  # noqa: E402
-from parent_chunk_store import ParentChunkStore  # noqa: E402
+from backend.infra.db.database import Base  # noqa: E402
+from backend.infra.db.models import ParentChunk  # noqa: E402
+import backend.infra.vector_store.parent_chunk_store as store_module  # noqa: E402
+from backend.infra.vector_store.parent_chunk_store import ParentChunkStore  # noqa: E402
 
 
 class MemoryCache:

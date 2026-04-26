@@ -1,12 +1,9 @@
 """Tests for filename normalization and matching."""
 from __future__ import annotations
 
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
-from query_plan import _normalize_filename, _filename_match_score
+from backend.rag.query_plan import _normalize_filename, _filename_match_score
 
 
 class TestNormalizeFilename:

@@ -7,11 +7,8 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
 
 from scripts.rag_dataset_utils import write_jsonl
 from scripts.rag_qrels import attach_canonical_ids
@@ -76,7 +73,7 @@ def normalize_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
 
 def export_from_milvus(manager: object | None = None, filter_expr: str = "") -> list[dict[str, Any]]:
     if manager is None:
-        from milvus_client import MilvusManager
+        from backend.infra.vector_store.milvus_client import MilvusManager
 
         manager = MilvusManager()
     rows = manager.query_all(filter_expr=filter_expr, output_fields=CHUNK_OUTPUT_FIELDS)
@@ -89,7 +86,7 @@ def export_from_documents(
     include_parents: bool = False,
 ) -> list[dict[str, Any]]:
     if loader is None:
-        from document_loader import DocumentLoader
+        from backend.documents.loader import DocumentLoader
 
         loader = DocumentLoader()
     if not documents_dir.is_dir():

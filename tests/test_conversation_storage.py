@@ -1,4 +1,3 @@
-import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,11 +6,9 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
-sys.path.insert(0, str(BACKEND_DIR))
 
-from database import Base  # noqa: E402
-from models import ChatMessage, ChatSession, User  # noqa: E402
+from backend.infra.db.database import Base  # noqa: E402
+from backend.infra.db.models import ChatMessage, ChatSession, User  # noqa: E402
 
 
 class MemoryCache:
@@ -56,7 +53,7 @@ class ConversationStorageTests(unittest.TestCase):
         db.close()
 
     def build_storage(self):
-        from conversation_storage import ConversationStorage
+        from backend.infra.db.conversation_storage import ConversationStorage
 
         return ConversationStorage(session_factory=self.Session, cache_client=MemoryCache())
 

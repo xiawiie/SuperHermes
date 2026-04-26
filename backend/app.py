@@ -1,54 +1,19 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
-import os
+from __future__ import annotations
 
-import api as api_module
-from database import init_db
+if __package__ in {None, ""}:
+    import sys
+    from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-FRONTEND_DIR = BASE_DIR / "frontend"
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from backend.application.main import app, create_app
 
-def create_app() -> FastAPI:
-    app = FastAPI(title="SuperHermes Super Cute Pony Bot API")
+__all__ = ["app", "create_app"]
 
-    @app.on_event("startup")
-    async def _startup_init_db():
-        init_db()
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    # No-cache middleware for development
-    @app.middleware("http")
-    async def _no_cache(request, call_next):
-        response = await call_next(request)
-        path = request.url.path or ""
-        if path == "/" or path.endswith((".html", ".js", ".css")):
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
-        return response
-
-    app.include_router(api_module.router)
-
-    # serve frontend static files at root
-    if FRONTEND_DIR.exists():
-        app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="static")
-
-    return app
-
-
-app = create_app()
 
 if __name__ == "__main__":
+    import os
+
     import uvicorn
 
     uvicorn.run(app, host=os.getenv("HOST", "127.0.0.1"), port=int(os.getenv("PORT", 8000)))

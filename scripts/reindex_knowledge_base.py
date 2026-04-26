@@ -10,7 +10,9 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 SUPPORTED_SUFFIXES = {".pdf", ".doc", ".docx", ".xls", ".xlsx"}
 RETRIEVAL_TEXT_MODES = {"raw", "title_context", "title_context_filename"}
 V3_PROFILE_DEFAULTS = {
@@ -98,16 +100,13 @@ def _configure_env(args: argparse.Namespace) -> None:
 
 
 def _import_backend() -> dict[str, Any]:
-    if str(BACKEND_DIR) not in sys.path:
-        sys.path.insert(0, str(BACKEND_DIR))
-
-    from cache import cache
-    from database import init_db
-    from document_loader import DocumentLoader
-    from embedding import EmbeddingService
-    from milvus_client import MilvusManager
-    from milvus_writer import MilvusWriter
-    from parent_chunk_store import ParentChunkStore
+    from backend.infra.cache import cache
+    from backend.infra.db.database import init_db
+    from backend.documents.loader import DocumentLoader
+    from backend.infra.embedding import EmbeddingService
+    from backend.infra.vector_store.milvus_client import MilvusManager
+    from backend.infra.vector_store.milvus_writer import MilvusWriter
+    from backend.infra.vector_store.parent_chunk_store import ParentChunkStore
 
     return {
         "cache": cache,

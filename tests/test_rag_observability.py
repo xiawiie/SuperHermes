@@ -1,15 +1,12 @@
-import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
-sys.path.insert(0, str(BACKEND_DIR))
 
-import rag_pipeline  # noqa: E402
-import rag_utils  # noqa: E402
+import backend.rag.pipeline as rag_pipeline  # noqa: E402
+import backend.rag.utils as rag_utils  # noqa: E402
 
 
 class RagObservabilityTests(unittest.TestCase):
@@ -22,8 +19,8 @@ class RagObservabilityTests(unittest.TestCase):
             patch.object(rag_utils._embedding_service, "get_embeddings", return_value=[[0.1, 0.2]]),
             patch.object(rag_utils._embedding_service, "get_sparse_embedding", return_value={1: 0.5}),
             patch.object(rag_utils._milvus_manager, "hybrid_retrieve", return_value=docs),
-            patch("rag_utils._apply_structure_rerank", side_effect=lambda docs, top_k: (docs[:top_k], {})),
-            patch("rag_utils._evaluate_retrieval_confidence", return_value={"fallback_required": False}),
+            patch("backend.rag.utils._apply_structure_rerank", side_effect=lambda docs, top_k: (docs[:top_k], {})),
+            patch("backend.rag.utils._evaluate_retrieval_confidence", return_value={"fallback_required": False}),
         ):
             result = rag_utils.retrieve_documents("query", top_k=1)
 
@@ -47,8 +44,8 @@ class RagObservabilityTests(unittest.TestCase):
             patch.object(rag_utils._embedding_service, "get_sparse_embedding", return_value={1: 0.5}),
             patch.object(rag_utils._milvus_manager, "hybrid_retrieve", side_effect=RuntimeError("hybrid down")),
             patch.object(rag_utils._milvus_manager, "dense_retrieve", return_value=docs),
-            patch("rag_utils._apply_structure_rerank", side_effect=lambda docs, top_k: (docs[:top_k], {})),
-            patch("rag_utils._evaluate_retrieval_confidence", return_value={"fallback_required": False}),
+            patch("backend.rag.utils._apply_structure_rerank", side_effect=lambda docs, top_k: (docs[:top_k], {})),
+            patch("backend.rag.utils._evaluate_retrieval_confidence", return_value={"fallback_required": False}),
         ):
             result = rag_utils.retrieve_documents("query", top_k=1)
 
@@ -64,7 +61,7 @@ class RagObservabilityTests(unittest.TestCase):
             "rag_trace": {"fallback_required": False, "timings": {}},
         }
 
-        with patch("rag_pipeline._get_grader_model", side_effect=AssertionError("grader should not be called")):
+        with patch("backend.rag.pipeline._get_grader_model", side_effect=AssertionError("grader should not be called")):
             result = rag_pipeline.grade_documents_node(state)
 
         self.assertEqual(result["route"], "generate_answer")
@@ -86,7 +83,7 @@ class RagObservabilityTests(unittest.TestCase):
             "fallback_required": False,
         }
 
-        with patch("rag_pipeline.retrieve_documents", return_value={"docs": docs, "meta": meta}):
+        with patch("backend.rag.pipeline.retrieve_documents", return_value={"docs": docs, "meta": meta}):
             result = rag_pipeline.retrieve_initial({"question": "query", "context_files": []})
 
         trace = result["rag_trace"]

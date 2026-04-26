@@ -6,7 +6,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from backend.filename_normalization import normalize_filename_for_match
+from backend.shared.filename_normalization import normalize_filename_for_match
 from scripts.rag_dataset_utils import as_list, load_jsonl, loose_text
 
 

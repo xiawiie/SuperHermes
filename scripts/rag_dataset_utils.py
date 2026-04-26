@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from backend.filename_normalization import normalize_filename_for_match
+from backend.shared.filename_normalization import normalize_filename_for_match
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

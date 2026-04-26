@@ -1,15 +1,12 @@
-import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
-sys.path.insert(0, str(BACKEND_DIR))
 
-import milvus_client  # noqa: E402
-import milvus_writer  # noqa: E402
+import backend.infra.vector_store.milvus_client as milvus_client  # noqa: E402
+import backend.infra.vector_store.milvus_writer as milvus_writer  # noqa: E402
 
 
 class FakeCache:

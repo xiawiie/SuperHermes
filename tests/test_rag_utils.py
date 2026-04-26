@@ -1,14 +1,11 @@
-import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
-sys.path.insert(0, str(BACKEND_DIR))
 
-import rag_utils  # noqa: E402
+import backend.rag.utils as rag_utils  # noqa: E402
 
 
 class RagUtilsDiagnosticsTests(unittest.TestCase):
@@ -45,8 +42,8 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             patch.object(rag_utils._embedding_service, "get_sparse_embedding", return_value={1: 0.5}),
             patch.object(rag_utils._milvus_manager, "hybrid_retrieve", side_effect=RuntimeError("hybrid channel closed")),
             patch.object(rag_utils._milvus_manager, "dense_retrieve", return_value=[dense_doc]),
-            patch("rag_utils._rerank_documents", side_effect=lambda query, docs, top_k: (docs[:top_k], {"rerank_enabled": False, "rerank_applied": False})),
-            patch("rag_utils._auto_merge_documents", side_effect=lambda docs, top_k: (docs[:top_k], {"auto_merge_enabled": True, "auto_merge_applied": False})),
+            patch("backend.rag.utils._rerank_documents", side_effect=lambda query, docs, top_k: (docs[:top_k], {"rerank_enabled": False, "rerank_applied": False})),
+            patch("backend.rag.utils._auto_merge_documents", side_effect=lambda docs, top_k: (docs[:top_k], {"auto_merge_enabled": True, "auto_merge_applied": False})),
         ):
             result = rag_utils.retrieve_documents("query", top_k=1)
 
@@ -75,8 +72,8 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             patch.object(rag_utils._embedding_service, "get_embeddings", return_value=[[0.1, 0.2]]),
             patch.object(rag_utils._embedding_service, "get_sparse_embedding", return_value={1: 0.5}),
             patch.object(rag_utils._milvus_manager, "hybrid_retrieve", return_value=docs) as hybrid,
-            patch("rag_utils._apply_structure_rerank", side_effect=lambda docs, top_k: (docs[:top_k], {"structure_rerank_enabled": False, "structure_rerank_applied": False})),
-            patch("rag_utils._evaluate_retrieval_confidence", return_value={"confidence_gate_enabled": False, "fallback_required": False, "confidence_reasons": []}),
+            patch("backend.rag.utils._apply_structure_rerank", side_effect=lambda docs, top_k: (docs[:top_k], {"structure_rerank_enabled": False, "structure_rerank_applied": False})),
+            patch("backend.rag.utils._evaluate_retrieval_confidence", return_value={"confidence_gate_enabled": False, "fallback_required": False, "confidence_reasons": []}),
         ):
             result = rag_utils.retrieve_documents("query", top_k=1)
 
@@ -127,9 +124,9 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             patch.object(rag_utils._embedding_service, "get_sparse_embedding", return_value={1: 0.5}) as sparse,
             patch.object(rag_utils, "get_filename_registry", side_effect=AssertionError("registry should not load")),
             patch.object(rag_utils._milvus_manager, "hybrid_retrieve", return_value=docs),
-            patch("rag_utils._rerank_documents", side_effect=lambda query, docs, top_k: (docs[:top_k], {"rerank_enabled": False, "rerank_applied": False})),
-            patch("rag_utils._apply_structure_rerank", side_effect=lambda docs, top_k: (docs[:top_k], {"structure_rerank_enabled": False, "structure_rerank_applied": False})),
-            patch("rag_utils._evaluate_retrieval_confidence", return_value={"confidence_gate_enabled": False, "fallback_required": False, "confidence_reasons": []}),
+            patch("backend.rag.utils._rerank_documents", side_effect=lambda query, docs, top_k: (docs[:top_k], {"rerank_enabled": False, "rerank_applied": False})),
+            patch("backend.rag.utils._apply_structure_rerank", side_effect=lambda docs, top_k: (docs[:top_k], {"structure_rerank_enabled": False, "structure_rerank_applied": False})),
+            patch("backend.rag.utils._evaluate_retrieval_confidence", return_value={"confidence_gate_enabled": False, "fallback_required": False, "confidence_reasons": []}),
         ):
             result = rag_utils.retrieve_documents("《Manual》中，如何配置？", top_k=1)
 
@@ -193,7 +190,7 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             patch.object(rag_utils, "RERANK_TOP_N", 0),
             patch.object(rag_utils, "RERANK_INPUT_K_GPU", 7),
             patch.object(rag_utils, "RERANK_CACHE_ENABLED", False),
-            patch("rag_utils.requests.post", side_effect=fake_post),
+            patch("backend.rag.utils.requests.post", side_effect=fake_post),
         ):
             reranked, meta = rag_utils._rerank_documents("query", docs, top_k=4)
 

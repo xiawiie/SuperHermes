@@ -14,13 +14,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
 
-from backend.filename_normalization import normalize_filename_for_match  # noqa: E402
+from backend.shared.filename_normalization import normalize_filename_for_match  # noqa: E402
 from scripts.rag_dataset_utils import alignment_score, load_jsonl, write_json, write_jsonl  # noqa: E402
 from scripts.rag_qrels import attach_canonical_ids, normalized_text_hash  # noqa: E402
 
@@ -66,7 +63,7 @@ sufficient evidence to support the core claims in the expected answer.
 
 For each chunk candidate, evaluate:
 1. support_level: full_support / partial_support / topical_only / no_support
-2. claim_coverage: 0.0-1.0 — what fraction of the core claims in expected_answer \
+2. claim_coverage: 0.0-1.0 鈥?what fraction of the core claims in expected_answer \
 can be directly supported by this chunk?
 3. llm_verdict: accept / reject / remap
    - accept: this chunk fully supports the answer (full_support, claim_coverage >= 0.80)

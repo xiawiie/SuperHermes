@@ -1,14 +1,11 @@
-import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BACKEND_DIR = PROJECT_ROOT / "backend"
-sys.path.insert(0, str(BACKEND_DIR))
 
-import rag_pipeline  # noqa: E402
+import backend.rag.pipeline as rag_pipeline  # noqa: E402
 
 
 class RagPipelineFastPathTests(unittest.TestCase):
@@ -24,7 +21,7 @@ class RagPipelineFastPathTests(unittest.TestCase):
 
         with (
             patch.object(rag_pipeline, "RAG_FALLBACK_ENABLED", True),
-            patch("rag_pipeline._get_grader_model", side_effect=AssertionError("grader should not be called")),
+            patch("backend.rag.pipeline._get_grader_model", side_effect=AssertionError("grader should not be called")),
         ):
             result = rag_pipeline.grade_documents_node(state)
 
@@ -43,7 +40,7 @@ class RagPipelineFastPathTests(unittest.TestCase):
 
         with (
             patch.object(rag_pipeline, "RAG_FALLBACK_ENABLED", True),
-            patch("rag_pipeline._get_grader_model", side_effect=AssertionError("grader should not be called")),
+            patch("backend.rag.pipeline._get_grader_model", side_effect=AssertionError("grader should not be called")),
         ):
             result = rag_pipeline.grade_documents_node(state)
 

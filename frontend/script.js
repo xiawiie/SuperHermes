@@ -154,6 +154,9 @@ createApp({
         },
 
         createUserMessage(text, contextFiles = []) {
+            if (window.SuperHermesMessages?.createUserMessage) {
+                return window.SuperHermesMessages.createUserMessage(text, contextFiles);
+            }
             return {
                 id: "msg_" + Date.now() + "_" + Math.random().toString(16).slice(2),
                 text,
@@ -164,6 +167,9 @@ createApp({
         },
 
         createBotMessage(text = "", ragTrace = null) {
+            if (window.SuperHermesMessages?.createBotMessage) {
+                return window.SuperHermesMessages.createBotMessage(text, this.renderMarkdown, ragTrace);
+            }
             return {
                 id: "msg_" + Date.now() + "_" + Math.random().toString(16).slice(2),
                 text,
@@ -176,6 +182,9 @@ createApp({
         },
 
         authHeaders(extra = {}) {
+            if (window.SuperHermesApi?.createAuthHeaders) {
+                return window.SuperHermesApi.createAuthHeaders(this.token, extra);
+            }
             const headers = { ...extra };
             if (this.token) {
                 headers.Authorization = `Bearer ${this.token}`;
@@ -184,6 +193,14 @@ createApp({
         },
 
         async authFetch(url, options = {}) {
+            if (window.SuperHermesApi?.authFetch) {
+                return window.SuperHermesApi.authFetch(
+                    this.token,
+                    () => this.handleLogout(),
+                    url,
+                    options,
+                );
+            }
             const opts = { ...options };
             opts.headers = this.authHeaders(opts.headers || {});
             const response = await fetch(url, opts);

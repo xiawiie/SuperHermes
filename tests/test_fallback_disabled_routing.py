@@ -1,16 +1,13 @@
 """Tests for fallback disabled routing and trace three-part fields."""
 from __future__ import annotations
 
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 
 class TestFallbackDisabledRouting:
     def test_fallback_bool_parser_requires_explicit_true(self, monkeypatch):
         """Fallback should only enable when explicitly set to true."""
-        import rag_pipeline
+        import backend.rag.pipeline as rag_pipeline
 
         monkeypatch.delenv("RAG_FALLBACK_ENABLED", raising=False)
         assert rag_pipeline._env_bool("RAG_FALLBACK_ENABLED", False) is False
@@ -23,7 +20,7 @@ class TestFallbackDisabledRouting:
 
     def test_confidence_gate_bool_parser_requires_explicit_true(self, monkeypatch):
         """Confidence gate should only enable when explicitly set to true."""
-        import rag_utils
+        import backend.rag.utils as rag_utils
 
         monkeypatch.delenv("CONFIDENCE_GATE_ENABLED", raising=False)
         assert rag_utils._env_bool("CONFIDENCE_GATE_ENABLED", False) is False
@@ -36,7 +33,7 @@ class TestFallbackDisabledRouting:
 
     def test_grade_documents_short_circuit_when_disabled(self, monkeypatch):
         """When RAG_FALLBACK_ENABLED=False, grader should short-circuit."""
-        import rag_pipeline
+        import backend.rag.pipeline as rag_pipeline
 
         monkeypatch.setattr(rag_pipeline, "RAG_FALLBACK_ENABLED", False)
         state = {
@@ -53,7 +50,7 @@ class TestFallbackDisabledRouting:
 
     def test_trace_three_part_fields(self, monkeypatch):
         """Verify fallback_required_raw, fallback_executed, fallback_disabled in trace."""
-        import rag_pipeline
+        import backend.rag.pipeline as rag_pipeline
 
         monkeypatch.setattr(rag_pipeline, "RAG_FALLBACK_ENABLED", False)
         state = {
@@ -72,7 +69,7 @@ class TestFallbackDisabledRouting:
 
     def test_graph_path_trace(self, monkeypatch):
         """When fallback disabled, graph_path should be linear_initial_only."""
-        import rag_pipeline
+        import backend.rag.pipeline as rag_pipeline
 
         monkeypatch.setattr(rag_pipeline, "RAG_FALLBACK_ENABLED", False)
         state = {

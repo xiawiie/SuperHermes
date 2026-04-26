@@ -1,13 +1,10 @@
 """Tests for document scope matching: three tiers + context_files priority + route tightening."""
 from __future__ import annotations
 
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
-import query_plan
-from query_plan import parse_query_plan, DOC_SCOPE_MATCH_FILTER, DOC_SCOPE_MATCH_BOOST
+import backend.rag.query_plan as query_plan
+from backend.rag.query_plan import parse_query_plan, DOC_SCOPE_MATCH_FILTER, DOC_SCOPE_MATCH_BOOST
 
 
 _REGISTRY = [

@@ -2,219 +2,181 @@
 
 ## Overview
 
-SuperHermes is a RAG (Retrieval-Augmented Generation) document assistant that provides accurate, evidence-grounded answers over technical manuals (network equipment, computing devices).
+SuperHermes is a FastAPI + RAG document assistant. The backend is organized as a Python package with canonical `backend.*` imports. Legacy bare imports such as `import rag_utils`, `import database`, and `from document_loader import ...` are intentionally unsupported.
 
-The system follows a **retrieval-first** philosophy: optimize retrieval quality before expanding to complex LLM capabilities.
+The backend root now contains only entrypoints, package metadata, data, and real package directories. Former root alias modules have been deleted.
 
-## System Architecture
+## Runtime Flow
 
-```
-User Query
-    │
-    ▼
-┌──────────┐    ┌──────────────┐
-│  API     │───▶│  Agent       │
-│  (api.py)│    │  (agent.py)  │
-└──────────┘    └──────┬───────┘
-                       │
-              ┌────────▼────────┐
-              │  RAG Pipeline   │
-              │  (rag_pipeline) │
-              └────────┬────────┘
-                       │
-    ┌──────────────────┼──────────────────┐
-    │                  │                  │
-    ▼                  ▼                  ▼
-┌─────────┐    ┌─────────────┐    ┌───────────┐
-│QueryPlan│    │  Retrieval  │    │  Rerank   │
-│         │───▶│  (retrieval)│───▶│  (rerank) │
-└─────────┘    └──────┬──────┘    └─────┬─────┘
-                      │                  │
-                      ▼                  ▼
-               ┌──────────┐       ┌───────────┐
-               │ Milvus   │       │ Confidence│
-               │ Client   │       │ Gate      │
-               └──────────┘       └─────┬─────┘
-                                         │
-                                         ▼
-                                  ┌──────────────┐
-                                  │   Context    │
-                                  │  Assembly    │
-                                  └──────┬───────┘
-                                         │
-                                         ▼
-                                  ┌──────────────┐
-                                  │  LLM Answer  │
-                                  │  Generation  │
-                                  └──────────────┘
+```text
+Frontend
+  -> backend.app
+  -> backend.application.main
+  -> backend.api
+  -> backend.routers.*
+  -> backend.services.*
+  -> backend.chat / backend.rag
+  -> backend.infra
+  -> PostgreSQL, Redis, Milvus
 ```
 
-## Module Groups
+RAG answer flow:
 
-### Core Application
-
-| Module | Responsibility |
-|--------|---------------|
-| `app.py` | FastAPI application factory, CORS, lifespan |
-| `api.py` | API routes: chat, documents, sessions |
-| `auth.py` | JWT-based authentication |
-| `schemas.py` | Pydantic request/response models |
-| `models.py` | SQLAlchemy ORM models |
-| `database.py` | Database connection and session management |
-
-### RAG Pipeline
-
-| Module | Responsibility |
-|--------|---------------|
-| `rag_pipeline.py` | LangGraph-based RAG orchestration graph |
-| `rag_utils.py` | **Compatibility facade** — re-exports from sub-modules |
-| `rag_retrieval.py` | Dense+sparse hybrid retrieval, doc scope, dedup |
-| `rag_rerank.py` | Reranking with score fusion and pair enrichment |
-| `rag_context.py` | Context window assembly and merge |
-| `rag_confidence.py` | Retrieval confidence evaluation and fallback gate |
-| `rag_trace.py` | RAG trace capture and diagnostics |
-| `rag_types.py` | Shared type definitions |
-| `rag_profiles.py` | Index profile normalization and chunk ID prefixing |
-| `rag_diagnostics.py` | Retrieval diagnostics and miss analysis |
-
-### LLM Integration
-
-| Module | Responsibility |
-|--------|---------------|
-| `agent.py` | Chat agent with tool-augmented generation |
-| `answer_eval.py` | LLM-based answer generation and evaluation |
-| `query_plan.py` | QueryPlan extraction for scoped retrieval |
-| `tools.py` | LangChain tool definitions (weather, RAG context) |
-
-### Data Layer
-
-| Module | Responsibility |
-|--------|---------------|
-| `document_loader.py` | Document parsing (PDF, DOCX, XLSX) and chunking |
-| `embedding.py` | Embedding model management (BGE-M3) |
-| `milvus_client.py` | Milvus vector store client with reconnection logic |
-| `milvus_writer.py` | Milvus index writing and chunk management |
-| `parent_chunk_store.py` | Parent chunk storage for context expansion |
-| `filename_normalization.py` | Cross-platform filename normalization |
-| `conversation_storage.py` | Conversation history (PostgreSQL) |
-| `cache.py` | Redis caching layer |
-
-## RAG Pipeline Detail
-
-### Retrieval Flow
-
-```
-Query
-  │
-  ├─ QueryPlan ──▶ doc_scope (matched files)
-  │
-  ▼
-Milvus hybrid search (dense + sparse RRF)
-  │
-  ├─ doc_scope boost (scoped candidates)
-  ├─ heading_lexical boost
-  ├─ global_reserve (fallback coverage)
-  │
-  ▼
-Dedup (same_root_cap)
-  │
-  ▼
-Rerank (cross-encoder with pair enrichment)
-  │
-  ├─ score fusion: rerank + rrf + scope + metadata
-  │
-  ▼
-Confidence gate
-  │
-  ├─ fallback_required? ──▶ emit fallback signal
-  │
-  ▼
-Context assembly (window merge, parent expansion)
-  │
-  ▼
-LLM answer generation
+```text
+User question
+  -> backend.chat.agent
+  -> backend.chat.tools
+  -> backend.rag.pipeline
+  -> backend.rag.utils
+  -> backend.rag retrieval/rerank/context/confidence modules
+  -> backend.infra.vector_store and backend.infra.db
 ```
 
-### Index Profiles
+## Backend Root Contract
 
-| Profile | Collection | Text Mode | Description |
-|---------|-----------|-----------|-------------|
-| `gold_tc` | `embeddings_collection_gold_tc` | title_context | Gold standard title-context |
-| `gold_tcf` | `embeddings_collection_gold_tcf` | title_context_filename | Gold standard TCF (GS3) |
-| `v3_quality` | `embeddings_collection_v3_quality` | title_context_filename | V3Q quality ceiling |
-| `v3_fast` | `embeddings_collection_v3_fast` | title_context_filename | V3F fast path (experimental) |
+Allowed root Python files:
 
-### Variant Taxonomy
+```text
+backend/__init__.py
+backend/api.py
+backend/app.py
+```
 
-| Tier | Variants | Role |
-|------|----------|------|
-| Deployable | GS3 | Default production baseline |
-| Quality ceiling | V3Q | Slow but highest quality, fallback candidate |
-| Experimental | V3F | Fast path (currently broken, needs rebuild) |
-| Diagnostic | GS2HR | Strong file/root but chunk ID issues |
+Allowed root package directories:
 
-## Evaluation Framework
+```text
+backend/application/
+backend/chat/
+backend/contracts/
+backend/data/
+backend/documents/
+backend/evaluation/
+backend/infra/
+backend/rag/
+backend/routers/
+backend/security/
+backend/services/
+backend/shared/
+```
 
-### Scripts
+`backend/__init__.py` is package-only and must not mutate `sys.path` or register `sys.modules` aliases.
 
-| Script | Purpose |
-|--------|---------|
-| `scripts/evaluate_rag_matrix.py` | Main evaluation orchestrator |
-| `scripts/rag_eval/variants.py` | Variant configurations and pair definitions |
-| `scripts/rag_eval/metrics.py` | Per-sample metric computation |
-| `scripts/rag_eval/regression.py` | Saved-row summary regression |
-| `scripts/review_rag_qrels.py` | Qrel review (pre-check, LLM, human queue) |
-| `scripts/diagnose_variant_profile.py` | Variant index/collection health diagnosis |
-| `scripts/align_rag_chunk_gold.py` | Page-level gold row alignment to chunk IDs |
-| `scripts/rag_qrels.py` | Qrel matching, canonical IDs, merge logic |
+## Application And HTTP
 
-### Metrics
+| Path | Responsibility |
+| --- | --- |
+| `backend/app.py` | ASGI/script entrypoint; contains the only script-mode bootstrap for `python backend/app.py` |
+| `backend/application/main.py` | FastAPI app factory, lifespan, CORS, static mount |
+| `backend/api.py` | Router registry only |
+| `backend/routers/auth.py` | Auth HTTP routes |
+| `backend/routers/chat.py` | Chat and streaming HTTP routes |
+| `backend/routers/sessions.py` | Session HTTP routes |
+| `backend/routers/documents.py` | Document HTTP routes |
+| `backend/services/chat_service.py` | Chat use-case facade |
+| `backend/services/document_service.py` | Document list/upload/delete orchestration |
+| `backend/contracts/schemas.py` | Pydantic request/response contracts |
+| `backend/security/auth.py` | Authentication, password hashing, JWT, authorization dependencies |
 
-| Metric | Description |
-|--------|-------------|
-| `File@5` | File hit in top 5 |
-| `File+Page@5` | File+page hit in top 5 |
-| `Chunk@5` | Canonical chunk hit in top 5 |
-| `Root@5` | Root chunk hit in top 5 |
-| `ChunkMRR` | Mean reciprocal rank of first chunk hit |
-| `FileCandRecall` | File recall in full candidate set |
-| `P50/P95 ms` | Retrieval latency percentiles |
+Rules:
 
-### Qrel System
+- Routers own HTTP request/response concerns.
+- Services own use-case orchestration.
+- `backend/api.py` stays a router registry and does not hold business logic.
+- Entry compatibility belongs in `backend/app.py`, not `backend/__init__.py`.
 
-- **Qrel v2**: Initial alignment (87 aligned, 12 ambiguous, 26 failed)
-- **Qrel v2.1**: LLM-reviewed (50 approved, 18 needs_review, coverage=0.856)
-- Review states: `draft → llm_approved → approved` or `needs_human_review → corrected/rejected`
+## RAG Core
 
-## Import Conventions
+| Path | Responsibility |
+| --- | --- |
+| `backend/rag/utils.py` | RAG helper/facade behavior and retrieval orchestration |
+| `backend/rag/pipeline.py` | LangGraph RAG workflow |
+| `backend/rag/query_plan.py` | Query planning, document-scope matching, route selection |
+| `backend/rag/retrieval.py` | Dense+sparse retrieval helpers, filename boost, dedupe |
+| `backend/rag/rerank.py` | Rerank provider calls, pair enrichment, score fusion |
+| `backend/rag/context.py` | Context assembly, parent merge, structure/root rerank |
+| `backend/rag/confidence.py` | Retrieval confidence gate and anchor matching |
+| `backend/rag/diagnostics.py` | Retrieval failure classification and diagnostics |
+| `backend/rag/profiles.py` | Index profile normalization and chunk ID prefixing |
+| `backend/rag/rules.py` | Shared heading/title/anchor parsing rules |
+| `backend/rag/trace.py` | Candidate identity, text hashing, golden trace signatures |
+| `backend/rag/types.py` | Shared RAG trace/error types |
+| `backend/rag/runtime/config.py` | Environment parsing helpers |
 
-Backend modules use **bare imports** (`from rag_utils import ...`) because `backend/__init__.py` adds the backend directory to `sys.path`. This is intentional for compatibility with both `uvicorn backend.app:app` and in-directory execution.
+## Data And Infra
 
-**Facade pattern**: `rag_utils.py` re-exports functions from `rag_retrieval`, `rag_rerank`, `rag_context`, `rag_confidence`, `rag_trace`. Callers should import from `rag_utils` for backward compatibility.
+| Path | Responsibility |
+| --- | --- |
+| `backend/infra/cache.py` | Redis cache wrapper |
+| `backend/infra/embedding.py` | Embedding model/runtime management |
+| `backend/infra/db/database.py` | Database engine/session setup |
+| `backend/infra/db/models.py` | SQLAlchemy ORM models |
+| `backend/infra/db/conversation_storage.py` | Chat history persistence and read-through cache |
+| `backend/infra/vector_store/milvus_client.py` | Milvus client and search operations |
+| `backend/infra/vector_store/milvus_writer.py` | Milvus write/index orchestration |
+| `backend/infra/vector_store/parent_chunk_store.py` | Parent chunk storage for context expansion |
 
-## Environment Variables
+## Documents And Shared Helpers
 
-Key environment variables (see `.env.example`):
+| Path | Responsibility |
+| --- | --- |
+| `backend/documents/loader.py` | Document parsing and chunking |
+| `backend/shared/filename_normalization.py` | Filename normalization |
+| `backend/shared/json_utils.py` | JSON extraction helpers |
+| `backend/evaluation/answer_eval.py` | Offline answer generation/evaluation helpers |
 
-| Variable | Purpose |
-|----------|---------|
-| `ARK_API_KEY` | LLM API key |
-| `BASE_URL` | LLM API base URL |
-| `MODEL` | Default LLM model |
-| `GRADE_MODEL` | Evaluation/judge model |
-| `MILVUS_HOST/PORT` | Milvus connection |
-| `POSTGRES_*` | Database connection |
-| `REDIS_*` | Cache connection |
+## Import Policy
 
-## Testing
+Supported:
 
-- **230 tests** in `tests/`
-- Run: `uv run pytest tests/ -x -q`
-- Lint: `uv run ruff check backend/ scripts/`
+```python
+from backend.rag.utils import retrieve_documents
+from backend.rag.pipeline import run_rag_graph
+from backend.infra.db.database import init_db
+from backend.infra.vector_store.milvus_client import MilvusManager
+from backend.documents.loader import DocumentLoader
+```
 
-## Current Status (v3.1)
+Unsupported:
 
-- GS3 is deployable baseline (File@5=0.984, P50=1144ms)
-- V3Q is quality ceiling (File@5=0.992, P50=3938ms)
-- V3F requires rebuild (File@5=0.416, profile/index mismatch suspected)
-- Qrel v2.1 coverage: 0.856 (target: >=0.85, achieved)
+```python
+import rag_utils
+import rag_pipeline
+import database
+from document_loader import DocumentLoader
+```
+
+Also unsupported:
+
+```powershell
+PYTHONPATH=backend python -c "import rag_utils"
+```
+
+## Supported Entrypoints
+
+```powershell
+uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
+uv run python backend/app.py
+```
+
+`python backend/app.py` is entrypoint compatibility only. It does not imply support for legacy root imports.
+
+## Verification Gates
+
+Standard gates for architecture cleanup:
+
+```powershell
+uv run pytest tests/ -q
+uv run ruff check backend/ scripts/ tests/
+uv run python -m compileall backend scripts
+node --check frontend\script.js
+node --check frontend\src\api.js
+node --check frontend\src\messages.js
+node frontend\ui-redesign.test.mjs
+```
+
+RAG performance smoke:
+
+```powershell
+uv run python scripts\evaluate_rag_matrix.py --dataset-profile smoke --variants B0 --skip-reindex --limit 1 --run-id post-cleanup-smoke
+uv run python scripts\evaluate_rag_matrix.py --dataset-profile smoke --variants B0 --mode graph --skip-reindex --limit 1 --run-id post-cleanup-graph-smoke
+```
