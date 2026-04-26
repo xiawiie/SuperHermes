@@ -19,6 +19,8 @@ from typing import Any, Literal
 
 import jieba
 
+from filename_normalization import normalize_filename_for_match
+
 logger = logging.getLogger(__name__)
 
 # --- Configuration from env ---
@@ -69,13 +71,7 @@ class QueryPlan:
 
 def _normalize_filename(name: str) -> str:
     """Normalize filename for matching: strip extension, lower, remove suffixes."""
-    base = os.path.splitext(name)[0]
-    base = re.sub(r"[_\s]*副本$", "", base)
-    base = re.sub(r"\(\d+\)$", "", base)
-    base = re.sub(r"（[^）]*）$", "", base)
-    base = base.lower().strip()
-    base = re.sub(r"\s+", " ", base)
-    return base
+    return normalize_filename_for_match(name)
 
 
 def _filename_match_score(query_hint: str, filename_norm: str) -> float:

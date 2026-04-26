@@ -4,6 +4,7 @@ from __future__ import annotations
 from cache import cache
 from embedding import EmbeddingService, embedding_service as _default_embedding_service
 from milvus_client import MilvusManager
+from rag_profiles import current_index_profile
 
 
 class MilvusWriter:
@@ -16,6 +17,7 @@ class MilvusWriter:
     ) -> None:
         self.embedding_service = embedding_service or _default_embedding_service
         self.milvus_manager = milvus_manager or MilvusManager()
+        self.index_profile = current_index_profile()
 
     def write_documents(self, documents: list[dict], batch_size: int = 50) -> None:
         if not documents:
@@ -51,6 +53,7 @@ class MilvusWriter:
                     "root_chunk_id": doc.get("root_chunk_id", ""),
                     "chunk_level": doc.get("chunk_level", 0),
                     "chunk_role": doc.get("chunk_role", ""),
+                    "index_profile": doc.get("index_profile", self.index_profile),
                     "section_title": doc.get("section_title", ""),
                     "section_type": doc.get("section_type", ""),
                     "section_path": doc.get("section_path", ""),

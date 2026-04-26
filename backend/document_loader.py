@@ -170,6 +170,17 @@ class DocumentLoader:
             return f"{heading}\n{content}"
         return heading or content
 
+    @staticmethod
+    def _truncate_retrieval_text(text: str, max_length: int = 4000) -> str:
+        if len(text) <= max_length:
+            return text
+        marker = "\n...[truncated]...\n"
+        head_len = max_length // 2
+        tail_len = max_length - head_len - len(marker)
+        if tail_len <= 0:
+            return text[:max_length]
+        return text[:head_len] + marker + text[-tail_len:]
+
     def _make_retrieval_text(
         self,
         raw_text: str,
@@ -181,7 +192,7 @@ class DocumentLoader:
         anchor_id: str | None = None,
     ) -> str:
         if self.retrieval_text_mode == "raw":
-            return (raw_text or body or "").strip()
+            return self._truncate_retrieval_text((raw_text or body or "").strip())
         if self.retrieval_text_mode == "title_context_filename":
             return self._compose_retrieval_text_filename(
                 body=body,
@@ -191,10 +202,12 @@ class DocumentLoader:
                 page_start=page_start,
                 anchor_id=anchor_id,
             )
-        return self._compose_retrieval_text(
-            body=body,
-            current_title=current_title,
-            parent_title=parent_title,
+        return self._truncate_retrieval_text(
+            self._compose_retrieval_text(
+                body=body,
+                current_title=current_title,
+                parent_title=parent_title,
+            )
         )
 
     def _compose_retrieval_text_filename(
@@ -247,12 +260,7 @@ class DocumentLoader:
         else:
             text = heading or content
 
-        # Truncate to 4000 chars (Milvus max_length)
-        if len(text) > 4000:
-            half = 2000
-            text = text[:half] + "\n...[truncated]...\n" + text[-(4000 - half - 20):]
-
-        return text
+        return self._truncate_retrieval_text(text)
 
     @classmethod
     def _heading_depth(cls, line: str) -> int:

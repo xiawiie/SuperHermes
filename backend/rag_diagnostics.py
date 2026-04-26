@@ -316,8 +316,9 @@ def classify_failure(
     after_rerank_match = _matches_expected(after_rerank, expected_chunk_ids, expected_root_ids, expected_anchors, expected_keywords)
 
     if not before_match["matched"]:
+        category = "file_recall_miss" if expected_file_set else "recall_miss"
         return _result(
-            "file_recall_miss",
+            category,
             "recall",
             {
                 "final_match": final_match,

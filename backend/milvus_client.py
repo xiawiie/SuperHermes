@@ -7,7 +7,6 @@ import time
 from typing import Any, Callable
 
 from dotenv import load_dotenv
-from pymilvus import AnnSearchRequest, DataType, MilvusClient, RRFRanker
 
 from cache import cache
 
@@ -16,6 +15,25 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 QUERY_MAX_LIMIT = 16384
+AnnSearchRequest: Any = None
+DataType: Any = None
+MilvusClient: Any = None
+RRFRanker: Any = None
+
+
+def _ensure_pymilvus() -> None:
+    global AnnSearchRequest, DataType, MilvusClient, RRFRanker
+    if MilvusClient is not None:
+        return
+    from pymilvus import AnnSearchRequest as _AnnSearchRequest
+    from pymilvus import DataType as _DataType
+    from pymilvus import MilvusClient as _MilvusClient
+    from pymilvus import RRFRanker as _RRFRanker
+
+    AnnSearchRequest = _AnnSearchRequest
+    DataType = _DataType
+    MilvusClient = _MilvusClient
+    RRFRanker = _RRFRanker
 
 
 def _effective_hnsw_ef(search_ef: int, limit: int) -> int:
@@ -51,6 +69,7 @@ class MilvusManager:
         self.uri = os.getenv("MILVUS_URI", f"http://{self.host}:{self.port}")
 
     def _new_client(self) -> MilvusClient:
+        _ensure_pymilvus()
         client = MilvusClient(uri=self.uri)
         logger.debug("Created Milvus client id=%s uri=%s", id(client), self.uri)
         return client
@@ -149,6 +168,7 @@ class MilvusManager:
             schema.add_field("root_chunk_id", DataType.VARCHAR, max_length=512)
             schema.add_field("chunk_level", DataType.INT64)
             schema.add_field("chunk_role", DataType.VARCHAR, max_length=32)
+            schema.add_field("index_profile", DataType.VARCHAR, max_length=120)
 
             index_params = client.prepare_index_params()
             index_params.add_index(
@@ -307,6 +327,7 @@ class MilvusManager:
 
         search_limit = max(1, top_k * 2)
         effective_search_ef = _effective_hnsw_ef(search_ef, search_limit)
+        _ensure_pymilvus()
 
         dense_search = AnnSearchRequest(
             data=[dense_embedding],

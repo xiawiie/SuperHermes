@@ -12,6 +12,27 @@ import rag_utils  # noqa: E402
 
 
 class RagUtilsDiagnosticsTests(unittest.TestCase):
+    def test_candidate_trace_includes_stable_signature_fields(self):
+        traced = rag_utils._candidate_trace(
+            [
+                {
+                    "chunk_id": "c1",
+                    "filename": "manual.pdf",
+                    "page_number": 2,
+                    "retrieval_text": "heading\nbody",
+                }
+            ]
+        )
+
+        self.assertEqual(traced[0]["candidate_id"], "c1")
+        self.assertTrue(traced[0]["text_hash"])
+
+    def test_stage_error_uses_shared_type_shape(self):
+        self.assertEqual(
+            rag_utils._stage_error("rerank", "failed", "fallback"),
+            {"stage": "rerank", "error": "failed", "fallback_to": "fallback"},
+        )
+
     def test_dense_fallback_keeps_hybrid_error_in_meta(self):
         dense_doc = {"text": "fallback text", "filename": "manual.pdf", "chunk_id": "c1", "score": 0.5}
 
@@ -106,6 +127,7 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             patch.object(rag_utils._embedding_service, "get_sparse_embedding", return_value={1: 0.5}) as sparse,
             patch.object(rag_utils, "get_filename_registry", side_effect=AssertionError("registry should not load")),
             patch.object(rag_utils._milvus_manager, "hybrid_retrieve", return_value=docs),
+            patch("rag_utils._rerank_documents", side_effect=lambda query, docs, top_k: (docs[:top_k], {"rerank_enabled": False, "rerank_applied": False})),
             patch("rag_utils._apply_structure_rerank", side_effect=lambda docs, top_k: (docs[:top_k], {"structure_rerank_enabled": False, "structure_rerank_applied": False})),
             patch("rag_utils._evaluate_retrieval_confidence", return_value={"confidence_gate_enabled": False, "fallback_required": False, "confidence_reasons": []}),
         ):
@@ -301,6 +323,25 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         self.assertAlmostEqual(meta["dominant_root_share"], 0.5825, places=3)
         self.assertEqual(meta["dominant_root_support"], 2)
 
+    def test_rerank_score_fusion_can_preserve_strong_retrieval_rank(self):
+        docs = [
+            {"chunk_id": "c1", "rrf_rank": 1, "filename": "manual.pdf", "text": "best retrieval"},
+            {"chunk_id": "c2", "rrf_rank": 20, "filename": "manual.pdf", "text": "best reranker"},
+        ]
+
+        with (
+            patch.object(rag_utils, "RERANK_SCORE_FUSION_ENABLED", True),
+            patch.object(rag_utils, "RERANK_FUSION_RERANK_WEIGHT", 0.0),
+            patch.object(rag_utils, "RERANK_FUSION_RRF_WEIGHT", 1.0),
+            patch.object(rag_utils, "RERANK_FUSION_SCOPE_WEIGHT", 0.0),
+            patch.object(rag_utils, "RERANK_FUSION_METADATA_WEIGHT", 0.0),
+            patch.object(rag_utils, "MILVUS_RRF_K", 60),
+        ):
+            fused = rag_utils._apply_rerank_score_fusion([(0, 0.1), (1, 0.9)], docs)
+
+        self.assertEqual(fused[0][0], 0)
+        self.assertGreater(fused[0][1], fused[1][1])
+
     def test_auto_merge_uses_single_existing_l3_to_l1_path(self):
         docs = [
             {"chunk_id": "leaf-a1", "parent_chunk_id": "root-a", "filename": "manual.pdf", "text": "a1", "score": 0.8},
@@ -319,11 +360,12 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         with (
             patch.object(rag_utils, "AUTO_MERGE_ENABLED", True),
             patch.object(rag_utils, "AUTO_MERGE_THRESHOLD", 2),
-            patch.object(rag_utils._parent_chunk_store, "get_documents_by_ids", return_value=[parent]) as get_many,
+            patch.object(rag_utils, "_get_parent_chunk_store") as get_store,
         ):
+            get_store.return_value.get_documents_by_ids.return_value = [parent]
             merged, meta = rag_utils._auto_merge_documents(docs, top_k=5)
 
-        get_many.assert_called_once_with(["root-a"])
+        get_store.return_value.get_documents_by_ids.assert_called_once_with(["root-a"])
         self.assertEqual([doc["chunk_id"] for doc in merged], ["root-a", "leaf-b1"])
         self.assertTrue(meta["auto_merge_applied"])
         self.assertEqual(meta["auto_merge_steps"], 1)

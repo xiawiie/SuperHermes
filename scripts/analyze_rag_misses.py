@@ -93,7 +93,6 @@ def _classify_miss(
     results: list[dict] | None = None,
 ) -> str:
     """Classify a miss into one of five categories."""
-    metrics = row.get("metrics") or {}
     trace = row.get("trace") or {}
     expected = row.get("expected") or {}
 
@@ -124,7 +123,6 @@ def _classify_miss(
         return "file_recall_miss"
 
     # ranking_miss: correct file in candidates but not in top5
-    cand_recall = metrics.get("candidate_recall_before_rerank")
     if expected_files and candidates_known and (expected_files & candidate_files) and not (expected_files & top5_files):
         return "ranking_miss"
 
@@ -284,7 +282,6 @@ def _render_report(report: dict) -> str:
     lines = ["# RAG Miss Analysis Report", ""]
 
     lines.append("## Category Distribution")
-    total = sum(report.get("category_counts", {}).values())
     for cat, count in sorted(report.get("category_counts", {}).items(), key=lambda x: -x[1]):
         pct = report.get("category_pcts", {}).get(cat, 0)
         lines.append(f"- `{cat}`: {count} ({pct:.1%})")

@@ -67,14 +67,36 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 
 
 def _ensure_runtime_indexes() -> None:
-    if engine.dialect.name != "postgresql":
+    statements: list[str] = []
+    if engine.dialect.name == "postgresql":
+        statements.extend(
+            [
+                "ALTER TABLE parent_chunks ADD COLUMN IF NOT EXISTS index_profile VARCHAR(120) NOT NULL DEFAULT 'legacy'",
+                "CREATE INDEX IF NOT EXISTS ix_chat_sessions_user_updated ON chat_sessions (user_id, updated_at DESC)",
+                "CREATE INDEX IF NOT EXISTS ix_chat_messages_session_id_order ON chat_messages (session_ref_id, id)",
+                "CREATE INDEX IF NOT EXISTS ix_parent_chunks_filename_chunk ON parent_chunks (filename, chunk_id)",
+                "CREATE INDEX IF NOT EXISTS ix_parent_chunks_profile_filename ON parent_chunks (index_profile, filename)",
+            ]
+        )
+    elif engine.dialect.name == "sqlite":
+        with engine.begin() as connection:
+            columns = {
+                row[1]
+                for row in connection.execute(text("PRAGMA table_info(parent_chunks)")).fetchall()
+            }
+            if "index_profile" not in columns:
+                connection.execute(
+                    text("ALTER TABLE parent_chunks ADD COLUMN index_profile VARCHAR(120) NOT NULL DEFAULT 'legacy'")
+                )
+        statements.extend(
+            [
+                "CREATE INDEX IF NOT EXISTS ix_parent_chunks_filename_chunk ON parent_chunks (filename, chunk_id)",
+                "CREATE INDEX IF NOT EXISTS ix_parent_chunks_profile_filename ON parent_chunks (index_profile, filename)",
+            ]
+        )
+    else:
         return
 
-    statements = [
-        "CREATE INDEX IF NOT EXISTS ix_chat_sessions_user_updated ON chat_sessions (user_id, updated_at DESC)",
-        "CREATE INDEX IF NOT EXISTS ix_chat_messages_session_id_order ON chat_messages (session_ref_id, id)",
-        "CREATE INDEX IF NOT EXISTS ix_parent_chunks_filename_chunk ON parent_chunks (filename, chunk_id)",
-    ]
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))

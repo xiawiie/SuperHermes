@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from backend.filename_normalization import normalize_filename_for_match
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATASET = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_doc_gold.jsonl"
@@ -72,18 +74,37 @@ def group_rows_by_source_file(rows: Iterable[dict[str, Any]]) -> dict[str, list[
     return dict(grouped)
 
 
-def chunk_page_matches(row: dict[str, Any], chunk: dict[str, Any]) -> bool:
+def _row_pages(row: dict[str, Any]) -> set[int]:
     pages = {int(page) for page in as_list(row.get("gold_pages")) if str(page).isdigit()}
     if not pages:
-        return True
+        pages = {int(page) for page in as_list(row.get("expected_pages")) if str(page).isdigit()}
+    return pages
+
+
+def chunk_page_distance(row: dict[str, Any], chunk: dict[str, Any]) -> int | None:
+    pages = _row_pages(row)
+    if not pages:
+        return None
     page_number = int(chunk.get("page_number") or 0)
     page_start = int(chunk.get("page_start") or page_number or 0)
     page_end = int(chunk.get("page_end") or page_number or 0)
-    return page_number in pages or any(page_start <= page <= page_end for page in pages)
+    if page_number in pages or any(page_start <= page <= page_end for page in pages):
+        return 0
+    candidates = [value for value in (page_number, page_start, page_end) if value]
+    if not candidates:
+        return None
+    return min(abs(candidate - page) for candidate in candidates for page in pages)
+
+
+def chunk_page_matches(row: dict[str, Any], chunk: dict[str, Any]) -> bool:
+    distance = chunk_page_distance(row, chunk)
+    return distance is None or distance == 0
 
 
 def chunk_file_matches(row: dict[str, Any], chunk: dict[str, Any]) -> bool:
-    return record_source_file(row) == str(chunk.get("filename") or chunk.get("file_name") or "")
+    return normalize_filename_for_match(record_source_file(row)) == normalize_filename_for_match(
+        chunk.get("filename") or chunk.get("file_name") or ""
+    )
 
 
 def alignment_score(row: dict[str, Any], chunk: dict[str, Any]) -> AlignmentScore:
@@ -105,9 +126,16 @@ def alignment_score(row: dict[str, Any], chunk: dict[str, Any]) -> AlignmentScor
     if chunk_file_matches(row, chunk):
         score += 0.2
         reasons.append("file")
-    if chunk_page_matches(row, chunk):
+    page_distance = chunk_page_distance(row, chunk)
+    if page_distance is None:
+        score += 0.2
+        reasons.append("page_unscored")
+    elif page_distance == 0:
         score += 0.2
         reasons.append("page")
+    elif page_distance == 1:
+        score += 0.05
+        reasons.append("neighbor_page")
     if loose_excerpt and loose_excerpt in loose_combined:
         score += 0.45
         reasons.append("excerpt")
@@ -143,12 +171,26 @@ def alignment_score(row: dict[str, Any], chunk: dict[str, Any]) -> AlignmentScor
             score += min(0.05, 0.05 * hits / max(1, min(3, len(keywords))))
             reasons.append("keywords")
 
+    source_headings = [
+        loose_text(item)
+        for item in (
+            [row.get("source_heading")]
+            + [ctx.get("heading") for ctx in as_list(row.get("positive_contexts")) if isinstance(ctx, dict)]
+        )
+        if loose_text(item)
+    ]
+    section_text = loose_text(" ".join([str(chunk.get("section_title") or ""), str(chunk.get("section_path") or "")]))
+    if source_headings and section_text:
+        if any(heading in section_text or section_text in heading for heading in source_headings):
+            score += 0.05
+            reasons.append("same_section")
+
     method = "none"
     if "excerpt" in reasons:
         method = "exact"
     elif "window" in reasons:
         method = "window"
-    elif "anchor" in reasons or "keywords" in reasons:
+    elif "anchor" in reasons or "keywords" in reasons or "same_section" in reasons:
         method = "anchor_keyword"
 
     return AlignmentScore(score=min(score, 1.0), method=method, reasons=tuple(reasons))

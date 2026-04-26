@@ -47,13 +47,18 @@ def _create_dense_embedder() -> Any:
         base_url = os.getenv("EMBEDDING_BASE_URL", "http://localhost:11434")
         return OllamaEmbeddings(model=model_name, base_url=base_url)
 
-    from langchain_huggingface import HuggingFaceEmbeddings
-
     model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
     device = os.getenv("EMBEDDING_DEVICE", "auto")
+    # Import torch before sentence-transformers/langchain_huggingface. On this
+    # Windows stack, importing sentence-transformers first can crash inside
+    # pandas/pyarrow native module initialization.
+    import torch
+
     if device == "auto":
-        import torch
         device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    from langchain_huggingface import HuggingFaceEmbeddings
+
     return HuggingFaceEmbeddings(
         model_name=model_name,
         model_kwargs={"device": device},
