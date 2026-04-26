@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import hashlib
@@ -17,17 +17,6 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = PROJECT_ROOT / "backend"
-DATASET_DIR = PROJECT_ROOT / ".jbeval" / "datasets"
-DEFAULT_FROZEN_DATASET = DATASET_DIR / "rag_doc_frozen_eval_v1.jsonl"
-DEFAULT_GOLD_DATASET = DATASET_DIR / "rag_doc_gold.jsonl"
-EVAL_SCHEMA_VERSION = "rag-eval-matrix-v2"
-DEFAULT_S3_COLLECTION = "embeddings_collection_v2"
-DEFAULT_CANONICAL_CORPUS = PROJECT_ROOT.parent / "doc"
-GOLD_TC_COLLECTION = "embeddings_collection_gold_tc"
-GOLD_TCF_COLLECTION = "embeddings_collection_gold_tcf"
-V3_QUALITY_COLLECTION = "embeddings_collection_v3_quality"
-V3_FAST_COLLECTION = "embeddings_collection_v3_fast"
-DEFAULT_VARIANTS = "A0,A1,B1,G0,G1,G2,G3"
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -35,6 +24,17 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from filename_normalization import normalize_filename_for_match, raw_filename_basename  # noqa: E402
+from scripts.rag_eval.variants import (  # noqa: E402
+    DATASET_DIR,
+    DEFAULT_CANONICAL_CORPUS,
+    DEFAULT_FROZEN_DATASET,
+    DEFAULT_GOLD_DATASET,
+    DEFAULT_S3_COLLECTION,
+    DEFAULT_VARIANTS,
+    EVAL_SCHEMA_VERSION,
+    PAIR_DEFINITIONS,
+    VARIANT_CONFIGS,
+)
 from scripts.rag_qrels import (  # noqa: E402
     VALID_QREL_CONFLICT_POLICIES,
     VALID_QREL_MATCH_MODES,
@@ -43,496 +43,19 @@ from scripts.rag_qrels import (  # noqa: E402
     merge_chunk_qrels,
 )
 from scripts.rag_eval.metrics import (  # noqa: E402
-    QRELS_NA as _QRELS_NA,
     compare_sample_rank as _compare_sample_rank,
     summarize_results as _summarize_results,
 )
+from scripts.rag_eval.io import load_jsonl as _load_jsonl, write_jsonl as _write_jsonl  # noqa: E402
+from scripts.rag_eval.preflight import (  # noqa: E402
+    validate_eval_dataset_records as _validate_eval_dataset_records,
+)
+from scripts.rag_eval.reporting import render_summary_markdown as _render_summary_markdown  # noqa: E402
 from scripts.rag_eval.regression import compare_core_summary  # noqa: E402
 
-
-VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
-    "A0": {
-        "description": "raw text baseline",
-        "reindex_mode": "raw",
-        "requires_reindex": True,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "raw",
-            "STRUCTURE_RERANK_ENABLED": "false",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-        },
-    },
-    "A1": {
-        "description": "title-context retrieval text",
-        "reindex_mode": "title_context",
-        "requires_reindex": True,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "false",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-        },
-    },
-    "B1": {
-        "description": "title-context retrieval text with structure rerank",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-        },
-    },
-    "G0": {
-        "description": "structure rerank without confidence gate",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-        },
-    },
-    "G1": {
-        "description": "recommended confidence gate",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "true",
-            "LOW_CONF_TOP_MARGIN": "0.05",
-            "LOW_CONF_ROOT_SHARE": "0.45",
-            "LOW_CONF_TOP_SCORE": "0.20",
-            "ENABLE_ANCHOR_GATE": "true",
-        },
-    },
-    "G2": {
-        "description": "looser confidence gate",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "true",
-            "LOW_CONF_TOP_MARGIN": "0.03",
-            "LOW_CONF_ROOT_SHARE": "0.35",
-            "LOW_CONF_TOP_SCORE": "0.15",
-            "ENABLE_ANCHOR_GATE": "true",
-        },
-    },
-    "G3": {
-        "description": "stricter confidence gate",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "true",
-            "LOW_CONF_TOP_MARGIN": "0.08",
-            "LOW_CONF_ROOT_SHARE": "0.55",
-            "LOW_CONF_TOP_SCORE": "0.25",
-            "ENABLE_ANCHOR_GATE": "true",
-        },
-    },
-    "B0_legacy": {
-        "description": "current production configuration without evaluation env overrides",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {},
-    },
-    "B0": {
-        "description": "current title-context baseline with configured reranker at final top_k depth",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "false",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RERANK_TOP_N": "0",
-        },
-    },
-    "R1": {
-        "description": "configured reranker with deeper rerank top_n=20",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "false",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RERANK_TOP_N": "20",
-        },
-    },
-    "R2": {
-        "description": "larger candidate set, deeper rerank, higher Milvus ef",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "false",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RAG_CANDIDATE_K": "80",
-            "RERANK_TOP_N": "30",
-            "MILVUS_SEARCH_EF": "128",
-            "MILVUS_RRF_K": "60",
-        },
-    },
-    "P1": {
-        "description": "B0 retrieval depth with lower sparse drop ratio",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "false",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RERANK_TOP_N": "0",
-            "MILVUS_SPARSE_DROP_RATIO": "0.1",
-            "MILVUS_RRF_K": "60",
-        },
-    },
-    "P2": {
-        "description": "B0 retrieval depth with larger RRF k",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "false",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RERANK_TOP_N": "0",
-            "MILVUS_SPARSE_DROP_RATIO": "0.2",
-            "MILVUS_RRF_K": "100",
-        },
-    },
-    "P3": {
-        "description": "B0 retrieval depth with lower sparse drop ratio and larger RRF k",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "false",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RERANK_TOP_N": "0",
-            "MILVUS_SPARSE_DROP_RATIO": "0.1",
-            "MILVUS_RRF_K": "100",
-        },
-    },
-    "F1": {
-        "description": "B0 retrieval baseline with confidence gate and fallback enabled",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "false",
-            "CONFIDENCE_GATE_ENABLED": "true",
-            "LOW_CONF_TOP_MARGIN": "0.05",
-            "LOW_CONF_ROOT_SHARE": "0.45",
-            "LOW_CONF_TOP_SCORE": "0.20",
-            "ENABLE_ANCHOR_GATE": "true",
-            "RERANK_TOP_N": "0",
-        },
-    },
-    "S0": {
-        "description": "best retrieval candidate with structure rerank comparison",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RERANK_TOP_N": "20",
-        },
-    },
-    "S1_linear": {
-        "description": "linear path: gate off + fallback off",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RAG_FALLBACK_ENABLED": "false",
-            "QUERY_PLAN_ENABLED": "false",
-        },
-    },
-    "S1": {
-        "description": "compatibility alias for S1_linear",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RAG_FALLBACK_ENABLED": "false",
-            "QUERY_PLAN_ENABLED": "false",
-        },
-    },
-    "S2": {
-        "description": "QueryPlan + doc scope 80/20 parallel",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RAG_FALLBACK_ENABLED": "false",
-            "QUERY_PLAN_ENABLED": "true",
-            "DOC_SCOPE_MATCH_FILTER": "0.85",
-            "DOC_SCOPE_MATCH_BOOST": "0.60",
-            "DOC_SCOPE_GLOBAL_RESERVE_WEIGHT": "0.2",
-        },
-    },
-    "S2H": {
-        "description": "S2 + heading lexical scoring",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RAG_FALLBACK_ENABLED": "false",
-            "QUERY_PLAN_ENABLED": "true",
-            "DOC_SCOPE_MATCH_FILTER": "0.85",
-            "DOC_SCOPE_MATCH_BOOST": "0.60",
-            "DOC_SCOPE_GLOBAL_RESERVE_WEIGHT": "0.2",
-            "HEADING_LEXICAL_ENABLED": "true",
-            "HEADING_LEXICAL_WEIGHT": "0.20",
-        },
-    },
-    "S2HR": {
-        "description": "S2H + metadata-aware rerank pair enrichment",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RAG_FALLBACK_ENABLED": "false",
-            "QUERY_PLAN_ENABLED": "true",
-            "DOC_SCOPE_MATCH_FILTER": "0.85",
-            "DOC_SCOPE_MATCH_BOOST": "0.60",
-            "DOC_SCOPE_GLOBAL_RESERVE_WEIGHT": "0.2",
-            "HEADING_LEXICAL_ENABLED": "true",
-            "HEADING_LEXICAL_WEIGHT": "0.20",
-            "RERANK_PAIR_ENRICHMENT_ENABLED": "true",
-        },
-    },
-    "S3": {
-        "description": "full: reindex title_context_filename + all enrichments",
-        "reindex_mode": "title_context_filename",
-        "requires_reindex": True,
-        "env": {
-            "MILVUS_COLLECTION": DEFAULT_S3_COLLECTION,
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context_filename",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RAG_FALLBACK_ENABLED": "false",
-            "QUERY_PLAN_ENABLED": "true",
-            "DOC_SCOPE_MATCH_FILTER": "0.85",
-            "DOC_SCOPE_MATCH_BOOST": "0.60",
-            "DOC_SCOPE_GLOBAL_RESERVE_WEIGHT": "0.2",
-            "HEADING_LEXICAL_ENABLED": "true",
-            "HEADING_LEXICAL_WEIGHT": "0.20",
-            "RERANK_PAIR_ENRICHMENT_ENABLED": "true",
-        },
-    },
-    "V3Q": {
-        "description": "v3 quality: isolated full-corpus scoped hybrid + metadata rerank fusion",
-        "reindex_mode": "title_context_filename",
-        "requires_reindex": True,
-        "env": {
-            "RAG_INDEX_PROFILE": "v3_quality",
-            "MILVUS_COLLECTION": V3_QUALITY_COLLECTION,
-            "BM25_STATE_PATH": str(PROJECT_ROOT / "data" / "bm25_state_v3_quality.json"),
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context_filename",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "SAME_ROOT_CAP": "3",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RAG_FALLBACK_ENABLED": "false",
-            "QUERY_PLAN_ENABLED": "true",
-            "DOC_SCOPE_MATCH_FILTER": "0.50",
-            "DOC_SCOPE_MATCH_BOOST": "0.35",
-            "DOC_SCOPE_GLOBAL_RESERVE_WEIGHT": "0.15",
-            "HEADING_LEXICAL_ENABLED": "true",
-            "HEADING_LEXICAL_WEIGHT": "0.15",
-            "RERANK_PAIR_ENRICHMENT_ENABLED": "true",
-            "RERANK_SCORE_FUSION_ENABLED": "true",
-            "RERANK_FUSION_RERANK_WEIGHT": "0.65",
-            "RERANK_FUSION_RRF_WEIGHT": "0.20",
-            "RERANK_FUSION_SCOPE_WEIGHT": "0.10",
-            "RERANK_FUSION_METADATA_WEIGHT": "0.05",
-            "RAG_CANDIDATE_K": "120",
-            "RERANK_TOP_N": "30",
-            "RERANK_INPUT_K_GPU": "80",
-            "RERANK_INPUT_K_CPU": "30",
-            "MILVUS_SEARCH_EF": "160",
-            "MILVUS_SPARSE_DROP_RATIO": "0.1",
-            "MILVUS_RRF_K": "80",
-        },
-    },
-    "V3F": {
-        "description": "v3 fast: isolated online-sized scoped hybrid + metadata rerank fusion",
-        "reindex_mode": "title_context_filename",
-        "requires_reindex": True,
-        "env": {
-            "RAG_INDEX_PROFILE": "v3_fast",
-            "MILVUS_COLLECTION": V3_FAST_COLLECTION,
-            "BM25_STATE_PATH": str(PROJECT_ROOT / "data" / "bm25_state_v3_fast.json"),
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context_filename",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "SAME_ROOT_CAP": "3",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RAG_FALLBACK_ENABLED": "false",
-            "QUERY_PLAN_ENABLED": "true",
-            "DOC_SCOPE_MATCH_FILTER": "0.50",
-            "DOC_SCOPE_MATCH_BOOST": "0.35",
-            "DOC_SCOPE_GLOBAL_RESERVE_WEIGHT": "0.15",
-            "HEADING_LEXICAL_ENABLED": "true",
-            "HEADING_LEXICAL_WEIGHT": "0.15",
-            "RERANK_PAIR_ENRICHMENT_ENABLED": "true",
-            "RERANK_SCORE_FUSION_ENABLED": "true",
-            "RERANK_FUSION_RERANK_WEIGHT": "0.65",
-            "RERANK_FUSION_RRF_WEIGHT": "0.20",
-            "RERANK_FUSION_SCOPE_WEIGHT": "0.10",
-            "RERANK_FUSION_METADATA_WEIGHT": "0.05",
-            "RAG_CANDIDATE_K": "60",
-            "RERANK_TOP_N": "10",
-            "RERANK_INPUT_K_GPU": "30",
-            "RERANK_INPUT_K_CPU": "10",
-            "MILVUS_SEARCH_EF": "96",
-            "MILVUS_SPARSE_DROP_RATIO": "0.1",
-            "MILVUS_RRF_K": "80",
-        },
-    },
-}
+_QRELS_NA = "n/a (qrels missing)"
 
 
-def _profiled_env(base_variant: str, *, profile: str, collection: str, state_name: str) -> dict[str, str]:
-    env = {key: str(value) for key, value in VARIANT_CONFIGS[base_variant]["env"].items()}
-    env.update(
-        {
-            "RAG_INDEX_PROFILE": profile,
-            "MILVUS_COLLECTION": collection,
-            "BM25_STATE_PATH": str(PROJECT_ROOT / "data" / state_name),
-        }
-    )
-    return env
-
-
-VARIANT_CONFIGS.update(
-    {
-        "GB0": {
-            "description": "gold title_context baseline: B0 without v3 routing/fusion",
-            "reindex_mode": "title_context",
-            "requires_reindex": True,
-            "env": _profiled_env(
-                "B0",
-                profile="gold_tc",
-                collection=GOLD_TC_COLLECTION,
-                state_name="bm25_state_gold_tc.json",
-            ),
-        },
-        "GS1": {
-            "description": "gold title_context baseline: S1 linear path",
-            "reindex_mode": "title_context",
-            "requires_reindex": False,
-            "env": _profiled_env(
-                "S1_linear",
-                profile="gold_tc",
-                collection=GOLD_TC_COLLECTION,
-                state_name="bm25_state_gold_tc.json",
-            ),
-        },
-        "GS2": {
-            "description": "gold title_context baseline: S2 query plan/doc scope",
-            "reindex_mode": "title_context",
-            "requires_reindex": False,
-            "env": _profiled_env(
-                "S2",
-                profile="gold_tc",
-                collection=GOLD_TC_COLLECTION,
-                state_name="bm25_state_gold_tc.json",
-            ),
-        },
-        "GS2H": {
-            "description": "gold title_context baseline: S2 + heading lexical",
-            "reindex_mode": "title_context",
-            "requires_reindex": False,
-            "env": _profiled_env(
-                "S2H",
-                profile="gold_tc",
-                collection=GOLD_TC_COLLECTION,
-                state_name="bm25_state_gold_tc.json",
-            ),
-        },
-        "GS2HR": {
-            "description": "gold title_context baseline: S2H + rerank pair enrichment",
-            "reindex_mode": "title_context",
-            "requires_reindex": False,
-            "env": _profiled_env(
-                "S2HR",
-                profile="gold_tc",
-                collection=GOLD_TC_COLLECTION,
-                state_name="bm25_state_gold_tc.json",
-            ),
-        },
-        "GS3": {
-            "description": "gold title_context_filename baseline: S3 without v3 routing/fusion",
-            "reindex_mode": "title_context_filename",
-            "requires_reindex": True,
-            "env": _profiled_env(
-                "S3",
-                profile="gold_tcf",
-                collection=GOLD_TCF_COLLECTION,
-                state_name="bm25_state_gold_tcf.json",
-            ),
-        },
-    }
-)
-
-PAIR_DEFINITIONS = (
-    ("A1_vs_A0", "A0", "A1"),
-    ("B1_vs_A1", "A1", "B1"),
-    ("G1_vs_G0", "G0", "G1"),
-    ("G1_vs_G2", "G2", "G1"),
-    ("G1_vs_G3", "G3", "G1"),
-    ("R1_vs_B0", "B0", "R1"),
-    ("R2_vs_R1", "R1", "R2"),
-    ("P1_vs_B0", "B0", "P1"),
-    ("P2_vs_B0", "B0", "P2"),
-    ("P3_vs_B0", "B0", "P3"),
-    ("F1_vs_B0", "B0", "F1"),
-    ("S0_vs_R1", "R1", "S0"),
-    ("S1_linear_vs_B0_legacy", "B0_legacy", "S1_linear"),
-    ("S2_vs_S1_linear", "S1_linear", "S2"),
-    ("S2H_vs_S2", "S2", "S2H"),
-    ("S2HR_vs_S2H", "S2H", "S2HR"),
-    ("S3_vs_S2HR", "S2HR", "S3"),
-    ("GS1_vs_GB0", "GB0", "GS1"),
-    ("GS2_vs_GS1", "GS1", "GS2"),
-    ("GS2H_vs_GS2", "GS2", "GS2H"),
-    ("GS2HR_vs_GS2H", "GS2H", "GS2HR"),
-    ("GS3_vs_GS2HR", "GS2HR", "GS3"),
-    ("V3Q_vs_GS3", "GS3", "V3Q"),
-    ("V3Q_vs_S3", "S3", "V3Q"),
-    ("V3F_vs_V3Q", "V3Q", "V3F"),
-)
 
 
 def _as_list(value: Any) -> list[str]:
@@ -582,45 +105,7 @@ def _dataset_schema_versions(records: list[dict]) -> list[str]:
 
 
 def validate_eval_dataset_records(records: list[dict], dataset: Path) -> dict[str, Any]:
-    errors: list[dict[str, Any]] = []
-    required_any = {
-        "query": ("query", "question", "input"),
-        "reference_answer": ("reference_answer", "expected_answer"),
-        "expected_files": ("expected_files", "gold_files"),
-        "expected_pages": ("expected_pages", "expected_page_refs", "gold_pages", "gold_doc_ids"),
-    }
-    required_exact = ("positive_contexts", "relevance_judgments", "hard_negative_files", "expected_keyword_policy")
-
-    for idx, record in enumerate(records, 1):
-        row_id = record.get("sample_id") or record.get("id") or idx
-        for label, candidates in required_any.items():
-            if not any(record.get(name) for name in candidates):
-                errors.append({"row": idx, "id": row_id, "error": f"missing_{label}"})
-        for field in required_exact:
-            if not record.get(field):
-                errors.append({"row": idx, "id": row_id, "error": f"missing_{field}"})
-
-        policy = record.get("expected_keyword_policy")
-        if policy and not isinstance(policy, dict):
-            errors.append({"row": idx, "id": row_id, "error": "expected_keyword_policy_not_object"})
-        elif isinstance(policy, dict):
-            try:
-                min_match = int(policy.get("min_match", 0))
-                total = int(policy.get("total", 0))
-            except (TypeError, ValueError):
-                errors.append({"row": idx, "id": row_id, "error": "expected_keyword_policy_invalid_numbers"})
-            else:
-                if min_match < 1 or (total and min_match > total):
-                    errors.append({"row": idx, "id": row_id, "error": "expected_keyword_policy_invalid_range"})
-
-    return {
-        "ok": not errors,
-        "dataset": str(dataset),
-        "row_count": len(records),
-        "schema_versions": _dataset_schema_versions(records),
-        "errors": errors[:50],
-        "error_count": len(errors),
-    }
+    return _validate_eval_dataset_records(records, dataset=str(dataset))
 
 
 def _expected_files_from_records(records: list[dict]) -> set[str]:
@@ -1438,229 +923,18 @@ def compare_sample_rank(old_metrics: dict, new_metrics: dict) -> str:
 
 
 def load_jsonl(path: Path, limit: int | None = None) -> list[dict]:
-    records: list[dict] = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            records.append(json.loads(line))
-            if limit is not None and len(records) >= limit:
-                break
-    return records
+    return _load_jsonl(path, limit=limit)
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+    _write_jsonl(path, rows)
 
 
 def summarize_results(rows: list[dict], variants: list[str]) -> dict[str, Any]:
     return _summarize_results(rows, variants, pair_definitions=PAIR_DEFINITIONS)
 
 def render_summary_markdown(summary: dict) -> str:
-    lines = [
-        "# RAG Matrix Evaluation Summary",
-        "",
-        f"Generated at: `{summary.get('generated_at')}`",
-        f"Rows: `{summary.get('sample_rows')}`",
-        "",
-    ]
-    fingerprint = summary.get("build_fingerprint") or {}
-    if fingerprint:
-        lines.extend(
-            [
-                "## Build Info",
-                "",
-                f"- Git commit: `{fingerprint.get('git_commit') or 'unknown'}`",
-                f"- Corpus path: `{fingerprint.get('corpus_path')}`",
-                f"- Dataset SHA256: `{fingerprint.get('dataset_sha256')}`",
-                f"- Index build timestamp: `{fingerprint.get('index_build_timestamp') or 'not rebuilt in this run'}`",
-                "",
-            ]
-        )
-    coverage_reports = summary.get("coverage_preflight") or []
-    if coverage_reports:
-        lines.extend(["## Coverage Preflight", ""])
-        for report in coverage_reports:
-            report_type = report.get("type")
-            if report_type == "corpus_file_coverage":
-                lines.append(
-                    "- Corpus file coverage: {covered}/{expected} ({coverage}) at `{path}`".format(
-                        covered=report.get("covered_files"),
-                        expected=report.get("expected_unique_files"),
-                        coverage=_fmt_metric(report.get("coverage")),
-                        path=report.get("documents_dir"),
-                    )
-                )
-            elif report_type == "qrel_coverage":
-                lines.append(
-                    "- Qrel coverage: file={file}, page={page}, chunk={chunk} ({chunk_rows}/{rows}), root={root} ({root_rows}/{rows})".format(
-                        file=_fmt_metric(report.get("file_qrel_coverage")),
-                        page=_fmt_metric(report.get("page_qrel_coverage")),
-                        chunk=_fmt_metric(report.get("chunk_qrel_coverage")),
-                        chunk_rows=report.get("chunk_qrel_rows", report.get("chunk_qrel_samples", 0)),
-                        root=_fmt_metric(report.get("root_qrel_coverage")),
-                        root_rows=report.get("root_qrel_rows", report.get("root_qrel_samples", 0)),
-                        rows=report.get("total_rows", report.get("rows", 0)),
-                    )
-                )
-            elif report_type == "external_chunk_qrels":
-                lines.append(
-                    "- External qrels: `{source}` matched={matched}/{rows}, chunk_mode={chunk_mode}, root_mode={root_mode}, "
-                    "conflicts={conflicts}, review={review}".format(
-                        source=report.get("qrel_source") or "none",
-                        matched=report.get("matched_rows", 0),
-                        rows=report.get("dataset_rows", 0),
-                        chunk_mode=report.get("chunk_qrel_match_mode"),
-                        root_mode=report.get("root_qrel_match_mode"),
-                        conflicts=report.get("conflict_count", 0),
-                        review=_fmt_metric(report.get("review_coverage")),
-                    )
-                )
-            elif report_type == "collection_closure":
-                metadata = report.get("metadata_coverage") or {}
-                lines.append(
-                    "- `{variant}` collection `{collection}` coverage: {covered}/{expected} ({coverage}); "
-                    "page_meta={page_meta}, retrieval_text={retrieval_text}, p95_len={p95}".format(
-                        variant=report.get("variant"),
-                        collection=report.get("collection"),
-                        covered=report.get("covered_files"),
-                        expected=report.get("expected_unique_files"),
-                        coverage=_fmt_metric(report.get("coverage")),
-                        page_meta=_fmt_metric(metadata.get("page_number_or_page_start_rate")),
-                        retrieval_text=_fmt_metric(metadata.get("retrieval_text_non_empty_rate")),
-                        p95=_fmt_metric(metadata.get("retrieval_text_length_p95")),
-                    )
-                )
-        lines.append("")
-    lines.extend([
-        "## Variant Metrics",
-        "",
-        "| Variant | Rows | File@5 | File+Page@5 | FileCandRecall | HardNeg@5 | Anchor@5 | MRR | Chunk@5 | Root@5 | P50 ms | P95 ms | Error | FallbackReq | FallbackExec | Helped | Hurt |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-    ])
-    for variant, metrics in summary.get("variants", {}).items():
-        lines.append(
-            "| {variant} | {rows} | {file} | {file_page} | {candidate_recall} | {hard_neg} | {anchor} | {mrr} | {chunk} | {root} | {p50} | {p95} | {error} | {fallback} | {fallback_executed} | {fallback_helped} | {fallback_hurt} |".format(
-                variant=variant,
-                rows=metrics.get("rows", 0),
-                file=_fmt_metric(metrics.get("file_hit_at_5")),
-                file_page=_fmt_metric(metrics.get("file_page_hit_at_5")),
-                candidate_recall=_fmt_metric(metrics.get("file_candidate_recall_before_rerank")),
-                hard_neg=_fmt_metric(metrics.get("hard_negative_context_ratio_at_5")),
-                anchor=_fmt_metric(metrics.get("anchor_hit_at_5")),
-                mrr=_fmt_metric(metrics.get("mrr")),
-                chunk=_fmt_metric(metrics.get("chunk_hit_at_5")),
-                root=_fmt_metric(metrics.get("root_hit_at_5")),
-                p50=_fmt_metric(metrics.get("p50_latency_ms")),
-                p95=_fmt_metric(metrics.get("p95_latency_ms")),
-                error=_fmt_metric(metrics.get("error_rate")),
-                fallback=_fmt_metric(metrics.get("fallback_trigger_rate")),
-                fallback_executed=_fmt_metric(metrics.get("fallback_executed_rate")),
-                fallback_helped=_fmt_metric(metrics.get("fallback_helped_rate")),
-                fallback_hurt=_fmt_metric(metrics.get("fallback_hurt_rate")),
-            )
-        )
-
-    lines.extend([
-        "",
-        "## Qrel Coverage",
-        "",
-        "| Variant | FileQrel | PageQrel | ChunkQrel | RootQrel |",
-        "| --- | ---: | ---: | ---: | ---: |",
-    ])
-    for variant, metrics in summary.get("variants", {}).items():
-        lines.append(
-            "| {variant} | {file_qrel} | {page_qrel} | {chunk_qrel} | {root_qrel} |".format(
-                variant=variant,
-                file_qrel=_fmt_metric(metrics.get("file_qrel_coverage")),
-                page_qrel=_fmt_metric(metrics.get("page_qrel_coverage")),
-                chunk_qrel=_fmt_metric(metrics.get("chunk_qrel_coverage")),
-                root_qrel=_fmt_metric(metrics.get("root_qrel_coverage")),
-            )
-        )
-
-    lines.extend([
-        "",
-        "## Experimental Evidence Metrics",
-        "",
-        "| Variant | ChunkRows | RootRows | ChunkMRR | RootMRR | AnswerSupport@5 exp |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
-    ])
-    for variant, metrics in summary.get("variants", {}).items():
-        lines.append(
-            "| {variant} | {chunk_rows} | {root_rows} | {chunk_mrr} | {root_mrr} | {answer_support} |".format(
-                variant=variant,
-                chunk_rows=metrics.get("chunk_qrel_rows", 0),
-                root_rows=metrics.get("root_qrel_rows", 0),
-                chunk_mrr=_fmt_metric(metrics.get("chunk_mrr")),
-                root_mrr=_fmt_metric(metrics.get("root_mrr")),
-                answer_support=_fmt_metric(metrics.get("answer_support_hit_at_5_experimental")),
-            )
-        )
-
-    lines.extend(["", "## Paired Comparisons", ""])
-    for pair_name, counts in summary.get("paired_comparisons", {}).items():
-        lines.append(
-            f"- `{pair_name}`: wins={counts.get('wins', 0)}, losses={counts.get('losses', 0)}, ties={counts.get('ties', 0)}, missing={counts.get('missing', 0)}"
-        )
-
-    lines.extend(["", "## Diagnostics", ""])
-    for variant, counts in summary.get("diagnostics", {}).items():
-        rendered = ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
-        lines.append(f"- `{variant}`: {rendered or 'none'}")
-
-    lines.extend(["", "## Rewrite Strategies", ""])
-    for variant, metrics in summary.get("variants", {}).items():
-        counts = metrics.get("rewrite_strategy_distribution") or {}
-        rendered = ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
-        lines.append(f"- `{variant}`: {rendered or 'none'}")
-
-    if any(metrics.get("faithfulness_score") is not None for metrics in summary.get("variants", {}).values()):
-        lines.extend([
-            "",
-            "## Answer Evaluation",
-            "",
-            "| Variant | Faithfulness | AnswerRelevance | CitationCoverage | AnswerEvalError |",
-            "| --- | ---: | ---: | ---: | ---: |",
-        ])
-        for variant, metrics in summary.get("variants", {}).items():
-            lines.append(
-                "| {variant} | {faithfulness} | {answer_relevance} | {citation_coverage} | {answer_error} |".format(
-                    variant=variant,
-                    faithfulness=_fmt_metric(metrics.get("faithfulness_score")),
-                    answer_relevance=_fmt_metric(metrics.get("answer_relevance_score")),
-                    citation_coverage=_fmt_metric(metrics.get("citation_coverage")),
-                    answer_error=_fmt_metric(metrics.get("answer_eval_error_rate")),
-                )
-            )
-
-    lines.extend([
-        "",
-        "## Notes",
-        "",
-        "- `FileCandRecall` is strict filename-level recall before rerank; `weak_any_candidate_recall_before_rerank` remains in JSON for legacy diagnostics.",
-        "- Primary metrics: `File@5`, `File+Page@5`, `FileCandRecall`, `Chunk@5`, `Root@5`, `HardNeg@5`, `Anchor@5`, `MRR`, `P50/P95`.",
-        "- `HardNeg@5` is only meaningful on the gold dataset (hard_negative_files defined); shown as `-` on natural/frozen.",
-        "- DeepEval/Ragas/TruLens are not runtime dependencies in this report.",
-    ])
-    return "\n".join(lines) + "\n"
-
-
-def _fmt_metric(value: Any) -> str:
-    if value is None:
-        return "-"
-    if isinstance(value, str):
-        return value if value == _QRELS_NA else str(value)[:12]
-    if isinstance(value, bool):
-        return "1.000" if value else "0.000"
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, float):
-        return f"{value:.3f}"
-    return str(value)
+    return _render_summary_markdown(summary)
 
 
 def _expected_fields(record: dict) -> dict[str, Any]:
@@ -1736,6 +1010,25 @@ def _first_expected_file_rank(docs: list[dict], expected_files: list[str], top_k
     return None
 
 
+def _first_expected_file_page_rank(
+    docs: list[dict],
+    expected_files: list[str],
+    expected_pages: list[str],
+    top_k: int | None = None,
+) -> int | None:
+    files = _normalized_filename_set(expected_files)
+    pages = {str(page) for page in (expected_pages or []) if str(page)}
+    if not files or not pages:
+        return None
+    window = docs if top_k is None else docs[:top_k]
+    for idx, doc in enumerate(window or [], 1):
+        if _doc_filename_norm(doc) not in files:
+            continue
+        if _exact_page_candidates(doc) & pages:
+            return idx
+    return None
+
+
 def _stage_metrics(meta: dict, expected: dict[str, Any], top_k: int) -> dict[str, Any]:
     before = meta.get("candidates_before_rerank") or []
     after_rerank = meta.get("candidates_after_rerank") or []
@@ -1746,9 +1039,24 @@ def _stage_metrics(meta: dict, expected: dict[str, Any], top_k: int) -> dict[str
     before_file_rank = _first_expected_file_rank(before, expected.get("expected_files") or [], top_k=None)
     rerank_file_rank = _first_expected_file_rank(after_rerank, expected.get("expected_files") or [], top_k=None)
     structure_file_rank = _first_expected_file_rank(after_structure, expected.get("expected_files") or [], top_k=top_k)
+    before_page_rank = _first_expected_file_page_rank(
+        before,
+        expected.get("expected_files") or [],
+        expected.get("expected_pages") or [],
+        top_k=None,
+    )
+    rerank_page_rank = _first_expected_file_page_rank(
+        after_rerank,
+        expected.get("expected_files") or [],
+        expected.get("expected_pages") or [],
+        top_k=None,
+    )
     before_file_hit = before_file_rank is not None
     rerank_file_hit = rerank_file_rank is not None
     structure_file_hit = structure_file_rank is not None
+    page_rank_delta = None
+    if before_page_rank is not None and rerank_page_rank is not None:
+        page_rank_delta = before_page_rank - rerank_page_rank
     return {
         "candidate_recall_before_rerank": 1.0 if before_hit else 0.0,
         "rerank_drop_rate": 1.0 if before_hit and not rerank_hit else 0.0,
@@ -1759,6 +1067,9 @@ def _stage_metrics(meta: dict, expected: dict[str, Any], top_k: int) -> dict[str
         "file_rank_before_rerank": before_file_rank,
         "file_rank_after_rerank": rerank_file_rank,
         "file_rank_after_structure_rerank": structure_file_rank,
+        "page_rank_before_rerank": before_page_rank,
+        "page_rank_after_rerank": rerank_page_rank,
+        "page_rank_delta": page_rank_delta,
     }
 
 
@@ -2392,6 +1703,9 @@ def _miss_analysis_rows(rows: list[dict]) -> list[dict]:
                     "rerank_drop_rate": metrics.get("rerank_drop_rate"),
                     "file_rerank_drop_rate": metrics.get("file_rerank_drop_rate"),
                     "file_rank_before_rerank": metrics.get("file_rank_before_rerank"),
+                    "page_rank_before_rerank": metrics.get("page_rank_before_rerank"),
+                    "page_rank_after_rerank": metrics.get("page_rank_after_rerank"),
+                    "page_rank_delta": metrics.get("page_rank_delta"),
                     "structure_drop_rate": metrics.get("structure_drop_rate"),
                     "initial_retrieval_hit_at_5": metrics.get("initial_retrieval_hit_at_5"),
                     "final_retrieval_hit_at_5": metrics.get("final_retrieval_hit_at_5"),

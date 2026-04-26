@@ -7,7 +7,8 @@ from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
 
-from rag_utils import retrieve_context_documents, retrieve_documents, step_back_expand, generate_hypothetical_document
+from rag_utils import retrieve_context_documents, retrieve_documents, step_back_expand, generate_hypothetical_document, elapsed_ms
+from rag_retrieval import dedupe_docs
 from tools import emit_rag_step
 
 load_dotenv()
@@ -60,9 +61,6 @@ def _get_fast_model():
         )
     return _fast_model
 
-
-def _elapsed_ms(start: float) -> float:
-    return round((time.perf_counter() - start) * 1000, 3)
 
 
 def _trace_timings(rag_trace: dict) -> dict:
@@ -208,23 +206,11 @@ def _format_docs(docs: List[dict]) -> str:
     return "\n\n---\n\n".join(chunks)
 
 
-def _dedupe_docs(docs: List[dict]) -> List[dict]:
-    deduped = []
-    seen = set()
-    for item in docs:
-        key = item.get("chunk_id") or (item.get("filename"), item.get("page_number"), item.get("text"))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(item)
-    return deduped
-
-
 def _fallback_to_initial_retrieval(state: RAGState, rag_trace: dict, expanded_start: float) -> RAGState:
     docs = state.get("docs") or []
     context = state.get("context") or _format_docs(docs)
     timings = _trace_timings(rag_trace)
-    timings["expanded_retrieve_ms"] = _elapsed_ms(expanded_start)
+    timings["expanded_retrieve_ms"] = elapsed_ms(expanded_start)
     rag_trace.update({
         "retrieved_chunks": docs,
         "expanded_retrieved_chunks": [],
@@ -250,7 +236,7 @@ def retrieve_initial(state: RAGState) -> RAGState:
         attached = retrieve_context_documents(context_files, limit_per_file=8)
         attached_docs = attached.get("docs", [])
         attached_meta = attached.get("meta", {})
-        results = _dedupe_docs(attached_docs + results)
+        results = dedupe_docs(attached_docs + results)
     retrieve_meta = retrieved.get("meta", {})
     context = _format_docs(results)
     retrieve_timings = dict(retrieve_meta.get("timings") or {})
@@ -351,7 +337,7 @@ def grade_documents_node(state: RAGState) -> RAGState:
             "graph_path": "linear_initial_only",
             "fallback_llm_model": _get_fallback_model_name(),
         })
-        _trace_timings(rag_trace)["grader_ms"] = _elapsed_ms(stage_start)
+        _trace_timings(rag_trace)["grader_ms"] = elapsed_ms(stage_start)
         return {"route": "generate_answer", "rag_trace": rag_trace}
 
     if rag_trace.get("fallback_required") is False:
@@ -364,7 +350,7 @@ def grade_documents_node(state: RAGState) -> RAGState:
             "fallback_disabled": False,
             "fallback_llm_model": _get_fallback_model_name(),
         })
-        _trace_timings(rag_trace)["grader_ms"] = _elapsed_ms(stage_start)
+        _trace_timings(rag_trace)["grader_ms"] = elapsed_ms(stage_start)
         return {"route": "generate_answer", "rag_trace": rag_trace}
     if rag_trace.get("fallback_required") is True:
         rag_trace.update({
@@ -376,7 +362,7 @@ def grade_documents_node(state: RAGState) -> RAGState:
             "fallback_disabled": False,
             "fallback_llm_model": _get_fallback_model_name(),
         })
-        _trace_timings(rag_trace)["grader_ms"] = _elapsed_ms(stage_start)
+        _trace_timings(rag_trace)["grader_ms"] = elapsed_ms(stage_start)
         return {"route": "rewrite_question", "rag_trace": rag_trace}
 
     grader = _get_grader_model()
@@ -389,7 +375,7 @@ def grade_documents_node(state: RAGState) -> RAGState:
         }
         rag_trace = state.get("rag_trace", {}) or {}
         rag_trace.update(grade_update)
-        _trace_timings(rag_trace)["grader_ms"] = _elapsed_ms(stage_start)
+        _trace_timings(rag_trace)["grader_ms"] = elapsed_ms(stage_start)
         return {"route": "rewrite_question", "rag_trace": rag_trace}
     question = state["question"]
     context = state.get("context", "")
@@ -425,7 +411,7 @@ def grade_documents_node(state: RAGState) -> RAGState:
     rag_trace.update(grade_update)
     if grade_error:
         _append_stage_error(rag_trace, "grade_documents", grade_error, "generate_answer" if context else "rewrite_question")
-    _trace_timings(rag_trace)["grader_ms"] = _elapsed_ms(stage_start)
+    _trace_timings(rag_trace)["grader_ms"] = elapsed_ms(stage_start)
     return {"route": route, "rag_trace": rag_trace}
 
 
@@ -464,7 +450,7 @@ def rewrite_question_node(state: RAGState) -> RAGState:
             "rewrite_router",
             "initial_retrieval",
         )
-        router_ms = _elapsed_ms(router_start)
+        router_ms = elapsed_ms(router_start)
         if decision is None:
             if rag_trace.get("fallback_timed_out"):
                 strategy = "timeout"
@@ -495,7 +481,7 @@ def rewrite_question_node(state: RAGState) -> RAGState:
     if "step_back" in futures:
         start, future = futures["step_back"]
         step_back = _await_with_deadline(future, fallback_deadline, rag_trace, "stepback_llm", "initial_retrieval")
-        stepback_llm_ms = _elapsed_ms(start)
+        stepback_llm_ms = elapsed_ms(start)
         if isinstance(step_back, dict):
             step_back_question = step_back.get("step_back_question", "")
             step_back_answer = step_back.get("step_back_answer", "")
@@ -504,7 +490,7 @@ def rewrite_question_node(state: RAGState) -> RAGState:
     if "hyde" in futures:
         start, future = futures["hyde"]
         hyde_doc = _await_with_deadline(future, fallback_deadline, rag_trace, "hyde_llm", "initial_retrieval")
-        hyde_llm_ms = _elapsed_ms(start)
+        hyde_llm_ms = elapsed_ms(start)
         if isinstance(hyde_doc, str):
             hypothetical_doc = hyde_doc
 
@@ -519,7 +505,7 @@ def rewrite_question_node(state: RAGState) -> RAGState:
     timings["rewrite_router_ms"] = router_ms
     timings["stepback_llm_ms"] = stepback_llm_ms
     timings["hyde_llm_ms"] = hyde_llm_ms
-    timings["rewrite_question_ms"] = _elapsed_ms(rewrite_start)
+    timings["rewrite_question_ms"] = elapsed_ms(rewrite_start)
     if router_error:
         _append_stage_error(rag_trace, "rewrite_router", router_error, "step_back")
 
@@ -688,7 +674,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
     rag_trace = state.get("rag_trace", {}) or {}
     timings = _trace_timings(rag_trace)
     timings.update(expanded_timings)
-    timings["expanded_retrieve_ms"] = _elapsed_ms(expanded_start)
+    timings["expanded_retrieve_ms"] = elapsed_ms(expanded_start)
     _trace_stage_errors(rag_trace).extend(expanded_stage_errors)
     rag_trace.update({
         "expanded_query": state.get("expanded_query") or state["question"],
@@ -787,6 +773,6 @@ def run_rag_graph(question: str, context_files: list[str] | None = None) -> dict
         "rag_trace": None,
     })
     rag_trace = result.get("rag_trace") or {}
-    _trace_timings(rag_trace)["total_rag_graph_ms"] = _elapsed_ms(graph_start)
+    _trace_timings(rag_trace)["total_rag_graph_ms"] = elapsed_ms(graph_start)
     result["rag_trace"] = rag_trace
     return result

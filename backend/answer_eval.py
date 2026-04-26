@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import re
 import time
@@ -9,6 +8,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
+
+from json_utils import extract_json_object
 
 
 load_dotenv()
@@ -22,8 +23,7 @@ _answer_model = None
 _judge_model = None
 
 
-def _elapsed_ms(start: float) -> float:
-    return round((time.perf_counter() - start) * 1000, 3)
+from rag_utils import elapsed_ms  # noqa: E402
 
 
 def _get_model(kind: str):
@@ -79,20 +79,6 @@ def format_context_for_answer(docs: list[dict], max_chars_per_doc: int = 1100) -
             header += f" section={section}"
         chunks.append(f"{header}\n{body}")
     return "\n\n---\n\n".join(chunks)
-
-
-def _extract_json_object(text: str) -> dict[str, Any]:
-    content = (text or "").strip()
-    if content.startswith("```"):
-        content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.IGNORECASE)
-        content = re.sub(r"\s*```$", "", content).strip()
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", content, flags=re.DOTALL)
-        if not match:
-            raise
-        return json.loads(match.group(0))
 
 
 def _clamp_score(value: Any) -> float | None:
@@ -177,14 +163,14 @@ def generate_grounded_answer(question: str, docs: list[dict]) -> dict[str, Any]:
             "answer": answer,
             "answer_error": None,
             "answer_model": ANSWER_MODEL,
-            "answer_generation_ms": _elapsed_ms(start),
+            "answer_generation_ms": elapsed_ms(start),
         }
     except Exception as exc:
         return {
             "answer": "",
             "answer_error": str(exc),
             "answer_model": ANSWER_MODEL,
-            "answer_generation_ms": _elapsed_ms(start),
+            "answer_generation_ms": elapsed_ms(start),
         }
 
 
@@ -219,7 +205,7 @@ def judge_answer(question: str, answer: str, docs: list[dict], reference_answer:
     start = time.perf_counter()
     try:
         response = model.invoke(prompt)
-        payload = _extract_json_object(str(getattr(response, "content", response) or ""))
+        payload = extract_json_object(str(getattr(response, "content", response) or ""))
         faithfulness = _clamp_score(payload.get("faithfulness_score"))
         relevance = _clamp_score(payload.get("answer_relevance_score"))
         return {
@@ -231,7 +217,7 @@ def judge_answer(question: str, answer: str, docs: list[dict], reference_answer:
             "total_claims": payload.get("total_claims"),
             "verdict": payload.get("verdict"),
             "reason": payload.get("reason"),
-            "judge_ms": _elapsed_ms(start),
+            "judge_ms": elapsed_ms(start),
         }
     except Exception as exc:
         return {
@@ -241,7 +227,7 @@ def judge_answer(question: str, answer: str, docs: list[dict], reference_answer:
             "answer_relevance_score": None,
             "grounded_claims": None,
             "total_claims": None,
-            "judge_ms": _elapsed_ms(start),
+            "judge_ms": elapsed_ms(start),
         }
 
 
