@@ -66,6 +66,42 @@ class RagDatasetUtilsTests(unittest.TestCase):
         self.assertGreaterEqual(score.score, 0.95)
         self.assertEqual(score.method, "exact")
 
+    def test_alignment_score_downweights_neighbor_page(self):
+        row = {
+            "source_excerpt": "保存配置",
+            "gold_files": ["manual.pdf"],
+            "gold_pages": [8],
+        }
+        same_file_neighbor_page = {
+            "filename": "manual.pdf",
+            "text": "保存配置",
+            "page_number": 9,
+        }
+
+        score = alignment_score(row, same_file_neighbor_page)
+
+        self.assertIn("neighbor_page", score.reasons)
+        self.assertLess(score.score, 0.75)
+
+    def test_alignment_score_rewards_same_section_heading(self):
+        row = {
+            "source_excerpt": "missing excerpt",
+            "gold_files": ["manual.pdf"],
+            "gold_pages": [8],
+            "source_heading": "1.2 配置LA2608与无线控制器互通",
+        }
+        chunk = {
+            "filename": "manual.pdf",
+            "page_number": 8,
+            "section_title": "1.2 配置LA2608与无线控制器互通",
+            "text": "section body",
+        }
+
+        score = alignment_score(row, chunk)
+
+        self.assertIn("same_section", score.reasons)
+        self.assertGreaterEqual(score.score, 0.45)
+
 
 if __name__ == "__main__":
     unittest.main()

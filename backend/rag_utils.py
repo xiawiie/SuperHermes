@@ -1,4 +1,3 @@
-from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Tuple, Dict, Any
 import os
@@ -7,22 +6,51 @@ import hashlib
 import re
 import time
 import requests
-from difflib import SequenceMatcher
 from dotenv import load_dotenv
 
 from cache import cache
 from milvus_client import MilvusManager
 from embedding import embedding_service as _embedding_service
-from parent_chunk_store import ParentChunkStore
-from langchain.chat_models import init_chat_model
 from query_plan import (
     QueryPlan,
     DOC_SCOPE_MATCH_BOOST,
     parse_query_plan,
     get_filename_registry,
     _normalize_filename as _qp_normalize_filename,
-    _filename_match_score as _qp_filename_match_score,
 )
+from rag_profiles import current_index_profile
+from rag_confidence import (
+    doc_matches_anchor as _confidence_doc_matches_anchor,
+    evaluate_retrieval_confidence as _confidence_evaluate_retrieval_confidence,
+    extract_query_anchors as _confidence_extract_query_anchors,
+)
+from rag_context import (
+    apply_structure_rerank as _context_apply_structure_rerank,
+    auto_merge_documents as _context_auto_merge_documents,
+    merge_to_parent_level as _context_merge_to_parent_level,
+)
+from rag_rerank import (
+    RerankRuntime,
+    apply_rerank_score_fusion as _rerank_apply_score_fusion,
+    build_enriched_pair as _rerank_build_enriched_pair,
+    metadata_match_score as _rerank_metadata_match_score,
+    normalize_float_scores as _rerank_normalize_float_scores,
+    rerank_documents as _run_rerank_documents,
+    rerank_pair_text as _rerank_pair_text_impl,
+    rerank_rrf_score as _rerank_rrf_score_impl,
+    scope_match_score as _rerank_scope_match_score,
+)
+from rag_retrieval import (
+    annotate_scope_scores as _retrieval_annotate_scope_scores,
+    apply_filename_boost as _retrieval_apply_filename_boost,
+    apply_heading_lexical_scoring as _retrieval_apply_heading_lexical_scoring,
+    build_filename_filter as _retrieval_build_filename_filter,
+    dedupe_docs as _retrieval_dedupe_docs,
+    doc_filename as _retrieval_doc_filename,
+    weighted_rrf_merge as _retrieval_weighted_rrf_merge,
+)
+from rag_trace import candidate_identity, trace_text_hash
+from rag_types import StageError
 
 load_dotenv()
 
@@ -68,10 +96,16 @@ DOC_SCOPE_FILENAME_BOOST_WEIGHT = float(os.getenv("DOC_SCOPE_FILENAME_BOOST_WEIG
 RERANK_PAIR_ENRICHMENT_ENABLED = _env_bool("RERANK_PAIR_ENRICHMENT_ENABLED", False)
 HEADING_LEXICAL_ENABLED = _env_bool("HEADING_LEXICAL_ENABLED", False)
 HEADING_LEXICAL_WEIGHT = min(1.0, max(0.0, float(os.getenv("HEADING_LEXICAL_WEIGHT", "0.20"))))
+RAG_INDEX_PROFILE = current_index_profile()
+RERANK_SCORE_FUSION_ENABLED = _env_bool("RERANK_SCORE_FUSION_ENABLED", False)
+RERANK_FUSION_RERANK_WEIGHT = float(os.getenv("RERANK_FUSION_RERANK_WEIGHT", "0.65"))
+RERANK_FUSION_RRF_WEIGHT = float(os.getenv("RERANK_FUSION_RRF_WEIGHT", "0.20"))
+RERANK_FUSION_SCOPE_WEIGHT = float(os.getenv("RERANK_FUSION_SCOPE_WEIGHT", "0.10"))
+RERANK_FUSION_METADATA_WEIGHT = float(os.getenv("RERANK_FUSION_METADATA_WEIGHT", "0.05"))
 
 # 全局初始化检索依赖（与 api 共用 embedding_service，保证 BM25 状态一致）
 _milvus_manager = MilvusManager()
-_parent_chunk_store = ParentChunkStore()
+_parent_chunk_store = None
 
 _stepback_model = None
 _local_reranker = None
@@ -85,155 +119,91 @@ _ANCHOR_PATTERN = re.compile(
 )
 
 
+def _get_parent_chunk_store():
+    global _parent_chunk_store
+    if _parent_chunk_store is None:
+        from parent_chunk_store import ParentChunkStore
+
+        _parent_chunk_store = ParentChunkStore()
+    return _parent_chunk_store
+
+
 def _doc_retrieval_text(doc: dict) -> str:
     return str(doc.get("retrieval_text") or doc.get("text") or "")
 
 
 def _build_enriched_pair(doc: dict) -> str:
-    """Build enriched pair text for reranker from document metadata."""
-    filename = str(doc.get("filename") or "")
-    section_path = str(doc.get("section_path") or doc.get("section_title") or "")
-    page = doc.get("page_number") or doc.get("page_start") or ""
-    anchor = str(doc.get("anchor_id") or doc.get("anchor") or "")
-    heading = str(doc.get("section_title") or "")
-    body = _doc_retrieval_text(doc)
-
-    prefix_parts = []
-    if filename:
-        prefix_parts.append(f"[{filename}]")
-    if section_path:
-        prefix_parts.append(f"[{section_path}]")
-    if page:
-        prefix_parts.append(f"[p.{page}]")
-    if anchor:
-        prefix_parts.append(f"[{anchor}]")
-    prefix = "".join(prefix_parts)
-
-    if heading and heading in body:
-        pair_text = f"{prefix} {body}"
-    else:
-        pair_text = f"{prefix} {heading}\n{body}" if heading else f"{prefix} {body}"
-
-    return pair_text.strip()
+    return _rerank_build_enriched_pair(doc, doc_text_getter=_doc_retrieval_text)
 
 
 def _weighted_rrf_merge(
     result_sets: list[tuple[list[dict], float]],
     rrf_k: int = 60,
 ) -> list[dict]:
-    """Merge multiple retrieval result sets using weighted RRF.
-
-    Args:
-        result_sets: List of (docs, weight) tuples. Weights should sum to ~1.0.
-        rrf_k: RRF constant (default 60).
-
-    Returns:
-        Merged and deduplicated list of documents sorted by weighted RRF score.
-    """
-    scores: Dict[str, float] = defaultdict(float)
-    doc_by_id: Dict[str, dict] = {}
-
-    for docs, weight in result_sets:
-        for rank_idx, doc in enumerate(docs, 1):
-            chunk_id = str(doc.get("chunk_id") or doc.get("id") or "")
-            if not chunk_id:
-                continue
-            rrf_score = weight / (rrf_k + rank_idx)
-            scores[chunk_id] += rrf_score
-            if chunk_id not in doc_by_id:
-                doc_by_id[chunk_id] = doc
-            else:
-                # Merge: keep existing doc but update score
-                pass
-
-    sorted_ids = sorted(scores, key=lambda x: -scores[x])
-    result = []
-    for cid in sorted_ids:
-        doc = dict(doc_by_id[cid])
-        doc["rrf_merged_score"] = round(scores[cid], 6)
-        result.append(doc)
-
-    return result
+    return _retrieval_weighted_rrf_merge(result_sets, rrf_k=rrf_k)
 
 
 def _doc_filename(doc: dict) -> str:
-    metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
-    return str(doc.get("filename") or metadata.get("filename") or "")
+    return _retrieval_doc_filename(doc)
 
 
 def _apply_filename_boost(query_plan: QueryPlan, candidates: list[dict]) -> list[dict]:
-    """Soft-rank candidates from matched files in boost mode without hard filtering."""
-    if query_plan.scope_mode != "boost" or not candidates:
-        return candidates
-
-    matched_scores = {
-        str(filename): score
-        for filename, score in query_plan.matched_files
-        if score >= DOC_SCOPE_MATCH_BOOST
-    }
-    if not matched_scores:
-        return candidates
-
-    normalized_scores = {
-        _qp_normalize_filename(filename): score
-        for filename, score in matched_scores.items()
-    }
-
-    scored: list[tuple[float, dict]] = []
-    for idx, doc in enumerate(candidates, 1):
-        filename = _doc_filename(doc)
-        match_score = matched_scores.get(filename, 0.0)
-        if not match_score:
-            match_score = normalized_scores.get(_qp_normalize_filename(filename), 0.0)
-
-        rank_score = 1.0 / (MILVUS_RRF_K + idx)
-        boosted_score = rank_score + (DOC_SCOPE_FILENAME_BOOST_WEIGHT * match_score)
-        next_doc = dict(doc)
-        if match_score:
-            next_doc["filename_boost_applied"] = True
-            next_doc["filename_boost_match_score"] = round(match_score, 6)
-            next_doc["filename_boost_score"] = round(boosted_score, 6)
-        scored.append((boosted_score, next_doc))
-
-    scored.sort(key=lambda item: -item[0])
-    return [doc for _, doc in scored]
+    return _retrieval_apply_filename_boost(
+        query_plan,
+        candidates,
+        doc_scope_match_boost=DOC_SCOPE_MATCH_BOOST,
+        filename_normalizer=_qp_normalize_filename,
+        milvus_rrf_k=MILVUS_RRF_K,
+        filename_boost_weight=DOC_SCOPE_FILENAME_BOOST_WEIGHT,
+    )
 
 
 def _apply_heading_lexical_scoring(
     query_plan: QueryPlan,
     candidates: list[dict],
 ) -> list[dict]:
-    """Apply heading/section lexical scoring to candidates.
+    return _retrieval_apply_heading_lexical_scoring(
+        query_plan,
+        candidates,
+        heading_lexical_weight=HEADING_LEXICAL_WEIGHT,
+        milvus_rrf_k=MILVUS_RRF_K,
+    )
 
-    Only active when scope_mode in {filter, boost} and heading_hint exists.
-    """
-    if not query_plan.heading_hint or query_plan.scope_mode not in {"filter", "boost"}:
-        return candidates
 
-    alpha = HEADING_LEXICAL_WEIGHT
-    semantic_query = query_plan.semantic_query
-    anchors = query_plan.anchors
+def _normalize_float_scores(values: list[float]) -> list[float]:
+    return _rerank_normalize_float_scores(values)
 
-    scored_candidates = []
-    for idx, doc in enumerate(candidates, 1):
-        section_path = str(doc.get("section_path") or "")
-        heading = str(doc.get("section_title") or "")
-        anchor_id = str(doc.get("anchor_id") or "")
 
-        heading_lexical_score = (
-            0.5 * SequenceMatcher(None, semantic_query, section_path).ratio()
-            + 0.3 * SequenceMatcher(None, semantic_query, heading).ratio()
-            + 0.2 * (1.0 if any(a in anchor_id or a in heading or a in section_path for a in anchors) else 0.0)
-        )
+def _metadata_match_score(doc: dict) -> float:
+    return _rerank_metadata_match_score(doc)
 
-        # Normalize RRF-like rank score: 1/(k+rank)
-        rrf_rank_normalized = 1.0 / (MILVUS_RRF_K + idx)
 
-        final_sort_key = (1 - alpha) * rrf_rank_normalized + alpha * heading_lexical_score
-        scored_candidates.append((final_sort_key, doc))
+def _scope_match_score(doc: dict) -> float:
+    return _rerank_scope_match_score(doc)
 
-    scored_candidates.sort(key=lambda x: -x[0])
-    return [doc for _, doc in scored_candidates]
+
+def _rerank_rrf_score(doc: dict) -> float:
+    return _rerank_rrf_score_impl(doc, milvus_rrf_k=MILVUS_RRF_K)
+
+
+def _apply_rerank_score_fusion(indexed_scores: list[tuple[int, float]], docs_for_rerank: list[dict]) -> list[tuple[int, float]]:
+    weights = {
+        "rerank": max(0.0, RERANK_FUSION_RERANK_WEIGHT),
+        "rrf": max(0.0, RERANK_FUSION_RRF_WEIGHT),
+        "scope": max(0.0, RERANK_FUSION_SCOPE_WEIGHT),
+        "metadata": max(0.0, RERANK_FUSION_METADATA_WEIGHT),
+    }
+    return _rerank_apply_score_fusion(
+        indexed_scores,
+        docs_for_rerank,
+        enabled=RERANK_SCORE_FUSION_ENABLED,
+        weights=weights,
+        milvus_rrf_k=MILVUS_RRF_K,
+    )
+
+
+def _annotate_scope_scores(docs: list[dict], matched_files: list[tuple[str, float]]) -> list[dict]:
+    return _retrieval_annotate_scope_scores(docs, matched_files)
 
 
 def _finish_retrieval_pipeline(
@@ -279,6 +249,7 @@ def _finish_retrieval_pipeline(
         rerank_meta["milvus_sparse_drop_ratio"] = MILVUS_SPARSE_DROP_RATIO
         rerank_meta["milvus_rrf_k"] = MILVUS_RRF_K
         rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
+        rerank_meta["index_profile"] = RAG_INDEX_PROFILE
         rerank_meta["context_files"] = context_files or []
         rerank_meta["hybrid_error"] = None
         rerank_meta["dense_error"] = None
@@ -319,6 +290,7 @@ def _finish_retrieval_pipeline(
                 "milvus_sparse_drop_ratio": MILVUS_SPARSE_DROP_RATIO,
                 "milvus_rrf_k": MILVUS_RRF_K,
                 "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
+                "index_profile": RAG_INDEX_PROFILE,
                 "context_files": context_files or [],
                 "structure_rerank_applied": False,
                 "structure_rerank_enabled": STRUCTURE_RERANK_ENABLED,
@@ -353,6 +325,7 @@ def _candidate_trace(docs: List[dict]) -> List[dict]:
         traced.append(
             {
                 "chunk_id": doc.get("chunk_id", ""),
+                "candidate_id": candidate_identity(doc),
                 "root_chunk_id": doc.get("root_chunk_id", ""),
                 "anchor_id": doc.get("anchor_id", ""),
                 "filename": doc.get("filename", ""),
@@ -361,10 +334,15 @@ def _candidate_trace(docs: List[dict]) -> List[dict]:
                 "page_number": doc.get("page_number"),
                 "page_start": doc.get("page_start"),
                 "page_end": doc.get("page_end"),
+                "text_hash": trace_text_hash(_doc_retrieval_text(doc)),
                 "text_preview": _doc_retrieval_text(doc)[:240],
+                "index_profile": doc.get("index_profile", RAG_INDEX_PROFILE),
                 "score": doc.get("score"),
+                "raw_rerank_score": doc.get("raw_rerank_score"),
                 "rerank_score": doc.get("rerank_score"),
+                "fusion_score": doc.get("fusion_score"),
                 "final_score": doc.get("final_score"),
+                "doc_scope_match_score": doc.get("doc_scope_match_score"),
                 "filename_boost_applied": doc.get("filename_boost_applied", False),
                 "filename_boost_score": doc.get("filename_boost_score"),
             }
@@ -473,6 +451,13 @@ def _rerank_cache_key(
         "device_tier": _rerank_device_tier(),
         "rerank_top_n": rerank_top_n,
         "rerank_input_k": rerank_input_k,
+        "score_fusion_enabled": RERANK_SCORE_FUSION_ENABLED,
+        "fusion_weights": {
+            "rerank": RERANK_FUSION_RERANK_WEIGHT,
+            "rrf": RERANK_FUSION_RRF_WEIGHT,
+            "scope": RERANK_FUSION_SCOPE_WEIGHT,
+            "metadata": RERANK_FUSION_METADATA_WEIGHT,
+        },
         "bm25_total_docs": _bm25_total_docs(),
         "milvus_index_version": _milvus_index_version(),
         "docs": _rerank_doc_signatures(docs_for_rerank, enrichment_enabled),
@@ -506,6 +491,18 @@ def _load_cached_rerank_result(cache_key: str, docs_for_rerank: List[dict], rera
                 doc["rerank_score"] = float(score)
             except (TypeError, ValueError):
                 return None
+        raw_score = item.get("raw_rerank_score")
+        if raw_score is not None:
+            try:
+                doc["raw_rerank_score"] = float(raw_score)
+            except (TypeError, ValueError):
+                return None
+        fusion_score = item.get("fusion_score")
+        if fusion_score is not None:
+            try:
+                doc["fusion_score"] = float(fusion_score)
+            except (TypeError, ValueError):
+                return None
         reranked.append(doc)
 
     return reranked if reranked else None
@@ -518,7 +515,14 @@ def _store_rerank_result(cache_key: str, reranked: List[dict], docs_for_rerank: 
         index = rank_to_index.get(doc.get("rrf_rank"))
         if index is None:
             return
-        items.append({"index": index, "rerank_score": doc.get("rerank_score")})
+        items.append(
+            {
+                "index": index,
+                "rerank_score": doc.get("rerank_score"),
+                "raw_rerank_score": doc.get("raw_rerank_score"),
+                "fusion_score": doc.get("fusion_score"),
+            }
+        )
     cache.set_json(cache_key, {"items": items}, ttl=RERANK_CACHE_TTL_SECONDS)
 
 
@@ -560,447 +564,91 @@ def _ensure_retrieve_timing_defaults(timings: Dict[str, float]) -> Dict[str, flo
 
 
 def _stage_error(stage: str, error: str, fallback_to: str | None = None) -> Dict[str, str]:
-    item = {"stage": stage, "error": error}
-    if fallback_to:
-        item["fallback_to"] = fallback_to
-    return item
+    return StageError(stage=stage, error=error, fallback_to=fallback_to).as_dict()
 
 
 def _merge_to_parent_level(docs: List[dict], threshold: int = 2) -> Tuple[List[dict], int]:
-    groups: Dict[str, List[dict]] = defaultdict(list)
-    for doc in docs:
-        parent_id = (doc.get("parent_chunk_id") or "").strip()
-        if parent_id:
-            groups[parent_id].append(doc)
-
-    merge_parent_ids = [parent_id for parent_id, children in groups.items() if len(children) >= threshold]
-    if not merge_parent_ids:
-        return docs, 0
-
-    parent_docs = _parent_chunk_store.get_documents_by_ids(merge_parent_ids)
-    parent_map = {item.get("chunk_id", ""): item for item in parent_docs if item.get("chunk_id")}
-
-    merged_docs: List[dict] = []
-    merged_count = 0
-    for doc in docs:
-        parent_id = (doc.get("parent_chunk_id") or "").strip()
-        if not parent_id or parent_id not in parent_map:
-            merged_docs.append(doc)
-            continue
-        parent_doc = dict(parent_map[parent_id])
-        score = doc.get("score")
-        if score is not None:
-            parent_doc["score"] = max(float(parent_doc.get("score", score)), float(score))
-        parent_doc["merged_from_children"] = True
-        parent_doc["merged_child_count"] = len(groups[parent_id])
-        merged_docs.append(parent_doc)
-        merged_count += 1
-
-    deduped: List[dict] = []
-    seen = set()
-    for item in merged_docs:
-        key = item.get("chunk_id") or (item.get("filename"), item.get("page_number"), item.get("text"))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(item)
-
-    return deduped, merged_count
+    return _context_merge_to_parent_level(
+        docs,
+        parent_store_getter=_get_parent_chunk_store,
+        threshold=threshold,
+    )
 
 
 def _auto_merge_documents(docs: List[dict], top_k: int) -> Tuple[List[dict], Dict[str, Any]]:
-    if not AUTO_MERGE_ENABLED or not docs:
-        return docs[:top_k], {
-            "auto_merge_enabled": AUTO_MERGE_ENABLED,
-            "auto_merge_applied": False,
-            "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
-            "auto_merge_replaced_chunks": 0,
-            "auto_merge_steps": 0,
-        }
-
-    # The current loader stores L1 parent chunks and L3 leaves; no L2 rows exist.
-    merged_docs, merged_count = _merge_to_parent_level(docs, threshold=AUTO_MERGE_THRESHOLD)
-
-    merged_docs.sort(key=lambda item: item.get("score", 0.0), reverse=True)
-    merged_docs = merged_docs[:top_k]
-
-    return merged_docs, {
-        "auto_merge_enabled": AUTO_MERGE_ENABLED,
-        "auto_merge_applied": merged_count > 0,
-        "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
-        "auto_merge_replaced_chunks": merged_count,
-        "auto_merge_steps": int(merged_count > 0),
-        "auto_merge_path": "L3->L1",
-    }
+    return _context_auto_merge_documents(
+        docs,
+        top_k,
+        enabled=AUTO_MERGE_ENABLED,
+        threshold=AUTO_MERGE_THRESHOLD,
+        parent_store_getter=_get_parent_chunk_store,
+    )
 
 
 def _apply_structure_rerank(docs: List[dict], top_k: int) -> Tuple[List[dict], Dict[str, Any]]:
-    if not STRUCTURE_RERANK_ENABLED:
-        limited = docs[:top_k]
-        return limited, {
-            "structure_rerank_enabled": False,
-            "structure_rerank_applied": False,
-            "structure_rerank_root_weight": STRUCTURE_RERANK_ROOT_WEIGHT,
-            "same_root_cap": SAME_ROOT_CAP,
-            "dominant_root_id": None,
-            "dominant_root_share": 0.0,
-            "dominant_root_support": 0,
-        }
-    if not docs:
-        return [], {
-            "structure_rerank_enabled": STRUCTURE_RERANK_ENABLED,
-            "structure_rerank_applied": False,
-            "structure_rerank_root_weight": STRUCTURE_RERANK_ROOT_WEIGHT,
-            "same_root_cap": SAME_ROOT_CAP,
-            "dominant_root_id": None,
-            "dominant_root_share": 0.0,
-            "dominant_root_support": 0,
-        }
-
-    grouped: Dict[str, List[dict]] = defaultdict(list)
-    for doc in docs:
-        root_id = (doc.get("root_chunk_id") or doc.get("chunk_id") or "").strip()
-        if not root_id:
-            root_id = f"__orphan__:{len(grouped)}"
-        grouped[root_id].append(doc)
-
-    root_scores: Dict[str, float] = {}
-    for root_id, items in grouped.items():
-        root_scores[root_id] = max(
-            float(item.get("rerank_score", item.get("score", 0.0)) or 0.0)
-            for item in items
-        )
-
-    scored_docs = []
-    for doc in docs:
-        leaf_score = float(doc.get("rerank_score", doc.get("score", 0.0)) or 0.0)
-        root_id = (doc.get("root_chunk_id") or doc.get("chunk_id") or "").strip()
-        root_score = root_scores.get(root_id, leaf_score)
-        final_score = (1.0 - STRUCTURE_RERANK_ROOT_WEIGHT) * leaf_score + STRUCTURE_RERANK_ROOT_WEIGHT * root_score
-        enriched = dict(doc)
-        enriched["leaf_score"] = leaf_score
-        enriched["root_score"] = root_score
-        enriched["final_score"] = final_score
-        scored_docs.append(enriched)
-
-    scored_docs.sort(key=lambda item: item.get("final_score", 0.0), reverse=True)
-    limited: List[dict] = []
-    per_root: Dict[str, int] = defaultdict(int)
-    for doc in scored_docs:
-        root_id = (doc.get("root_chunk_id") or doc.get("chunk_id") or "").strip()
-        if per_root[root_id] >= SAME_ROOT_CAP:
-            continue
-        limited.append(doc)
-        per_root[root_id] += 1
-        if len(limited) >= top_k:
-            break
-
-    root_total_scores: Dict[str, float] = defaultdict(float)
-    for doc in limited:
-        root_id = (doc.get("root_chunk_id") or doc.get("chunk_id") or "").strip()
-        root_total_scores[root_id] += float(doc.get("final_score", 0.0) or 0.0)
-
-    dominant_root_id = None
-    dominant_root_share = 0.0
-    dominant_root_support = 0
-    total_score = sum(root_total_scores.values())
-    if root_total_scores:
-        dominant_root_id = max(root_total_scores, key=root_total_scores.get)
-        dominant_root_support = per_root.get(dominant_root_id, 0)
-        if total_score > 0:
-            dominant_root_share = root_total_scores[dominant_root_id] / total_score
-
-    return limited, {
-        "structure_rerank_enabled": STRUCTURE_RERANK_ENABLED,
-        "structure_rerank_applied": True,
-        "structure_rerank_root_weight": STRUCTURE_RERANK_ROOT_WEIGHT,
-        "same_root_cap": SAME_ROOT_CAP,
-        "dominant_root_id": dominant_root_id,
-        "dominant_root_share": dominant_root_share,
-        "dominant_root_support": dominant_root_support,
-    }
+    return _context_apply_structure_rerank(
+        docs,
+        top_k,
+        enabled=STRUCTURE_RERANK_ENABLED,
+        root_weight=STRUCTURE_RERANK_ROOT_WEIGHT,
+        same_root_cap=SAME_ROOT_CAP,
+    )
 
 
 def _extract_query_anchors(query: str) -> list[str]:
-    if not query:
-        return []
-    return list(dict.fromkeys(_ANCHOR_PATTERN.findall(query)))
+    return _confidence_extract_query_anchors(query, anchor_pattern=_ANCHOR_PATTERN)
 
 
 def _doc_matches_anchor(doc: dict, anchor: str) -> bool:
-    if not anchor:
-        return False
-    for value in (
-        doc.get("anchor_id"),
-        doc.get("section_title"),
-        doc.get("section_path"),
-    ):
-        if anchor and anchor in str(value or ""):
-            return True
-    prefix = _doc_retrieval_text(doc).split("\n", 1)[0]
-    return anchor in prefix
+    return _confidence_doc_matches_anchor(doc, anchor, doc_text_getter=_doc_retrieval_text)
 
 
 def _evaluate_retrieval_confidence(query: str, docs: List[dict]) -> Dict[str, Any]:
-    if not docs:
-        return {
-            "confidence_gate_enabled": CONFIDENCE_GATE_ENABLED,
-            "fallback_required": CONFIDENCE_GATE_ENABLED,
-            "confidence_reasons": ["no_docs"] if CONFIDENCE_GATE_ENABLED else [],
-            "top_margin": 0.0,
-            "top_score": 0.0,
-            "dominant_root_share": 0.0,
-            "dominant_root_support": 0,
-            "anchor_match": False,
-            "query_anchors": [],
-        }
-
-    top_score = float(docs[0].get("final_score", docs[0].get("rerank_score", docs[0].get("score", 0.0))) or 0.0)
-    second_score = (
-        float(docs[1].get("final_score", docs[1].get("rerank_score", docs[1].get("score", 0.0))) or 0.0)
-        if len(docs) > 1
-        else 0.0
+    return _confidence_evaluate_retrieval_confidence(
+        query,
+        docs,
+        confidence_gate_enabled=CONFIDENCE_GATE_ENABLED,
+        low_conf_top_margin=LOW_CONF_TOP_MARGIN,
+        low_conf_root_share=LOW_CONF_ROOT_SHARE,
+        low_conf_top_score=LOW_CONF_TOP_SCORE,
+        enable_anchor_gate=ENABLE_ANCHOR_GATE,
+        anchor_pattern=_ANCHOR_PATTERN,
+        doc_text_getter=_doc_retrieval_text,
     )
-    top_margin = top_score - second_score
-
-    root_total_scores: Dict[str, float] = defaultdict(float)
-    root_supports: Dict[str, int] = defaultdict(int)
-    for doc in docs[:5]:
-        root_id = (doc.get("root_chunk_id") or doc.get("chunk_id") or "").strip()
-        score = float(doc.get("final_score", doc.get("rerank_score", doc.get("score", 0.0))) or 0.0)
-        root_total_scores[root_id] += score
-        root_supports[root_id] += 1
-
-    dominant_root_share = 0.0
-    dominant_root_support = 0
-    if root_total_scores:
-        dominant_root_id = max(root_total_scores, key=root_total_scores.get)
-        total = sum(root_total_scores.values())
-        dominant_root_support = root_supports[dominant_root_id]
-        dominant_root_share = (root_total_scores[dominant_root_id] / total) if total else 0.0
-
-    anchors = _extract_query_anchors(query) if ENABLE_ANCHOR_GATE else []
-    anchor_match = True
-    if anchors:
-        anchor_match = False
-        for anchor in anchors:
-            if any(_doc_matches_anchor(doc, anchor) for doc in docs[:2]):
-                anchor_match = True
-                break
-
-    reasons: list[str] = []
-    if anchors and not anchor_match:
-        reasons.append("anchor_mismatch")
-    if top_margin < LOW_CONF_TOP_MARGIN and dominant_root_share < LOW_CONF_ROOT_SHARE:
-        reasons.append("weak_margin_and_root")
-    if top_score < LOW_CONF_TOP_SCORE and top_margin < LOW_CONF_TOP_MARGIN:
-        reasons.append("low_score_and_margin")
-
-    if not CONFIDENCE_GATE_ENABLED:
-        reasons = []
-
-    return {
-        "confidence_gate_enabled": CONFIDENCE_GATE_ENABLED,
-        "fallback_required": bool(reasons),
-        "confidence_reasons": reasons,
-        "top_margin": top_margin,
-        "top_score": top_score,
-        "dominant_root_share": dominant_root_share,
-        "dominant_root_support": dominant_root_support,
-        "anchor_match": anchor_match,
-        "query_anchors": anchors,
-    }
 
 
 def _rerank_pair_text(doc: dict, enrichment_enabled: bool) -> str:
-    """Get the text to send to the reranker, optionally enriched with metadata."""
-    if enrichment_enabled:
-        return _build_enriched_pair(doc)
-    return _doc_retrieval_text(doc)
+    return _rerank_pair_text_impl(doc, enrichment_enabled, doc_text_getter=_doc_retrieval_text)
 
 
 def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[dict], Dict[str, Any]]:
-    docs_with_rank = [{**doc, "rrf_rank": i} for i, doc in enumerate(docs, 1)]
-    pair_enrichment_enabled = bool(RERANK_PAIR_ENRICHMENT_ENABLED)
-    rerank_top_n = _effective_rerank_top_n(top_k, len(docs_with_rank))
-    rerank_input_k, rerank_input_device_tier, rerank_input_cap = _effective_rerank_input_k(
-        rerank_top_n,
-        len(docs_with_rank),
+    runtime = RerankRuntime(
+        provider=RERANK_PROVIDER,
+        model=RERANK_MODEL,
+        binding_host=RERANK_BINDING_HOST,
+        api_key=RERANK_API_KEY,
+        cpu_top_n_cap=RERANK_CPU_TOP_N_CAP,
+        cache_enabled=RERANK_CACHE_ENABLED,
+        pair_enrichment_enabled=bool(RERANK_PAIR_ENRICHMENT_ENABLED),
+        score_fusion_enabled=RERANK_SCORE_FUSION_ENABLED,
+        fusion_weights={
+            "rerank": RERANK_FUSION_RERANK_WEIGHT,
+            "rrf": RERANK_FUSION_RRF_WEIGHT,
+            "scope": RERANK_FUSION_SCOPE_WEIGHT,
+            "metadata": RERANK_FUSION_METADATA_WEIGHT,
+        },
+        milvus_rrf_k=MILVUS_RRF_K,
+        get_endpoint=_get_rerank_endpoint,
+        effective_top_n=_effective_rerank_top_n,
+        effective_input_k=_effective_rerank_input_k,
+        get_local_reranker=_get_local_reranker,
+        cache_key=_rerank_cache_key,
+        load_cached_result=_load_cached_rerank_result,
+        store_result=_store_rerank_result,
+        doc_text_getter=_doc_retrieval_text,
+        post=requests.post,
     )
-    rerank_top_n = min(rerank_top_n, rerank_input_k)
-    docs_for_rerank = docs_with_rank[:rerank_input_k]
-    is_local = RERANK_PROVIDER == "local" and bool(RERANK_MODEL)
-    is_ollama = RERANK_PROVIDER == "ollama" and bool(RERANK_MODEL and RERANK_BINDING_HOST)
-    is_api = RERANK_PROVIDER not in ("local", "ollama") and bool(RERANK_MODEL and RERANK_API_KEY and RERANK_BINDING_HOST)
-    meta: Dict[str, Any] = {
-        "rerank_enabled": is_local or is_ollama or is_api,
-        "rerank_applied": False,
-        "rerank_model": RERANK_MODEL,
-        "rerank_provider": RERANK_PROVIDER,
-        "rerank_endpoint": _get_rerank_endpoint() if is_api else (f"{RERANK_BINDING_HOST.rstrip('/')}/api/rerank" if is_ollama else None),
-        "rerank_error": None,
-        "candidate_count": len(docs_with_rank),
-        "rerank_top_n": rerank_top_n,
-        "rerank_cpu_top_n_cap": RERANK_CPU_TOP_N_CAP,
-        "rerank_input_count": rerank_input_k if (is_local or is_ollama or is_api) else 0,
-        "rerank_output_count": 0,
-        "rerank_input_cap": rerank_input_cap,
-        "rerank_input_device_tier": rerank_input_device_tier,
-        "rerank_cache_enabled": RERANK_CACHE_ENABLED,
-        "rerank_cache_hit": False,
-        "rerank_pair_enrichment_enabled": pair_enrichment_enabled,
-    }
-    if not docs_with_rank or not meta["rerank_enabled"]:
-        result = docs_with_rank[:rerank_top_n]
-        meta["rerank_output_count"] = len(result)
-        return result, meta
-
-    rerank_cache_key = ""
-    if RERANK_CACHE_ENABLED and docs_for_rerank and rerank_top_n > 0:
-        rerank_cache_key = _rerank_cache_key(
-            query,
-            docs_for_rerank,
-            rerank_top_n,
-            rerank_input_k,
-            pair_enrichment_enabled,
-        )
-        cached_result = _load_cached_rerank_result(rerank_cache_key, docs_for_rerank, rerank_top_n)
-        if cached_result:
-            meta["rerank_applied"] = True
-            meta["rerank_cache_hit"] = True
-            meta["rerank_output_count"] = len(cached_result)
-            return cached_result, meta
-
-    if is_local:
-        try:
-            reranker = _get_local_reranker()
-            if not reranker:
-                meta["rerank_error"] = "local_reranker_not_loaded"
-                result = docs_for_rerank[:rerank_top_n]
-                meta["rerank_output_count"] = len(result)
-                return result, meta
-            texts = [_rerank_pair_text(doc, pair_enrichment_enabled) for doc in docs_for_rerank]
-            pairs = [[query, text] for text in texts]
-            scores = reranker.predict(pairs)
-            indexed_scores = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
-            reranked = []
-            for idx, score in indexed_scores[:rerank_top_n]:
-                doc = dict(docs_for_rerank[idx])
-                doc["rerank_score"] = float(score)
-                reranked.append(doc)
-            meta["rerank_applied"] = True
-            result = reranked[:rerank_top_n]
-            meta["rerank_output_count"] = len(result)
-            if rerank_cache_key:
-                _store_rerank_result(rerank_cache_key, result, docs_for_rerank)
-            return result, meta
-        except Exception as e:
-            meta["rerank_error"] = str(e)
-            result = docs_for_rerank[:rerank_top_n]
-            meta["rerank_output_count"] = len(result)
-            return result, meta
-
-    if is_ollama:
-        try:
-            meta["rerank_applied"] = True
-            payload = {
-                "model": RERANK_MODEL,
-                "query": query,
-                "documents": [_rerank_pair_text(doc, pair_enrichment_enabled) for doc in docs_for_rerank],
-                "top_n": rerank_top_n,
-            }
-            response = requests.post(
-                meta["rerank_endpoint"],
-                json=payload,
-                timeout=30,
-            )
-            if response.status_code >= 400:
-                meta["rerank_error"] = f"HTTP {response.status_code}: {response.text}"
-                result = docs_for_rerank[:rerank_top_n]
-                meta["rerank_output_count"] = len(result)
-                return result, meta
-
-            items = response.json().get("results", [])
-            reranked = []
-            for item in items:
-                idx = item.get("index")
-                if isinstance(idx, int) and 0 <= idx < len(docs_for_rerank):
-                    doc = dict(docs_for_rerank[idx])
-                    score = item.get("relevance_score")
-                    if score is not None:
-                        doc["rerank_score"] = score
-                    reranked.append(doc)
-
-            if reranked:
-                result = reranked[:rerank_top_n]
-                meta["rerank_output_count"] = len(result)
-                if rerank_cache_key:
-                    _store_rerank_result(rerank_cache_key, result, docs_for_rerank)
-                return result, meta
-
-            meta["rerank_error"] = "empty_rerank_results"
-            result = docs_for_rerank[:rerank_top_n]
-            meta["rerank_output_count"] = len(result)
-            return result, meta
-        except (requests.RequestException, json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
-            meta["rerank_error"] = str(e)
-            result = docs_for_rerank[:rerank_top_n]
-            meta["rerank_output_count"] = len(result)
-            return result, meta
-
-    payload = {
-        "model": RERANK_MODEL,
-        "query": query,
-        "documents": [_rerank_pair_text(doc, pair_enrichment_enabled) for doc in docs_for_rerank],
-        "top_n": rerank_top_n,
-        "return_documents": False,
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {RERANK_API_KEY}",
-    }
-    try:
-        meta["rerank_applied"] = True
-        response = requests.post(
-            meta["rerank_endpoint"],
-            headers=headers,
-            json=payload,
-            timeout=15,
-        )
-        if response.status_code >= 400:
-            meta["rerank_error"] = f"HTTP {response.status_code}: {response.text}"
-            result = docs_for_rerank[:rerank_top_n]
-            meta["rerank_output_count"] = len(result)
-            return result, meta
-
-        items = response.json().get("results", [])
-        reranked = []
-        for item in items:
-            idx = item.get("index")
-            if isinstance(idx, int) and 0 <= idx < len(docs_for_rerank):
-                doc = dict(docs_for_rerank[idx])
-                score = item.get("relevance_score")
-                if score is not None:
-                    doc["rerank_score"] = score
-                reranked.append(doc)
-
-        if reranked:
-            result = reranked[:rerank_top_n]
-            meta["rerank_output_count"] = len(result)
-            if rerank_cache_key:
-                _store_rerank_result(rerank_cache_key, result, docs_for_rerank)
-            return result, meta
-
-        meta["rerank_error"] = "empty_rerank_results"
-        result = docs_for_rerank[:rerank_top_n]
-        meta["rerank_output_count"] = len(result)
-        return result, meta
-    except (requests.RequestException, json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
-        meta["rerank_error"] = str(e)
-        result = docs_for_rerank[:rerank_top_n]
-        meta["rerank_output_count"] = len(result)
-        return result, meta
+    return _run_rerank_documents(query, docs, top_k, runtime)
 
 
 def _get_stepback_model():
@@ -1008,6 +656,8 @@ def _get_stepback_model():
     if not ARK_API_KEY or not MODEL:
         return None
     if _stepback_model is None:
+        from langchain.chat_models import init_chat_model
+
         _stepback_model = init_chat_model(
             model=MODEL,
             model_provider="openai",
@@ -1124,30 +774,11 @@ def _escape_milvus_string(value: str) -> str:
 
 
 def _build_filename_filter(filenames: list[str] | None) -> str:
-    clean_files = []
-    seen = set()
-    for filename in filenames or []:
-        name = (filename or "").strip()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        clean_files.append(_escape_milvus_string(name))
-    if not clean_files:
-        return ""
-    quoted = ", ".join(f'"{filename}"' for filename in clean_files)
-    return f"filename in [{quoted}]"
+    return _retrieval_build_filename_filter(filenames, escape_string=_escape_milvus_string)
 
 
 def _dedupe_docs(docs: list[dict]) -> list[dict]:
-    deduped = []
-    seen = set()
-    for item in docs:
-        key = item.get("chunk_id") or (item.get("filename"), item.get("page_number"), item.get("text"))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(item)
-    return deduped
+    return _retrieval_dedupe_docs(docs)
 
 
 def retrieve_context_documents(filenames: list[str] | None, limit_per_file: int = 8) -> Dict[str, Any]:
@@ -1199,6 +830,7 @@ def retrieve_context_documents(filenames: list[str] | None, limit_per_file: int 
             "candidate_k": limit_per_file * max(len(clean_files), 1),
             "context_files": clean_files,
             "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
+            "index_profile": RAG_INDEX_PROFILE,
             "attached_context_count": len(docs),
         },
     }
@@ -1320,6 +952,8 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
                     global_ = []
 
             timings["milvus_hybrid_ms"] = _elapsed_ms(stage_start)
+            scoped = _annotate_scope_scores(scoped, routable_matched_files)
+            global_ = _annotate_scope_scores(global_, routable_matched_files)
 
             # Weighted RRF merge: scoped 80%, global 20%
             retrieved = _weighted_rrf_merge(
@@ -1331,6 +965,8 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
                 "query_plan": query_plan.to_dict(),
                 "query_plan_enabled": QUERY_PLAN_ENABLED,
                 "semantic_query": query_plan.semantic_query,
+                "index_profile": RAG_INDEX_PROFILE,
+                "v3_layers": ["query_plan", "doc_resolver", "scoped_hybrid", "weighted_rrf", "rerank", "structure_rerank"],
                 "scope_mode": query_plan.scope_mode,
                 "query_route": query_plan.route,
                 "scoped_candidate_count": len(scoped),
@@ -1347,6 +983,8 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
                 "query_plan": query_plan.to_dict(),
                 "query_plan_enabled": QUERY_PLAN_ENABLED,
                 "semantic_query": query_plan.semantic_query,
+                "index_profile": RAG_INDEX_PROFILE,
+                "v3_layers": ["query_plan", "doc_resolver", "scoped_hybrid", "embedding_failed"],
                 "scope_mode": query_plan.scope_mode,
                 "query_route": query_plan.route,
                 "scope_filter_applied": False,
@@ -1386,6 +1024,8 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
         "query_plan": query_plan.to_dict(),
         "query_plan_enabled": QUERY_PLAN_ENABLED,
         "semantic_query": query_plan.semantic_query,
+        "index_profile": RAG_INDEX_PROFILE,
+        "v3_layers": ["query_plan", "global_hybrid", "rerank", "structure_rerank"],
         "scope_mode": query_plan.scope_mode,
         "query_route": query_plan.route,
         "scope_filter_applied": False,
@@ -1450,6 +1090,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
         rerank_meta["milvus_sparse_drop_ratio"] = MILVUS_SPARSE_DROP_RATIO
         rerank_meta["milvus_rrf_k"] = MILVUS_RRF_K
         rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
+        rerank_meta["index_profile"] = RAG_INDEX_PROFILE
         rerank_meta["context_files"] = context_files or []
         rerank_meta["hybrid_error"] = None
         rerank_meta["dense_error"] = None
@@ -1520,6 +1161,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
             rerank_meta["milvus_sparse_drop_ratio"] = MILVUS_SPARSE_DROP_RATIO
             rerank_meta["milvus_rrf_k"] = MILVUS_RRF_K
             rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
+            rerank_meta["index_profile"] = RAG_INDEX_PROFILE
             rerank_meta["context_files"] = context_files or []
             rerank_meta["hybrid_error"] = hybrid_error
             rerank_meta["dense_error"] = None
@@ -1556,6 +1198,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
                     "milvus_sparse_drop_ratio": MILVUS_SPARSE_DROP_RATIO,
                     "milvus_rrf_k": MILVUS_RRF_K,
                     "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
+                    "index_profile": RAG_INDEX_PROFILE,
                     "context_files": context_files or [],
                     "structure_rerank_applied": False,
                     "structure_rerank_enabled": STRUCTURE_RERANK_ENABLED,

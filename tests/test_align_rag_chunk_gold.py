@@ -46,6 +46,9 @@ class AlignRagChunkGoldTests(unittest.TestCase):
 
         self.assertEqual(aligned["gold_chunk_ids"], ["leaf-1"])
         self.assertEqual(aligned["expected_root_ids"], ["root-1"])
+        self.assertTrue(aligned["canonical_chunk_ids"])
+        self.assertTrue(aligned["canonical_root_ids"])
+        self.assertEqual(aligned["root_type"], "section")
         self.assertEqual(aligned["quality"]["alignment_status"], "aligned")
         self.assertEqual(aligned["supporting_chunks"][0]["match_method"], "exact")
 
@@ -56,7 +59,34 @@ class AlignRagChunkGoldTests(unittest.TestCase):
         out = build_chunk_gold_rows(rows, [], manifest)
 
         self.assertEqual(out[0]["quality"]["alignment_status"], "failed")
-        self.assertEqual(out[0]["quality"]["alignment_failure_reason"], "no_candidate_chunks")
+        self.assertEqual(out[0]["quality"]["alignment_failure_reason"], "no_candidate_same_file")
+
+    def test_align_row_marks_ambiguous_low_confidence_candidates_for_review(self):
+        row = {
+            "id": "r1",
+            "source_excerpt": "打开蓝牙并保存设置",
+            "gold_files": ["manual.pdf"],
+            "gold_pages": [3],
+            "expected_anchors": ["蓝牙设置"],
+            "expected_keywords": ["蓝牙"],
+        }
+        chunks = [
+            {
+                "chunk_id": "leaf-1",
+                "root_chunk_id": "root-1",
+                "filename": "manual.pdf",
+                "page_number": 3,
+                "section_title": "蓝牙设置",
+                "text": "蓝牙设置",
+            }
+        ]
+
+        aligned = align_row(row, chunks, split="dev")
+
+        self.assertEqual(aligned["quality"]["alignment_status"], "ambiguous")
+        self.assertEqual(aligned["quality"]["review_status"], "needs_review")
+        self.assertEqual(aligned["gold_chunk_ids"], [])
+        self.assertTrue(aligned["supporting_chunks"])
 
 
 if __name__ == "__main__":

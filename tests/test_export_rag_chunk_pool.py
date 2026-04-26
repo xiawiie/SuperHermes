@@ -44,6 +44,8 @@ class ExportRagChunkPoolTests(unittest.TestCase):
         self.assertEqual(chunk["page_number"], 3)
         self.assertEqual(chunk["chunk_level"], 3)
         self.assertEqual(chunk["filename"], "m.pdf")
+        self.assertTrue(chunk["canonical_chunk_id"])
+        self.assertTrue(chunk["canonical_root_id"])
 
     def test_export_from_milvus_uses_query_all(self):
         manager = FakeMilvusManager()

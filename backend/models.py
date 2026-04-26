@@ -60,6 +60,7 @@ class ParentChunk(Base):
     __table_args__ = {"extend_existing": True}
 
     chunk_id: Mapped[str] = mapped_column(String(512), primary_key=True)
+    index_profile: Mapped[str] = mapped_column(String(120), default="legacy", nullable=False, index=True)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     filename: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     file_type: Mapped[str] = mapped_column(String(50), default="", nullable=False)

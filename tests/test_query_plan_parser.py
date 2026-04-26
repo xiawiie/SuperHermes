@@ -3,17 +3,11 @@ from __future__ import annotations
 
 import os
 import sys
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from query_plan import (
-    QueryPlan,
     parse_query_plan,
-    _normalize_filename,
-    _filename_match_score,
-    DOC_SCOPE_MATCH_FILTER,
-    DOC_SCOPE_MATCH_BOOST,
 )
 
 

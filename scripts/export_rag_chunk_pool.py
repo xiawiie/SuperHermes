@@ -14,6 +14,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from scripts.rag_dataset_utils import write_jsonl
+from scripts.rag_qrels import attach_canonical_ids
 
 
 DEFAULT_OUTPUT = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_chunk_pool_v1.jsonl"
@@ -50,7 +51,7 @@ def _to_int(value: object, default: int = 0) -> int:
 
 def normalize_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
     page_number = _to_int(chunk.get("page_number"))
-    return {
+    normalized = {
         "text": str(chunk.get("text") or ""),
         "retrieval_text": str(chunk.get("retrieval_text") or chunk.get("text") or ""),
         "filename": str(chunk.get("filename") or chunk.get("file_name") or ""),
@@ -70,6 +71,7 @@ def normalize_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
         "section_path": str(chunk.get("section_path") or ""),
         "anchor_id": str(chunk.get("anchor_id") or ""),
     }
+    return attach_canonical_ids(normalized)
 
 
 def export_from_milvus(manager: object | None = None, filter_expr: str = "") -> list[dict[str, Any]]:
