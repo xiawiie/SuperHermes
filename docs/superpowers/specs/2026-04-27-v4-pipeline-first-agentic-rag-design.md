@@ -1,167 +1,172 @@
-# Pipeline-First Agentic RAG Architecture
+# SuperHermes Pipeline-First Agentic RAG Architecture
 
-**Date:** 2026-04-27  
-**Status:** Design draft  
-**Target:** Replace the serial LLM-gated retrieval path with a mode-aware pipeline while keeping the codebase small, reversible, and aligned with the current SuperHermes architecture.
+**Date:** 2026-04-27
+**Status:** Draft
+**Target:** Replace the serial LLM-gated RAG path with a mode-aware, pipeline-first architecture; add Deep Mode for complex multi-hop queries without turning the main chain into an agent loop.
 
 ---
 
 ## Executive Summary
 
-SuperHermes already has strong RAG building blocks: QueryPlan, scoped hybrid retrieval, layered rerank, confidence gates, diagnostics, qrel-aware evaluation, and streaming RAG observability. The next step is not a large rewrite. The next step is to make the existing pipeline mode-aware and move expensive agentic behavior out of the common path.
+Current V3Q behavior is strong but expensive: retrieval can pass through a serial chain of retrieval, LLM grading, LLM routing, query rewrite, and second retrieval. The measured quality ceiling is good, especially with `V3Q + FP16`, but the architecture still mixes deterministic retrieval with agentic fallback logic.
 
-The desired runtime behavior:
+The target redesign keeps the original intent of the draft:
 
-- Simple precise questions use a FAST retrieval plan.
-- Normal document questions use a STANDARD retrieval plan.
-- Complex multi-hop, comparison, exhaustive, or temporal questions use an internal DEEP controller.
-- FAST and STANDARD retrieval do not call an LLM.
-- DEEP may call an LLM for planning and synthesis, but all sub-retrieval calls run as STANDARD and cannot recursively trigger DEEP.
+- A rule-based Mode Classifier routes queries to FAST / STANDARD / DEEP.
+- FAST and STANDARD retrieval hot paths make zero LLM calls.
+- Retrieval stays pipeline-first and reuses current QueryPlan, hybrid retrieval, layered rerank, confidence, diagnostics, and evaluation assets.
+- DEEP mode handles complex multi-hop, compare, exhaustive, or temporal-evolution questions through an internal Planner-Controller.
+- The Agent still calls the knowledge-base tool at most once per turn; Deep Mode runs inside the tool/controller, not through repeated Agent tool calls.
 
-The core principle stays:
+Core principle:
 
-> The pipeline handles deterministic retrieval by default. Agentic reasoning is reserved for complex queries and is budgeted, observable, and non-recursive.
+> Pipeline handles deterministic retrieval. Agentic behavior is reserved for the complex minority path, with hard budgets and traceable evidence.
 
-This design intentionally avoids versioned production module names such as `pipeline_v2` or `confidence_v2`. New files are allowed only when they create a clean boundary that would otherwise bloat an existing module.
+This revision keeps the original document's architecture, but changes the implementation posture: do not create a parallel versioned stack, do not generate many new files, and do not promote aggressive candidate compression until the full gold evaluation proves it safe.
 
 ---
 
-## Current Evidence
+## Existing Evidence And Constraints
 
-### Proven Strengths
+### Current Assets To Reuse
 
-- `V3Q + FP16` is the strongest low-risk performance improvement already measured: quality is preserved while P50 drops to roughly 1000 ms on the 125-row gold run.
-- QueryPlan and document scope matching already provide deterministic routing signals.
-- Layered rerank already provides useful trace fields and candidate-stage observability.
-- The evaluation harness already supports File/Page/Chunk/Root metrics, qrels, saved-row regression, and fallback analysis.
+SuperHermes already has these production-quality building blocks:
 
-### Known Failure To Avoid
+- `backend/rag/query_plan.py`: query parsing, document-scope matching, route hints.
+- `backend/rag/utils.py`: retrieval orchestration and public `retrieve_documents` boundary.
+- `backend/rag/layered_rerank.py`: split retrieval, L1 candidate selection, adaptive CE sizing, weak structure helpers.
+- `backend/rag/confidence.py`: retrieval confidence gate and anchor checks.
+- `backend/rag/diagnostics.py`: failure classification.
+- `backend/rag/pipeline.py`: current LangGraph compatibility path.
+- `scripts/evaluate_rag_matrix.py` and `scripts/rag_eval/*`: qrel-aware evaluation and regression reporting.
 
-The 125-row gold run showed that aggressive L1/CE compression can hurt quality:
+The new design should use these components first. A new file is justified only when it prevents an existing file from taking on a second, unrelated responsibility.
 
-- `EXP_C5` dropped File@5 from `0.992` to `0.864`.
-- Correct files were still present before rerank, but CrossEncoder ranking dropped them from top-5.
-- Therefore FAST/STANDARD plans must not blindly shrink CE input for broad or ambiguous queries.
+### Important Experimental Result
+
+The layered-rerank experiments produced a warning that must shape the design:
+
+- `V3Q + FP16` is a low-risk improvement and can be used as the quality-first baseline.
+- `EXP_C5` looked strong on the 44-row frozen set, but on the 125-row gold set dropped File@5 from `0.992` to `0.864`.
+- The failure was not candidate recall. Correct files were still present before rerank; CrossEncoder ranking dropped them from top-5.
 
 Design consequence:
 
-- STANDARD starts quality-first, using the proven V3Q FP16 profile.
-- FAST is enabled only for high-confidence single-fact queries.
-- Any candidate compression must pass the 125-row gold gates before it becomes default.
+- STANDARD must start from the proven V3Q FP16 behavior.
+- FAST may compress candidates only for clearly safe single-fact queries.
+- Any aggressive L1/CE compression remains experimental until it passes the 125-row gold gates.
 
 ---
 
-## Goals
-
-1. Reduce average retrieval latency without lowering retrieval quality.
-2. Remove LLM Grader and LLM Router from FAST/STANDARD hot paths.
-3. Add DEEP mode for multi-hop and synthesis-heavy questions.
-4. Preserve current observability and improve it with mode, plan, and confidence traces.
-5. Keep production code clean: minimal files, clear names, no version suffixes.
-6. Keep every phase reversible behind configuration flags.
-
-## Non-Goals
-
-- Do not rewrite the whole RAG stack.
-- Do not introduce new dependencies.
-- Do not make the Agent call `search_knowledge_base` multiple times.
-- Do not remove LangGraph from the main path until shadow comparison proves parity.
-- Do not make DEEP the default answer path.
-
----
-
-## Naming And File Discipline
-
-Production modules should describe responsibilities, not generations.
-
-Avoid:
-
-- `pipeline_v2.py`
-- `classifier_v4.py`
-- `confidence_v2.py`
-- `retrieval_plan_v4.py`
-
-Prefer:
-
-- `modes.py`
-- `confidence.py`
-- `pipeline.py`
-- `tools.py`
-- `deep_mode.py`
-
-Minimal new files:
-
-| File | Reason |
-| --- | --- |
-| `backend/rag/modes.py` | A cohesive boundary for query features, mode classification, retrieval plans, and shadow metrics. Keeping this in `query_plan.py` would mix document scope parsing with mode policy. |
-| `backend/chat/deep_mode.py` | A separate chat-layer orchestration boundary for DEEP planning, internal sub-retrieval, evidence accumulation, and synthesis. Keeping this in `agent.py` or `tools.py` would bloat already busy files. |
-
-No other new production files are planned at the start. If a module grows beyond a clear single purpose, extract later with evidence.
-
----
-
-## Runtime Architecture
+## Architecture Overview
 
 ```text
-User message
-  -> Agent retrieval decision
-  -> search_knowledge_base tool or attached-context retrieval
-  -> Mode classifier
-  -> Retrieval plan
-  -> Existing retrieve_documents path
-       QueryPlan
-       Dense + sparse retrieval
-       Optional scoped/global blend
-       Layered rerank when enabled
-       Structure rerank
-       Confidence verdict
-  -> If STANDARD/FAST answerable: return evidence to Agent
-  -> If DEEP required: internal deep controller
-       Plan subqueries
-       Run STANDARD sub-retrievals
-       Accumulate evidence
-       Synthesize answer with citations
++----------------------------------------------------------+
+| Agent Layer                                               |
+| - Decides whether retrieval is needed                     |
+| - Calls search_knowledge_base at most once per turn        |
+| - Receives either STANDARD/FAST evidence or DEEP result    |
++----------------------------------------------------------+
+| Mode Classifier                                           |
+| - Rule-based, zero LLM                                    |
+| - Uses QueryPlan + query features                         |
+| - Starts in shadow mode, then controls routing             |
++----------------------------------------------------------+
+| RAG Pipeline                                              |
+| FAST:     precise single-fact retrieval, zero LLM          |
+| STANDARD: quality-first retrieval, zero LLM                |
+| DEEP:     internal planner -> STANDARD sub-retrievals      |
++----------------------------------------------------------+
+| Infrastructure                                            |
+| - Milvus dense + sparse hybrid retrieval                   |
+| - CrossEncoder rerank, FP16 where supported                |
+| - Redis / PostgreSQL                                      |
++----------------------------------------------------------+
 ```
 
-The Agent still sees one tool call. DEEP is an internal orchestration path, not multiple tool calls from the Agent.
+### Key Decisions
+
+| Decision | Choice | Rationale |
+| --- | --- | --- |
+| Where does intelligence live? | Pipeline by default, Deep controller for complex queries | Deterministic retrieval should stay stable and testable |
+| Serial or parallel retrieval? | Mode-aware pipeline with existing split/scoped retrieval reused | Avoid rebuilding already validated retrieval layers |
+| LLM in FAST/STANDARD hot path? | No | Cost, latency, and determinism |
+| LLM Grader/Router | Replaced by confidence verdict for FAST/STANDARD | Avoid serial LLM gates on common path |
+| Multi-hop strategy | Planner-Controller, not unconstrained ReAct | Bounded execution and easier verification |
+| LangGraph | Keep as compatibility/shadow path until parity is proven | Avoid breaking streaming and current callers |
+| File structure | Minimal new files, no version-suffixed production modules | Keep codebase clean and avoid parallel stacks |
+
+### Red Lines
+
+1. FAST/STANDARD retrieval stage makes zero LLM calls.
+2. Deep subqueries must run as STANDARD with `allow_deep=False`.
+3. Deep Mode target traffic stays below 15%.
+4. Budgets for tool calls, LLM calls, and wall time are enforced in code.
+5. The Agent must not repeatedly call `search_knowledge_base` in one turn.
+6. Production module names should not carry generation labels like `pipeline_v2`, `confidence_v2`, or `classifier_v4`.
+7. Candidate compression cannot become default unless full gold evaluation passes.
+
+### Configuration And Rollout Controls
+
+All routing changes are controlled by explicit flags. Defaults preserve current behavior.
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `RAG_MODE_SHADOW_ENABLED` | `false` | Compute classifier verdicts and trace them without changing retrieval. |
+| `RAG_MODE_ROUTING_ENABLED` | `false` | Allow classifier verdicts to select FAST or STANDARD plans. |
+| `RAG_FAST_ENABLED` | `false` | Allow FAST execution after classifier gates pass. |
+| `RAG_DEEP_MODE_ENABLED` | `false` | Allow Deep controller execution from the chat tool. |
+| `RAG_DEEP_SUGGEST_ONLY` | `true` | Return `suggested_mode="DEEP"` instead of executing Deep automatically. |
+| `RAG_FALLBACK_ENABLED` | current default | Keep or disable the existing LangGraph LLM fallback path during parity checks. |
+| `RAG_MODE_TRACE_VERBOSE` | `false` | Include full features and per-rule scoring in trace for eval/debug runs. |
+
+Rollout order:
+
+1. Enable `RAG_MODE_SHADOW_ENABLED` only.
+2. Add classifier eval coverage and inspect trace mismatches.
+3. Enable `RAG_MODE_ROUTING_ENABLED` for STANDARD-equivalent plans only.
+4. Enable `RAG_FAST_ENABLED` after FAST false-positive gates pass.
+5. Enable `RAG_DEEP_MODE_ENABLED` with `RAG_DEEP_SUGGEST_ONLY=true`.
+6. Disable suggest-only only after Deep answer/citation evaluation passes.
 
 ---
 
-## Modes
+## Section 1: Mode Classifier
 
-| Mode | Purpose | Hot-path LLM | Retrieval calls | Initial target |
-| --- | --- | ---: | ---: | --- |
-| FAST | Precise single-fact lookup with strong scope or anchor | 0 | 1 | P50 under 600 ms after calibration |
-| STANDARD | Default document retrieval path | 0 | 1 | Preserve V3Q FP16 quality, P50 around 1000-1300 ms |
-| DEEP | Multi-hop, comparison, exhaustive, temporal, or low-confidence synthesis | 1-2 | 2-3 internal calls | P95 under 6000 ms, traffic under 15% |
+### 1.1 Modes
 
-Routing rules:
+| Mode | Purpose | Target P50 | Target P95 | Hot-path LLM | Retrieval calls |
+| --- | --- | ---: | ---: | ---: | ---: |
+| FAST | Precise single-fact lookup | <600 ms after active routing | <1000 ms | 0 | 1 |
+| STANDARD | Default document retrieval | ~1000-1300 ms initially | <1800 ms | 0 | 1 |
+| DEEP | Multi-hop, compare, exhaustive, temporal, low-confidence synthesis | 2000-4000 ms | <6000 ms | 1-2 | 2-3 internal calls |
 
-- STANDARD is the safe default.
-- FAST requires high confidence before retrieval and high confidence after retrieval.
-- DEEP intent overrides FAST.
-- User "quick" requests may downgrade DEEP to STANDARD, but never force FAST for complex questions.
-- Subqueries inside DEEP always run as STANDARD with `allow_deep=False`.
+The latency table separates initial engineering targets from ideal future performance. The first production objective is to preserve V3Q FP16 quality and remove unnecessary LLM gates; further latency reductions require evaluation proof.
 
----
+### 1.2 Core Principles
 
-## Mode Classifier
+```text
+STANDARD is the safe default.
+FAST requires single-entity, single-fact, high-scope confidence.
+DEEP intent overrides FAST.
+User "quick" may downgrade DEEP to STANDARD, but cannot force FAST on complex queries.
+```
 
-The classifier is rule-based and deterministic. It should build on existing QueryPlan signals instead of creating a second document resolver.
+### 1.3 QueryFeatures
 
-### QueryFeatures
-
-`backend/rag/modes.py` owns a compact feature object:
+The original draft proposed a large feature object. Implementation should start smaller and add fields only when tests prove they are needed.
 
 ```python
 @dataclass(frozen=True)
 class QueryFeatures:
     entities: tuple[str, ...]
     entity_count: int
+
     has_precise_scope: bool
     has_single_file_match: bool
     has_anchor: bool
     scope_is_global: bool
+
     has_compare_intent: bool
     has_summary_intent: bool
     has_exhaustive_intent: bool
@@ -169,46 +174,185 @@ class QueryFeatures:
     has_negation: bool
     has_temporal_evolution_intent: bool
     has_multi_field_extraction: bool
+
     is_context_reference: bool
     user_explicit_fast: bool
     user_explicit_deep: bool
     question_type: str
 ```
 
-This intentionally starts smaller than the original draft. Add fields only when tests or trace analysis prove they are needed.
+Sources:
 
-### ModeVerdict
+- Existing QueryPlan output.
+- Filename registry and context-file constraints.
+- Rule-based keyword patterns.
+- Conversation context only for lightweight reference detection.
+
+No LLM is used for feature extraction.
+
+### 1.4 Mode Scoring
 
 ```python
-@dataclass(frozen=True)
-class ModeVerdict:
-    mode: Literal["FAST", "STANDARD", "DEEP"]
-    reason: str
-    fast_score: float
-    deep_score: float
-    features: QueryFeatures
+FAST_THRESHOLD = 0.75
+DEEP_THRESHOLD = 0.40
+
+def score_fast(f: QueryFeatures) -> float:
+    if f.entity_count >= 2:
+        return 0.0
+    if f.has_compare_intent or f.has_exhaustive_intent or f.has_temporal_evolution_intent:
+        return 0.0
+    if f.has_negation:
+        return 0.0
+    if f.question_type not in ("fact", "locate", "quote"):
+        return 0.0
+
+    score = 0.0
+    if f.has_single_file_match and f.has_anchor:
+        score += 0.40
+    elif f.has_single_file_match:
+        score += 0.30
+    elif f.has_precise_scope:
+        score += 0.25
+
+    if f.entity_count <= 1:
+        score += 0.30
+    if not f.has_summary_intent and not f.has_causal_intent:
+        score += 0.15
+    if f.scope_is_global:
+        score -= 0.20
+    return min(max(score, 0.0), 1.0)
+
+
+def score_deep(f: QueryFeatures) -> float:
+    score = 0.0
+    if f.has_compare_intent and f.entity_count >= 2:
+        score += 0.50
+    if f.has_exhaustive_intent and (f.scope_is_global or f.entity_count >= 2):
+        score += 0.45
+    if f.has_temporal_evolution_intent:
+        score += 0.45
+    if f.has_summary_intent and f.entity_count >= 2:
+        score += 0.30
+    if f.has_summary_intent and f.scope_is_global:
+        score += 0.25
+    if f.has_causal_intent and (f.entity_count >= 2 or f.scope_is_global):
+        score += 0.25
+    if f.has_negation and f.has_exhaustive_intent:
+        score += 0.20
+    return min(score, 1.0)
 ```
 
-The first implementation should shadow-run:
+Do not score "version entity only" as DEEP. A query like `v3 默认超时时间是多少` can still be FAST if it is a single scoped fact.
 
-- Compute `ModeVerdict`.
-- Write it into `rag_trace`.
-- Do not alter behavior until classifier evaluation is available.
+### 1.5 Classification Logic
 
-### Classifier Acceptance
+```python
+def classify_mode(features: QueryFeatures) -> ModeVerdict:
+    fast_score = score_fast(features)
+    deep_score = score_deep(features)
 
-A classifier eval set is required before active routing:
+    if features.user_explicit_deep:
+        return ModeVerdict("DEEP", "user_explicit_deep", fast_score, deep_score, features)
 
-- At least 100 labeled queries.
-- Must include precise facts, single-file summaries, comparisons, exhaustive/global questions, temporal-evolution questions, and context-reference questions.
-- FAST false-positive rate on complex queries must be below 2%.
-- DEEP trigger rate in normal traffic should stay below 15%.
+    if features.is_context_reference:
+        return ModeVerdict("STANDARD", "context_reference", fast_score, deep_score, features)
+
+    if deep_score >= DEEP_THRESHOLD:
+        if features.user_explicit_fast:
+            return ModeVerdict("STANDARD", "fast_requested_but_complex", fast_score, deep_score, features)
+        return ModeVerdict("DEEP", "complex_intent", fast_score, deep_score, features)
+
+    if features.user_explicit_fast and fast_score >= 0.50:
+        return ModeVerdict("FAST", "user_explicit_fast_simple", fast_score, deep_score, features)
+
+    if fast_score >= FAST_THRESHOLD:
+        return ModeVerdict("FAST", "precise_single_fact", fast_score, deep_score, features)
+
+    return ModeVerdict("STANDARD", "default", fast_score, deep_score, features)
+```
+
+### 1.6 Shadow-First Requirement
+
+The classifier must ship in shadow mode first:
+
+- It writes `mode_initial`, `mode_reason`, `fast_score`, and `deep_score` into trace.
+- It does not affect retrieval behavior until the classifier eval set passes.
+
+Acceptance before active routing:
+
+- At least 100 labeled classifier examples.
+- FAST false positives on complex queries below 2%.
+- DEEP trigger rate measured on representative queries and below 15%.
+
+Classifier eval artifact:
+
+```text
+eval/datasets/rag_mode_classifier_v1.jsonl
+```
+
+Each row should be a compact, hand-labeled routing example:
+
+```json
+{
+  "id": "mode-001",
+  "query": "compare A and B cooling plans",
+  "context_files": [],
+  "expected_mode": "DEEP",
+  "complexity_label": "compare",
+  "must_not_fast": true,
+  "notes": "Two entities and compare intent require non-FAST routing."
+}
+```
+
+Required label coverage:
+
+- precise single-file facts
+- single-file facts with anchors
+- global facts without file scope
+- single-file summaries
+- multi-field extraction from one file
+- compare / contrast queries
+- exhaustive global queries
+- temporal evolution queries
+- negation plus exhaustive intent
+- context-reference queries such as "what about this one?"
+- user-explicit fast on simple and complex queries
+- user-explicit deep on simple and complex queries
+
+Classifier reports must include:
+
+- total examples and examples by `expected_mode`
+- confusion matrix
+- FAST false-positive rate on `must_not_fast=true`
+- DEEP trigger rate
+- examples where `mode_reason` disagrees with the label rationale
+- top 10 highest-risk mismatches with features and scores
+
+### 1.7 Typical Routing Examples
+
+| Query | Entities | Intent | Mode |
+| --- | ---: | --- | --- |
+| `《A手册》X参数默认值` | 1 | fact | FAST |
+| `XJR-500 额定功率` | 1 | fact | FAST |
+| `第三章 3.2节 安全阈值` | 1 | fact + anchor | FAST |
+| `v3 默认超时时间是多少` | 1 | fact + version entity | FAST |
+| `为什么需要设置安全阈值` | 0 | causal single scope | STANDARD |
+| `总结《A手册》第三章的内容` | 1 | summary single scope | STANDARD |
+| `单表内X型号的功率和电压` | 1 | multi-field extraction | STANDARD |
+| `安全相关的所有要求有哪些` | 0 | exhaustive global | DEEP |
+| `比较A和B的散热方案` | 2 | compare | DEEP |
+| `X标准从v1到v3的变化` | 1 | temporal evolution | DEEP |
+| `除了A还有哪些方案` | 1 | negation + exhaustive | DEEP |
+| `这个呢？` | 0 | reference | STANDARD |
+| `快速比较A和B` | 2 | compare + user fast | STANDARD |
 
 ---
 
-## Retrieval Plans
+## Section 2: RAG Pipeline
 
-Plans are configuration objects, not new pipelines.
+### 2.1 RetrievalPlan
+
+Plans are configuration objects over the existing retrieval function. They are not separate pipeline implementations.
 
 ```python
 @dataclass(frozen=True)
@@ -224,25 +368,32 @@ class RetrievalPlan:
     confidence_profile: str
 ```
 
-Initial plan mapping:
+Initial plans:
 
-| Plan | Behavior |
+| Plan | Retrieval behavior |
 | --- | --- |
-| FAST | Uses existing QueryPlan and layered rerank with conservative activation. It may use smaller CE input only for single-file or anchored facts. |
-| STANDARD | Uses the proven quality-first profile first: V3Q + FP16, current QueryPlan, scoped hybrid, rerank, structure rerank, confidence gate. |
-| DEEP | Not a direct retrieval plan for subqueries. The DEEP controller runs multiple STANDARD sub-retrievals. |
+| FAST | Existing QueryPlan + retrieval + rerank, with smaller CE input only for high-confidence single-file/anchored facts. |
+| STANDARD | Quality-first baseline using current V3Q FP16 behavior. No aggressive L1/CE compression by default. |
+| DEEP | Not used directly for sub-retrieval. Deep controller runs STANDARD subqueries with `allow_deep=False`. |
 
-Important:
+### 2.2 Capability Matrix
 
-- Do not promote aggressive EXP_C5-style compression to STANDARD by default.
-- Candidate compression belongs behind a plan flag and must pass full gold evaluation.
-- Plan values should come from environment/config and trace output, not hardcoded scattered constants.
+| Capability | FAST | STANDARD | DEEP |
+| --- | --- | --- | --- |
+| QueryPlan scope matching | yes | yes | yes |
+| dense + sparse retrieval | yes | yes | yes, through STANDARD subqueries |
+| hybrid guarantee | yes | yes | yes, through STANDARD subqueries |
+| layered rerank | yes, conservative | yes, quality-first | yes, through STANDARD subqueries |
+| structure rerank | yes | yes | yes |
+| confidence verdict | yes | yes | yes |
+| HyDE / step-back LLM generation | no | no | optional, budgeted |
+| agent subquery decomposition | no | no | yes, internal controller |
+| recursive DEEP | no | no | no |
+| Agent tool calls per turn | 1 | 1 | 1 external call, multiple internal retrievals |
 
----
+### 2.3 Public Retrieval Boundary
 
-## Retrieval Pipeline Changes
-
-The public retrieval function remains the main boundary:
+Keep `retrieve_documents` as the public retrieval boundary and evolve it in place.
 
 ```python
 def retrieve_documents(
@@ -256,31 +407,96 @@ def retrieve_documents(
     ...
 ```
 
-Behavior:
+Return shape remains compatible:
 
-1. Parse QueryPlan as today.
-2. Classify mode using QueryPlan plus query features.
-3. Resolve the RetrievalPlan.
-4. Execute existing retrieval/rerank/context/confidence functions with plan-aware parameters.
-5. Return the existing shape: `{"docs": ..., "meta": ...}`.
-6. Add plan fields to `meta`, including:
-   - `mode_initial`
-   - `mode_final`
-   - `mode_reason`
-   - `retrieval_plan`
-   - `answerable`
-   - `confidence_score`
-   - `confidence_reasons`
-   - `suggested_mode`
-   - `needs_clarification`
+```python
+{
+    "docs": [...],
+    "meta": {
+        ...
+    },
+}
+```
 
-This keeps API compatibility while making the result richer.
+New meta fields:
 
----
+- `mode_initial`
+- `mode_final`
+- `mode_reason`
+- `fast_score`
+- `deep_score`
+- `retrieval_plan`
+- `answerable`
+- `confidence_score`
+- `risk_score`
+- `confidence_reasons`
+- `suggested_mode`
+- `needs_clarification`
+- `clarification_question`
 
-## Confidence Verdict
+Legacy meta fields remain until all callers and reports are migrated.
 
-The current confidence gate should evolve in place inside `backend/rag/confidence.py`.
+Legacy compatibility rules:
+
+- Keep `fallback_required` while existing reports and graph tests depend on it.
+- Map `fallback_required=True` to `answerable=False` only when structured confidence is enabled and risk is at or above the configured not-answerable threshold.
+- Map low-risk results to `answerable=True` even when legacy `fallback_required` is absent.
+- Do not remove `grade_score`, `grade_route`, `rewrite_needed`, or `fallback_executed` from LangGraph traces until streaming and regression reports are migrated.
+- New callers should read `answerable`, `suggested_mode`, and `needs_clarification`; old callers may continue reading `fallback_required`.
+
+### 2.4 Pipeline Orchestration
+
+The pipeline remains a pure, staged function chain inside the existing retrieval boundary:
+
+```text
+QueryPlan
+  -> Mode classifier
+  -> RetrievalPlan
+  -> dense/sparse embeddings
+  -> existing Milvus retrieval path
+  -> L1/CE/structure rerank
+  -> structured confidence verdict
+  -> docs + meta
+```
+
+The first implementation should not use `asyncio.run()` inside retrieval. Current runtime includes sync tools, threadpool execution, and async streaming. If async retrieval is needed later, expose separate sync and async wrappers instead of nesting event loops.
+
+### 2.5 Two-Level Confidence
+
+Pre-CE confidence controls candidate expansion:
+
+| Signal | Weight |
+| --- | ---: |
+| candidate pool too small | +2.0 |
+| entity coverage weak | +2.0 |
+| dense/sparse disagree | +1.0 |
+| L1 top margin too small | +1.0 |
+| precise scope not matched | +2.0 |
+
+Post-CE confidence controls answerability and suggested upgrade:
+
+| Signal | Weight |
+| --- | ---: |
+| top score too low | +2.0 |
+| CE margin too small | +1.5 |
+| evidence count too low | +2.0 |
+| entity coverage weak | +2.0 |
+| answer coverage weak | +2.0 |
+| precise scope not matched | +2.0 |
+| route disagreement | +1.0 |
+
+Decision:
+
+| Risk | Decision |
+| ---: | --- |
+| <2.0 | answerable, high confidence |
+| 2.0-3.9 | answerable, medium confidence |
+| 4.0-5.9 | not answerable, suggested upgrade |
+| >=6.0 | not answerable, clarification needed |
+
+### 2.6 ConfidenceVerdict
+
+Extend `backend/rag/confidence.py` in place.
 
 ```python
 @dataclass(frozen=True)
@@ -296,30 +512,138 @@ class ConfidenceVerdict:
 
 Upgrade semantics:
 
-- FAST low confidence upgrades to STANDARD immediately.
+- FAST low confidence retries STANDARD immediately.
 - STANDARD high risk returns `suggested_mode="DEEP"` to the chat layer.
-- Retrieval code does not silently run DEEP during a normal retrieval call.
-- If evidence is insufficient and DEEP is not allowed, return an answerability failure with a clarification question or a no-evidence result.
+- Retrieval does not silently run DEEP as a side effect.
+- If DEEP is disallowed, return a not-answerable result or clarification.
 
-This closes the ambiguity in the earlier design where `mode_final` could become DEEP without specifying whether DEEP actually ran.
+This closes the ambiguity of simply setting `mode_final="DEEP"` without specifying whether Deep actually executed.
+
+Suggested-mode semantics:
+
+| Current mode | Condition | Result |
+| --- | --- | --- |
+| FAST | confidence below FAST threshold | Run STANDARD immediately and set `mode_final="STANDARD"`. |
+| STANDARD | high risk and Deep disabled | Return `answerable=False`, `suggested_mode="DEEP"`, and a safe explanation. |
+| STANDARD | high risk and Deep suggest-only | Return `answerable=False`, `suggested_mode="DEEP"`; do not execute Deep. |
+| STANDARD | high risk and Deep active | Execute Deep in chat layer, not inside `retrieve_documents`. |
+| DEEP subquery | any low-confidence result | Return partial evidence to Deep coverage evaluator; never recurse. |
+
+### 2.7 RetrievalVerdict Shape
+
+A full dataclass can be introduced later if useful, but phase one should keep the current dict return to avoid broad caller churn. The conceptual verdict is:
+
+```python
+@dataclass(frozen=True)
+class RetrievalVerdict:
+    docs: list[dict]
+    mode_initial: str
+    mode_final: str
+    answerable: bool
+    confidence_score: float
+    risk_score: float
+    suggested_mode: str | None
+    needs_clarification: bool
+    trace: dict
+```
+
+Implementation should prefer dict-compatible meta first. Introduce the dataclass only if it removes repeated conversion or improves tests.
 
 ---
 
-## Deep Mode
+## Section 3: Deep Mode Planner-Controller
 
-DEEP mode lives in `backend/chat/deep_mode.py`.
+### 3.1 Architecture
 
-It is an internal controller:
+```text
+Original query
+  -> Mode classifier says DEEP, or STANDARD confidence suggests DEEP
+  -> Deep controller
+      -> rule decomposer
+      -> optional LLM planner fallback
+      -> STANDARD sub-retrievals, allow_deep=False
+      -> evidence accumulator
+      -> coverage evaluator
+      -> synthesis with citations
+```
 
-1. Accept the original query, context files, conversation context, and classifier verdict.
-2. Build up to 3 subqueries.
-3. Run each subquery through `retrieve_documents(..., mode_override="STANDARD", allow_deep=False)`.
-4. Accumulate evidence with source attribution.
-5. Evaluate coverage.
-6. Stop early when coverage is sufficient.
-7. Synthesize a cited answer with one LLM call.
+Deep Mode is implemented in `backend/chat/deep_mode.py` because it is chat orchestration, not low-level retrieval. It should not be placed in `agent.py`, `tools.py`, or `rag/utils.py`.
 
-### Budget
+Deep Mode returns an answer-ready result, not just another document list. The chat tool should format that result so the outer Agent preserves the cited answer and does not invent additional claims.
+
+### 3.2 Core Data Structures
+
+```python
+@dataclass(frozen=True)
+class SubQuery:
+    id: str
+    query: str
+    target_entity: str | None
+    target_aspect: str | None
+    strategy: str
+    required: bool = True
+    source: str = "rule"
+
+
+@dataclass
+class BudgetTracker:
+    max_retrieval_calls: int
+    max_llm_calls: int
+    max_wall_time_ms: int
+    started_at: float = 0.0
+    retrieval_calls: int = 0
+    llm_calls: int = 0
+```
+
+Evidence accumulation starts inside `deep_mode.py`. Do not add `backend/rag/evidence.py` unless the same evidence model is needed outside Deep Mode.
+
+```python
+@dataclass
+class EvidenceItem:
+    dedupe_key: str
+    doc: dict
+    subquery_ids: set[str]
+    target_entities: set[str]
+    target_aspects: set[str]
+    route_sources: set[str]
+    best_score: float
+```
+
+```python
+@dataclass
+class DeepModeResult:
+    final_answer: str
+    citations: list[dict]
+    evidence_items: list[EvidenceItem]
+    coverage: dict
+    missing_entities: list[str]
+    missing_aspects: list[str]
+    budgets: dict
+    partial: bool
+    trace: dict
+```
+
+### 3.3 Query Decomposer
+
+Rules first:
+
+1. Multi-entity compare: one subquery per entity/aspect.
+2. Temporal evolution: earliest state, latest state, change signal.
+3. Exhaustive global query: broad STANDARD retrieval plus optional targeted follow-up if coverage is low.
+4. Ambiguous complex query: LLM planner fallback, capped at 3 subqueries.
+
+Subquery invariant:
+
+```python
+retrieve_documents(
+    sq.query,
+    context_files=context_files,
+    mode_override="STANDARD",
+    allow_deep=False,
+)
+```
+
+### 3.4 Budget
 
 | Budget | Default |
 | --- | ---: |
@@ -328,71 +652,83 @@ It is an internal controller:
 | Max synthesis LLM calls | 1 |
 | Max wall time | 6000 ms |
 | Max evidence items sent to synthesis | 15 |
-| Max characters per evidence item | 600 |
+| Max chars per evidence item | 600 |
 
-### Subquery Rules
+Budget exhaustion returns partial evidence with explicit missing coverage. It must not fabricate an answer.
 
-Rule decomposer handles common patterns first:
+### 3.5 Coverage Evaluation
 
-- Compare A and B -> one subquery per entity/aspect.
-- Temporal evolution -> earliest, latest, change.
-- Exhaustive global query -> one broad STANDARD query plus optional targeted follow-up if coverage is low.
-- Ambiguous complex query -> LLM planner fallback, capped at 3 subqueries.
+Coverage tracks:
 
-### Evidence Accumulation
+- entities covered / partial / missing
+- aspects covered / partial / missing
+- evidence count per dimension
+- duplicate evidence rate
+- whether second and third retrieval calls added new evidence
 
-Evidence can start inside `deep_mode.py`. Do not add a separate `evidence.py` until the code becomes reusable outside DEEP.
+Early stop:
 
-Evidence item fields:
+- overall coverage >= 0.9
+- no required entity missing
+- no required aspect missing
 
-- `dedupe_key`
-- `doc`
-- `subquery_ids`
-- `target_entities`
-- `target_aspects`
-- `route_sources`
-- `best_score`
+### 3.6 Synthesizer
 
-### Agent Contract
+The synthesizer receives capped evidence and coverage state.
 
-The existing Agent may still call `search_knowledge_base` at most once per turn.
+Prompt requirements:
 
-The tool may internally choose:
+1. Answer conclusion first.
+2. Cite filename and page for each key claim.
+3. State missing evidence explicitly.
+4. Do not infer across missing dimensions.
+5. If comparing A and B but only A has evidence, say B is missing.
 
-- STANDARD retrieval result formatting.
-- DEEP controller result formatting.
+Output contract:
 
-The Agent is not allowed to make repeated knowledge-base tool calls. This preserves the current guard and avoids tool-call loops.
+- `final_answer` is the answer the user should see.
+- Every key claim in `final_answer` must have at least one citation object.
+- Each citation includes `filename`, `page_number`, `chunk_id`, and `subquery_id`.
+- Missing coverage is part of the answer, not only trace metadata.
+- If `partial=true`, the first paragraph must say that the answer is partial.
+- If no cited evidence supports the requested comparison or exhaustive answer, return a refusal-to-answer with missing coverage instead of synthesis.
 
----
+### 3.7 Tool Enhancement
 
-## Tool Output
+`backend/chat/tools.py` keeps the one-call guard. It may internally dispatch to:
 
-`backend/chat/tools.py` should cap retrieval output regardless of mode:
+- FAST/STANDARD retrieval formatting.
+- Deep controller formatting.
+
+External Agent behavior remains one call:
+
+```text
+Agent -> search_knowledge_base(query) -> retrieval or deep result -> final answer
+```
+
+Tool output caps:
 
 | Setting | Default |
 | --- | ---: |
 | Max docs returned to Agent | 5 |
 | Max chars per doc | 800 |
-| Include diagnostics | Yes |
-| Include trace context for frontend | Yes |
+| Include diagnostics | yes |
+| Store trace for frontend | yes |
 
-Tool output should include:
+Tool response rules:
 
-- Retrieved chunks.
-- Confidence.
-- Answerability.
-- Covered and missing entities where available.
-- Suggested mode when retrieval is not enough.
-- Clarification question when needed.
+- FAST/STANDARD returns retrieved chunks plus confidence diagnostics, as today.
+- DEEP returns a `Deep Mode Answer` block, citations, missing coverage, and capped evidence snippets.
+- The outer Agent prompt should instruct the model to preserve `Deep Mode Answer` claims and citations, not re-synthesize unsupported claims.
+- Frontend trace stores both `deep_trace` and the underlying sub-retrieval traces.
 
 ---
 
-## Observability
+## Section 4: Observability
 
-Add trace fields without breaking current reports.
+### 4.1 Pipeline Metrics
 
-### Mode And Plan Metrics
+Mode:
 
 - `mode_initial`
 - `mode_final`
@@ -403,31 +739,13 @@ Add trace fields without breaking current reports.
 - `mode_shadow_mismatch`
 - `mode_override_used`
 
-### Confidence Metrics
+Latency:
 
-- `confidence_score`
-- `risk_score`
-- `confidence_reasons`
-- `answerable`
-- `suggested_mode`
-- `needs_clarification`
+- `mode_fast_p50_ms`, `mode_fast_p95_ms`
+- `mode_standard_p50_ms`, `mode_standard_p95_ms`
+- `mode_deep_p50_ms`, `mode_deep_p95_ms`
 
-### Deep Metrics
-
-- `deep_trigger_reason`
-- `deep_tool_calls_used`
-- `deep_llm_calls_used`
-- `deep_coverage_score`
-- `deep_missing_entities`
-- `deep_missing_aspects`
-- `deep_early_stop`
-- `deep_timeout`
-- `deep_fallback_used`
-- `deep_duplicate_evidence_rate`
-
-### Quality Metrics
-
-Keep current evaluation metrics:
+Retrieval quality:
 
 - File@5
 - File+Page@5
@@ -441,122 +759,113 @@ Keep current evaluation metrics:
 - rerank drop rate
 - structure drop rate
 
+### 4.2 Confidence Metrics
+
+- `answerable`
+- `confidence_score`
+- `risk_score`
+- `confidence_reasons`
+- `suggested_mode`
+- `needs_clarification`
+- `clarification_question`
+- `fast_to_standard_upgrade_rate`
+- `standard_to_deep_suggestion_rate`
+
+### 4.3 Deep Mode Metrics
+
+- `deep_trigger_rate`
+- `deep_trigger_reason_distribution`
+- `deep_rule_decompose_rate`
+- `deep_llm_planner_rate`
+- `deep_avg_retrieval_calls`
+- `deep_avg_llm_calls`
+- `deep_avg_evidence_count`
+- `deep_avg_coverage`
+- `deep_timeout_rate`
+- `deep_budget_exceeded_rate`
+- `deep_second_call_useful_rate`
+- `deep_third_call_useful_rate`
+- `deep_duplicate_evidence_rate`
+- `deep_early_stop_rate`
+- `deep_missing_entity_rate`
+- `deep_missing_aspect_rate`
+- `deep_citation_coverage_rate`
+- `deep_partial_answer_rate`
+- `deep_unsupported_claim_count`
+
+### 4.4 Agent Decision Metrics
+
+- `tool_call_rate`
+- `forced_retrieval_rate`
+- `no_retrieval_answer_rate`
+- `agent_decision_latency_ms`
+- `knowledge_tool_guard_hit_rate`
+
 ---
 
 ## Implementation Phases
 
-### Phase 0: Low-Risk Baseline
+| Phase | Content | Risk | Validation |
+| --- | --- | --- | --- |
+| P0 | Adopt/document `V3Q + FP16` as quality-first baseline. Behavior otherwise unchanged. | Low | tests + smoke eval |
+| P1 | Add shadow Mode Classifier and plan trace. No behavior change. | Low | classifier eval set |
+| P2 | Add plan-aware retrieval parameters to existing `retrieve_documents`. STANDARD remains quality-first. | Medium | saved-row regression |
+| P3 | Extend confidence into structured verdicts while preserving legacy meta fields. | Medium | fallback/confidence tests |
+| P4 | Activate FAST only for high-confidence precise fact queries; retry STANDARD on low confidence. | Medium | full gold eval gates |
+| P5 | Add internal Deep controller in chat layer. Subqueries are STANDARD and non-recursive. | Medium-High | deep eval set |
+| P6 | Sunset compatibility fallback for FAST/STANDARD after parity is proven; keep rollback flag for one release. | Medium | graph/non-graph parity |
 
-Purpose: take the proven FP16 gain before architecture changes.
+The original draft's intent remains, but implementation is staged to avoid a big-bang rewrite.
 
-Changes:
+P6 note: current code already allows the fallback path to be disabled by configuration. P6 is not a big removal task; it is a controlled cleanup after traces, streaming events, and reports no longer depend on legacy fallback fields.
 
-- Set and document `RERANK_TORCH_DTYPE=float16` for the quality profile.
-- Keep behavior otherwise unchanged.
+---
 
-Acceptance:
+## File Changes
 
-- Existing tests pass.
-- Smoke RAG eval passes.
-- No answer-shape change.
+### New Files
 
-### Phase 1: Shadow Mode Classifier
+Only two new production files are planned initially:
 
-Purpose: collect evidence before routing.
+| File | Responsibility | Why new |
+| --- | --- | --- |
+| `backend/rag/modes.py` | Query feature extraction, mode scoring, mode verdicts, retrieval plans. | Keeps mode policy separate from QueryPlan document-scope parsing. |
+| `backend/chat/deep_mode.py` | Deep controller, subquery planning, budget tracking, evidence accumulation, synthesis. | Keeps multi-step chat orchestration out of `agent.py`, `tools.py`, and `rag/utils.py`. |
 
-Changes:
+Do not create generation-labeled modules such as `pipeline_v2.py`, `confidence_v2.py`, or `classifier_v4.py`.
 
-- Add `backend/rag/modes.py`.
-- Add classifier unit tests.
-- Write `ModeVerdict` into trace only.
+### New Evaluation Artifacts
 
-Acceptance:
+| File | Responsibility |
+| --- | --- |
+| `eval/datasets/rag_mode_classifier_v1.jsonl` | Hand-labeled routing examples for classifier gates. |
+| `eval/datasets/rag_deep_mode_v1.jsonl` | Multi-hop, compare, exhaustive, and temporal questions with expected cited coverage. |
+| `scripts/rag_eval/evaluate_mode_classifier.py` | Focused classifier report without Milvus or CrossEncoder dependency. |
+| `scripts/rag_eval/evaluate_deep_mode.py` | Deep answer/citation coverage report. |
 
-- FAST false positives on labeled complex queries below 2%.
-- DEEP trigger rate is measurable.
-- Existing retrieval results unchanged.
+### Modified Files
 
-### Phase 2: Plan-Aware Retrieval
+| File | Changes |
+| --- | --- |
+| `backend/rag/utils.py` | Accept optional mode controls, resolve retrieval plans, add mode/plan/confidence meta. |
+| `backend/rag/confidence.py` | Add structured confidence verdict while preserving legacy fields. |
+| `backend/rag/layered_rerank.py` | Allow plan-aware L1/L2/L3 parameters where needed. |
+| `backend/rag/pipeline.py` | Keep compatibility path; later bypass LLM grading/routing for FAST/STANDARD when confidence verdict is active. |
+| `backend/chat/tools.py` | Keep one-call guard, cap output, dispatch internally to Deep controller when needed. |
+| `backend/chat/agent.py` | Update prompt and streaming trace handling for mode-aware retrieval. |
+| `backend/config.py` | Add flags and defaults. |
+| `scripts/rag_eval/variants.py` | Add shadow/active mode experiment variants without changing existing variants. |
+| `tests/*` | Add classifier, plan, confidence, FAST retry, Deep controller, and tool guard tests. |
 
-Purpose: allow plan parameters without changing public API.
+### Preserved Files
 
-Changes:
-
-- Extend `retrieve_documents` with optional mode/plan controls.
-- Add plan fields to meta.
-- STANDARD remains quality-first by default.
-- FAST is disabled or shadow-only until classifier confidence is proven.
-
-Acceptance:
-
-- Existing tests pass.
-- Eval rows remain comparable.
-- Trace shows selected plan.
-
-### Phase 3: Structured Confidence
-
-Purpose: replace ambiguous fallback flags with explicit verdicts.
-
-Changes:
-
-- Extend `backend/rag/confidence.py`.
-- Convert confidence results into `answerable`, `risk_score`, `suggested_mode`, and `needs_clarification`.
-- Keep legacy meta fields until callers are migrated.
-
-Acceptance:
-
-- Existing fallback tests pass.
-- Saved-row regression can summarize both legacy and new fields.
-
-### Phase 4: FAST Activation
-
-Purpose: route only safe precise queries to FAST.
-
-Changes:
-
-- Enable FAST for high-confidence single-file or anchored facts.
-- FAST low confidence immediately retries STANDARD.
-
-Acceptance:
-
-- 125-row gold quality does not regress beyond gates.
-- FAST traffic P50 improves meaningfully.
-- FAST-to-STANDARD upgrade rate is tracked.
-
-### Phase 5: Deep Controller
-
-Purpose: support complex multi-hop questions without putting Agent on the main chain.
-
-Changes:
-
-- Add `backend/chat/deep_mode.py`.
-- Implement rule decomposer, budget tracker, evidence accumulator, and synthesis.
-- Keep subqueries STANDARD and non-recursive.
-- Tool still counts as one Agent tool call.
-
-Acceptance:
-
-- Deep eval set passes.
-- Deep trigger rate remains below 15% in representative traffic.
-- No recursive DEEP calls.
-- Budget exhaustion returns partial evidence safely.
-
-### Phase 6: Main-Path Simplification
-
-Purpose: remove serial LLM gating from the common path.
-
-Changes:
-
-- Disable LLM Grader/Router for FAST/STANDARD when confidence verdict is active.
-- Keep LangGraph fallback switch while comparing outputs.
-- Remove LangGraph from the main path only after shadow parity is proven.
-
-Acceptance:
-
-- Full test suite passes.
-- Gold eval passes.
-- Graph and non-graph trace comparison is explained.
-- Rollback flag remains available for one release.
+| File | Note |
+| --- | --- |
+| `backend/rag/query_plan.py` | Reused as document-scope parser, not expanded into mode policy. |
+| `backend/rag/retrieval.py` | Reuse dense/sparse/RRF helpers. |
+| `backend/rag/rerank.py` | Reuse CE and score fusion. |
+| `backend/rag/context.py` | Reuse auto-merge and structure rerank. |
+| `backend/rag/diagnostics.py` | Reuse failure classification. |
 
 ---
 
@@ -572,6 +881,11 @@ Quality gates use the 125-row gold dataset when available.
 | STANDARD Root@5 | no more than 0.5pp below baseline on rows with qrels |
 | FAST complex false-positive rate | under 2% |
 | DEEP normal-traffic trigger rate | under 15% |
+| Classifier eval examples | at least 100, with all required label categories covered |
+| Classifier confusion matrix | no FAST prediction for hard-blocked complex categories |
+| Deep citation coverage | 100% of key claims cite at least one evidence item |
+| Deep unsupported claims | 0 on deep eval set |
+| Deep partial-answer honesty | 100% of partial answers state missing coverage |
 | Error rate | 0.0 on eval runs |
 | Recursive DEEP calls | 0 |
 
@@ -580,37 +894,10 @@ Latency gates:
 | Mode | Gate |
 | --- | --- |
 | FAST | P50 under 600 ms after active routing |
-| STANDARD | P50 around 1000-1300 ms, P95 under 1800 ms |
+| STANDARD | P50 around 1000-1300 ms initially, P95 under 1800 ms |
 | DEEP | P95 under 6000 ms |
 
-If a faster plan misses quality gates, it remains an experiment and does not become default.
-
----
-
-## File Change Plan
-
-### New Files
-
-| File | Responsibility |
-| --- | --- |
-| `backend/rag/modes.py` | Query feature extraction, mode scoring, mode verdicts, retrieval plans. |
-| `backend/chat/deep_mode.py` | Internal DEEP controller, subquery planning, evidence accumulation, synthesis. |
-
-### Modified Files
-
-| File | Changes |
-| --- | --- |
-| `backend/rag/utils.py` | Accept optional mode controls, apply retrieval plans, add mode/plan/confidence meta. |
-| `backend/rag/confidence.py` | Add structured confidence verdict while preserving legacy meta fields. |
-| `backend/rag/layered_rerank.py` | Read plan parameters for L1/L2/L3 quotas where needed. |
-| `backend/rag/pipeline.py` | Keep as compatibility path while removing LLM grading/routing from FAST/STANDARD after confidence is active. |
-| `backend/chat/tools.py` | Keep one-call guard, cap output, dispatch internally to STANDARD or DEEP. |
-| `backend/chat/agent.py` | Update prompt and streaming trace handling for mode-aware retrieval. |
-| `backend/config.py` | Add configuration flags and defaults. |
-| `scripts/rag_eval/variants.py` | Add shadow/active mode experiment variants without changing existing variants. |
-| `tests/*` | Add classifier, plan, confidence, deep controller, and regression tests. |
-
-No broad file split is planned. Extraction is allowed only after a module has a proven second responsibility.
+If a faster plan misses quality gates, it remains experimental.
 
 ---
 
@@ -624,7 +911,7 @@ Unit tests:
 - Context reference behavior.
 - Confidence verdict risk scoring.
 - FAST low-confidence retry to STANDARD.
-- DEEP subqueries use STANDARD with `allow_deep=False`.
+- Deep subqueries use STANDARD with `allow_deep=False`.
 - Tool guard still prevents repeated Agent tool calls.
 - Tool output caps docs and characters.
 
@@ -634,8 +921,10 @@ Integration tests:
 - Streaming still emits RAG steps.
 - Attached context files still constrain retrieval.
 - Graph fallback path remains available.
+- Deep tool formatting preserves final answer, citations, and missing coverage.
+- Existing Agent tool guard still counts Deep as one external knowledge-base call.
 
-Evaluation:
+Verification commands:
 
 ```powershell
 uv run pytest tests/ -q
@@ -644,10 +933,12 @@ uv run python -m compileall backend scripts
 uv run python scripts/evaluate_rag_matrix.py --dataset eval/datasets/rag_doc_gold.jsonl --variants V3Q --mode retrieval --skip-reindex --run-id baseline-check
 ```
 
-Add focused runs for active mode changes:
+Focused mode-routing evaluation:
 
 ```powershell
-uv run python scripts/evaluate_rag_matrix.py --dataset eval/datasets/rag_doc_gold.jsonl --variants <mode-shadow>,<mode-active> --mode retrieval --skip-reindex --run-id mode-routing-check
+uv run python scripts/evaluate_rag_matrix.py --dataset eval/datasets/rag_doc_gold.jsonl --variants V4_SHADOW,V4_ACTIVE --mode retrieval --skip-reindex --run-id mode-routing-check
+uv run python scripts/rag_eval/evaluate_mode_classifier.py --dataset eval/datasets/rag_mode_classifier_v1.jsonl
+uv run python scripts/rag_eval/evaluate_deep_mode.py --dataset eval/datasets/rag_deep_mode_v1.jsonl --skip-reindex
 ```
 
 ---
@@ -656,33 +947,41 @@ uv run python scripts/evaluate_rag_matrix.py --dataset eval/datasets/rag_doc_gol
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| FAST routes complex query | Low recall or wrong answer | Strict FAST blocks, shadow eval, immediate STANDARD retry on low confidence. |
+| FAST routes complex query | Low recall or wrong answer | Strict hard blocks, shadow eval, immediate STANDARD retry on low confidence. |
 | STANDARD over-compresses candidates | Regression like EXP_C5 | Keep V3Q FP16 quality-first baseline; require full gold gates for compression. |
 | DEEP over-triggers | Latency and cost spike | Trigger cap, metrics, explicit thresholds, traffic sampling. |
-| DEEP recurses | Budget explosion | `allow_deep=False` on all subqueries, test this invariant. |
-| Agent loops tools | Slow or unstable answers | Preserve one-call guard; DEEP runs inside the tool/controller. |
+| DEEP recurses | Budget explosion | `allow_deep=False` on all subqueries and a dedicated invariant test. |
+| Agent loops tools | Slow or unstable answers | Preserve one-call guard; Deep runs internally. |
 | Confidence miscalibration | Bad answerability decisions | Saved-row regression plus confidence calibration set. |
-| More files than needed | Codebase drift | Start with only `modes.py` and `deep_mode.py`; extract later only with evidence. |
+| Too many new files | Codebase drift | Start with only `modes.py` and `deep_mode.py`; extract later only with evidence. |
 | LangGraph removal breaks streaming trace | UX regression | Keep compatibility switch and shadow compare before removal. |
+| Versioned module sprawl | Duplicate logic and cleanup cost | No generation labels in production module names. |
+| Deep answer is re-synthesized by outer Agent | Citations drift or unsupported claims appear | Return an answer-ready Deep block and update Agent prompt to preserve it. |
+| Flag combinations create unclear behavior | Hard-to-debug rollout failures | Keep a single rollout table and test each flag combination that changes control flow. |
+| Classifier eval set is too easy | FAST looks safer than it is | Include hard negatives and user-explicit fast on complex queries. |
 
 ---
 
 ## Open Decisions
 
-1. FAST should remain shadow-only until the classifier eval set is created.
-2. STANDARD should start from the proven V3Q FP16 behavior, not the aggressive layered compression profile.
-3. DEEP synthesis prompt should be citation-first and explicitly state missing evidence.
-4. Any future module extraction must remove complexity from an existing file, not create a parallel versioned stack.
+1. FAST remains shadow-only until classifier evaluation exists.
+2. STANDARD starts from V3Q FP16 quality-first behavior.
+3. Deep synthesis prompt should be citation-first and must expose missing evidence.
+4. Candidate compression requires full gold evaluation before default activation.
+5. Any future module extraction must remove complexity from an existing file, not create a parallel implementation stack.
+6. Deep execution should stay suggest-only until the Deep answer eval set exists.
 
 ---
 
 ## Final Design Position
 
-This design keeps the original pipeline-first agentic RAG goal, but changes the execution posture:
+The original design direction is retained: pipeline-first retrieval, mode-aware routing, and bounded agentic Deep Mode.
 
-- Reuse current assets.
+The implementation strategy is tightened:
+
+- Reuse current retrieval and evaluation assets.
 - Add only essential boundaries.
-- Avoid versioned module names.
+- Avoid versioned production module names.
 - Prove routing before enabling it.
-- Keep Agent behavior bounded.
-- Let evaluation gates, not architectural enthusiasm, decide when a faster plan becomes default.
+- Keep Agent behavior bounded to one knowledge-base tool call.
+- Let full evaluation gates decide when a faster plan becomes default.
