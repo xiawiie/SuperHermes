@@ -5,7 +5,6 @@ import json
 import hashlib
 import re
 import time
-import requests
 
 from backend.infra.cache import cache
 from backend.shared.json_utils import extract_json_object
@@ -54,9 +53,7 @@ from backend.config import (
     env_bool as _env_bool,
 )
 RERANK_MODEL = os.getenv("RERANK_MODEL")
-RERANK_BINDING_HOST = os.getenv("RERANK_BINDING_HOST")
-RERANK_API_KEY = os.getenv("RERANK_API_KEY")
-RERANK_PROVIDER = os.getenv("RERANK_PROVIDER", "api").lower()
+RERANK_PROVIDER = os.getenv("RERANK_PROVIDER", "local").lower()
 RERANK_DEVICE = os.getenv("RERANK_DEVICE", "auto")
 AUTO_MERGE_ENABLED = os.getenv("AUTO_MERGE_ENABLED", "true").lower() != "false"
 AUTO_MERGE_THRESHOLD = int(os.getenv("AUTO_MERGE_THRESHOLD", "2"))
@@ -72,9 +69,6 @@ ENABLE_ANCHOR_GATE = os.getenv("ENABLE_ANCHOR_GATE", "true").lower() != "false"
 QUERY_PLAN_ENABLED = _env_bool("QUERY_PLAN_ENABLED", False)
 RAG_CANDIDATE_K = int(os.getenv("RAG_CANDIDATE_K", "0"))
 RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "0"))
-# RERANK_CPU_TOP_N_CAP is kept for compatibility but never used (GPU-only)
-RERANK_CPU_TOP_N_CAP = int(os.getenv("RERANK_CPU_TOP_N_CAP", "0"))
-RERANK_INPUT_K_CPU = int(os.getenv("RERANK_INPUT_K_CPU", "0"))
 RERANK_INPUT_K_GPU = int(os.getenv("RERANK_INPUT_K_GPU", "0"))
 RERANK_CACHE_ENABLED = _env_bool("RERANK_CACHE_ENABLED", True)
 RERANK_CACHE_TTL_SECONDS = int(os.getenv("RERANK_CACHE_TTL_SECONDS", "60"))
@@ -126,13 +120,6 @@ def _build_enriched_pair(doc: dict) -> str:
     return _rerank_build_enriched_pair(doc, doc_text_getter=_doc_retrieval_text)
 
 
-def _weighted_rrf_merge(
-    result_sets: list[tuple[list[dict], float]],
-    rrf_k: int = 60,
-) -> list[dict]:
-    return _retrieval_weighted_rrf_merge(result_sets, rrf_k=rrf_k)
-
-
 def _apply_filename_boost(query_plan: QueryPlan, candidates: list[dict]) -> list[dict]:
     return _retrieval_apply_filename_boost(
         query_plan,
@@ -176,10 +163,6 @@ def _apply_rerank_score_fusion(indexed_scores: list[tuple[int, float]], docs_for
     )
 
 
-def _annotate_scope_scores(docs: list[dict], matched_files: list[tuple[str, float]]) -> list[dict]:
-    return _retrieval_annotate_scope_scores(docs, matched_files)
-
-
 def _finish_retrieval_pipeline(
     query: str,
     search_query: str,
@@ -201,20 +184,20 @@ def _finish_retrieval_pipeline(
     try:
         stage_start = time.perf_counter()
         reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=top_k)
-        timings["rerank_ms"] = _elapsed_ms(stage_start)
+        timings["rerank_ms"] = elapsed_ms(stage_start)
         if rerank_meta.get("rerank_error"):
             stage_errors.append(_stage_error("rerank", str(rerank_meta.get("rerank_error")), "ranked_candidates"))
 
         current_stage = "structure_rerank"
         stage_start = time.perf_counter()
         reranked_docs, structure_meta = _apply_structure_rerank(docs=reranked, top_k=top_k)
-        timings["structure_rerank_ms"] = _elapsed_ms(stage_start)
+        timings["structure_rerank_ms"] = elapsed_ms(stage_start)
 
         current_stage = "confidence_gate"
         stage_start = time.perf_counter()
         confidence_meta = _evaluate_retrieval_confidence(query=query, docs=reranked_docs)
-        timings["confidence_ms"] = _elapsed_ms(stage_start)
-        timings["total_retrieve_ms"] = _elapsed_ms(total_start)
+        timings["confidence_ms"] = elapsed_ms(stage_start)
+        timings["total_retrieve_ms"] = elapsed_ms(total_start)
 
         rerank_meta["retrieval_mode"] = retrieval_mode
         rerank_meta["candidate_k"] = candidate_k
@@ -245,14 +228,14 @@ def _finish_retrieval_pipeline(
 
     except Exception as exc:
         stage_errors.append(_stage_error(current_stage, str(exc)))
-        timings["total_retrieve_ms"] = _elapsed_ms(total_start)
+        timings["total_retrieve_ms"] = elapsed_ms(total_start)
         return {
             "docs": [],
             "meta": {
                 "rerank_enabled": _is_rerank_enabled(),
                 "rerank_applied": False,
                 "rerank_model": RERANK_MODEL,
-                "rerank_endpoint": _get_rerank_endpoint(),
+                "rerank_endpoint": None,
                 "rerank_error": str(exc),
                 "hybrid_error": hybrid_error,
                 "dense_error": None,
@@ -326,18 +309,10 @@ def _candidate_trace(docs: List[dict]) -> List[dict]:
     return traced
 
 
-def _get_rerank_endpoint() -> str:
-    if not RERANK_BINDING_HOST:
-        return ""
-    host = RERANK_BINDING_HOST.strip().rstrip("/")
-    return host if host.endswith("/v1/rerank") else f"{host}/v1/rerank"
 
 
-def _elapsed_ms(start: float) -> float:
+def elapsed_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000, 3)
-
-
-elapsed_ms = _elapsed_ms
 
 
 def _effective_candidate_k(top_k: int) -> int:
@@ -351,22 +326,11 @@ def _effective_rerank_top_n(top_k: int, candidate_count: int) -> int:
         return 0
     requested = RERANK_TOP_N if RERANK_TOP_N > 0 else top_k
     requested = max(top_k, requested)
-    if _rerank_device_tier() == "cpu" and RERANK_CPU_TOP_N_CAP > 0:
-        requested = min(requested, RERANK_CPU_TOP_N_CAP)
     return min(candidate_count, requested)
 
 
 def _rerank_device_tier() -> str:
-    device = (RERANK_DEVICE or "auto").lower()
-    if device in ("cuda", "gpu", "mps"):
-        return "gpu"
-    # GPU-only mode: never fallback to CPU
-    if device == "auto":
-        import torch
-
-        if torch.cuda.is_available():
-            return "gpu"
-    return "gpu"  # Force GPU even if detection fails
+    return "gpu"
 
 
 def _effective_rerank_input_k(rerank_top_n: int, candidate_count: int) -> tuple[int, str, int]:
@@ -379,10 +343,7 @@ def _effective_rerank_input_k(rerank_top_n: int, candidate_count: int) -> tuple[
 
 
 def _is_rerank_enabled() -> bool:
-    is_local = RERANK_PROVIDER == "local" and bool(RERANK_MODEL)
-    is_ollama = RERANK_PROVIDER == "ollama" and bool(RERANK_MODEL and RERANK_BINDING_HOST)
-    is_api = RERANK_PROVIDER not in ("local", "ollama") and bool(RERANK_MODEL and RERANK_API_KEY and RERANK_BINDING_HOST)
-    return is_local or is_ollama or is_api
+    return bool(RERANK_MODEL)
 
 
 def _milvus_index_version() -> str:
@@ -424,7 +385,7 @@ def _rerank_cache_key(
         "query": query,
         "provider": RERANK_PROVIDER,
         "model": RERANK_MODEL or "",
-        "binding_host": RERANK_BINDING_HOST or "",
+        "binding_host": "",
         "device_tier": _rerank_device_tier(),
         "rerank_top_n": rerank_top_n,
         "rerank_input_k": rerank_input_k,
@@ -594,9 +555,7 @@ def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[di
     runtime = RerankRuntime(
         provider=RERANK_PROVIDER,
         model=RERANK_MODEL,
-        binding_host=RERANK_BINDING_HOST,
-        api_key=RERANK_API_KEY,
-        cpu_top_n_cap=RERANK_CPU_TOP_N_CAP,
+        cpu_top_n_cap=0,
         cache_enabled=RERANK_CACHE_ENABLED,
         pair_enrichment_enabled=bool(RERANK_PAIR_ENRICHMENT_ENABLED),
         score_fusion_enabled=RERANK_SCORE_FUSION_ENABLED,
@@ -607,7 +566,6 @@ def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[di
             "metadata": RERANK_FUSION_METADATA_WEIGHT,
         },
         milvus_rrf_k=MILVUS_RRF_K,
-        get_endpoint=_get_rerank_endpoint,
         effective_top_n=_effective_rerank_top_n,
         effective_input_k=_effective_rerank_input_k,
         get_local_reranker=_get_local_reranker,
@@ -615,7 +573,6 @@ def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[di
         load_cached_result=_load_cached_rerank_result,
         store_result=_store_rerank_result,
         doc_text_getter=_doc_retrieval_text,
-        post=requests.post,
     )
     return _run_rerank_documents(query, docs, top_k, runtime)
 
@@ -702,10 +659,6 @@ def _build_filename_filter(filenames: list[str] | None) -> str:
     return _retrieval_build_filename_filter(filenames, escape_string=_escape_milvus_string)
 
 
-def _dedupe_docs(docs: list[dict]) -> list[dict]:
-    return _retrieval_dedupe_docs(docs)
-
-
 def retrieve_context_documents(filenames: list[str] | None, limit_per_file: int = 8) -> Dict[str, Any]:
     """Fetch representative indexed chunks directly from attached filenames."""
     clean_files = []
@@ -745,7 +698,7 @@ def retrieve_context_documents(filenames: list[str] | None, limit_per_file: int 
         rows.sort(key=lambda item: (item.get("page_number", 0), item.get("chunk_idx", 0)))
         docs.extend(rows)
 
-    docs = _dedupe_docs(docs)
+    docs = _retrieval_dedupe_docs(docs)
     for idx, item in enumerate(docs, 1):
         item["rrf_rank"] = idx
     return {
@@ -791,7 +744,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
             intent_type=None,
             route="global_hybrid",
         )
-    timings["query_plan_ms"] = _elapsed_ms(stage_start)
+    timings["query_plan_ms"] = elapsed_ms(stage_start)
 
     # Determine the search query (semantic_query, not raw_query)
     search_query = query_plan.semantic_query
@@ -823,12 +776,12 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
             stage_start = time.perf_counter()
             dense_embeddings = _embedding_service.get_embeddings([search_query])
             dense_embedding = dense_embeddings[0]
-            timings["embed_dense_ms"] = _elapsed_ms(stage_start)
+            timings["embed_dense_ms"] = elapsed_ms(stage_start)
 
             current_stage = "embed_sparse"
             stage_start = time.perf_counter()
             sparse_embedding = _embedding_service.get_sparse_embedding(search_query)
-            timings["embed_sparse_ms"] = _elapsed_ms(stage_start)
+            timings["embed_sparse_ms"] = elapsed_ms(stage_start)
         except Exception as exc:
             stage_errors.append(_stage_error(current_stage, str(exc), "dense_retrieve"))
             # Fall through to error handling below
@@ -876,12 +829,12 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
                     stage_errors.append(_stage_error("global_retrieve", str(exc), "scoped_only"))
                     global_ = []
 
-            timings["milvus_hybrid_ms"] = _elapsed_ms(stage_start)
-            scoped = _annotate_scope_scores(scoped, routable_matched_files)
-            global_ = _annotate_scope_scores(global_, routable_matched_files)
+            timings["milvus_hybrid_ms"] = elapsed_ms(stage_start)
+            scoped = _retrieval_annotate_scope_scores(scoped, routable_matched_files)
+            global_ = _retrieval_annotate_scope_scores(global_, routable_matched_files)
 
             # Weighted RRF merge: scoped 80%, global 20%
-            retrieved = _weighted_rrf_merge(
+            retrieved = _retrieval_weighted_rrf_merge(
                 [(scoped, 1.0 - DOC_SCOPE_GLOBAL_RESERVE_WEIGHT), (global_, DOC_SCOPE_GLOBAL_RESERVE_WEIGHT)],
                 rrf_k=MILVUS_RRF_K,
             )
@@ -965,12 +918,12 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
         stage_start = time.perf_counter()
         dense_embeddings = _embedding_service.get_embeddings([search_query])
         dense_embedding = dense_embeddings[0]
-        timings["embed_dense_ms"] = _elapsed_ms(stage_start)
+        timings["embed_dense_ms"] = elapsed_ms(stage_start)
 
         current_stage = "embed_sparse"
         stage_start = time.perf_counter()
         sparse_embedding = _embedding_service.get_sparse_embedding(search_query)
-        timings["embed_sparse_ms"] = _elapsed_ms(stage_start)
+        timings["embed_sparse_ms"] = elapsed_ms(stage_start)
 
         current_stage = "hybrid_retrieve"
         stage_start = time.perf_counter()
@@ -983,7 +936,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
             sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
             filter_expr=filter_expr,
         )
-        timings["milvus_hybrid_ms"] = _elapsed_ms(stage_start)
+        timings["milvus_hybrid_ms"] = elapsed_ms(stage_start)
 
         if QUERY_PLAN_ENABLED and query_plan.scope_mode == "boost":
             retrieved = _apply_filename_boost(query_plan, retrieved)
@@ -1007,7 +960,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
             stage_start = time.perf_counter()
             dense_embeddings = _embedding_service.get_embeddings([search_query])
             dense_embedding = dense_embeddings[0]
-            fallback_dense_ms = _elapsed_ms(stage_start)
+            fallback_dense_ms = elapsed_ms(stage_start)
             if "embed_dense_ms" in timings:
                 timings["embed_dense_fallback_ms"] = fallback_dense_ms
             else:
@@ -1021,7 +974,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
                 search_ef=MILVUS_SEARCH_EF,
                 filter_expr=filter_expr,
             )
-            timings["milvus_dense_fallback_ms"] = _elapsed_ms(stage_start)
+            timings["milvus_dense_fallback_ms"] = elapsed_ms(stage_start)
 
             if QUERY_PLAN_ENABLED and query_plan.scope_mode == "boost":
                 retrieved = _apply_filename_boost(query_plan, retrieved)
@@ -1041,14 +994,14 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
         except Exception as dense_exc:
             dense_error = str(dense_exc)
             stage_errors.append(_stage_error(current_stage, dense_error))
-            timings["total_retrieve_ms"] = _elapsed_ms(total_start)
+            timings["total_retrieve_ms"] = elapsed_ms(total_start)
             return {
                 "docs": [],
                 "meta": {
                     "rerank_enabled": _is_rerank_enabled(),
                     "rerank_applied": False,
                     "rerank_model": RERANK_MODEL,
-                    "rerank_endpoint": _get_rerank_endpoint(),
+                    "rerank_endpoint": None,
                     "rerank_error": "retrieve_failed",
                     "hybrid_error": hybrid_error,
                     "dense_error": dense_error,

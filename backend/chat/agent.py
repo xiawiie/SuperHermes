@@ -3,6 +3,7 @@ import asyncio
 import threading
 from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk, SystemMessage
 from backend.config import ARK_API_KEY as API_KEY, MODEL, BASE_URL
+from backend.shared.filename_utils import dedupe_filenames
 from backend.infra.db.conversation_storage import ConversationStorage
 from backend.chat.tools import (
     get_current_weather,
@@ -105,15 +106,7 @@ storage = ConversationStorage()
 
 
 def _normalize_context_files(context_files: list[str] | None) -> list[str]:
-    seen = set()
-    clean_files = []
-    for filename in context_files or []:
-        name = (filename or "").strip()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        clean_files.append(name)
-    return clean_files[:5]
+    return dedupe_filenames(context_files, max_count=5)
 
 
 def _with_context_file_instruction(messages: list, context_files: list[str]) -> list:

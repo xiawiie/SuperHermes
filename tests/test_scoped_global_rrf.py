@@ -4,7 +4,8 @@ from __future__ import annotations
 
 
 from backend.rag.query_plan import QueryPlan
-from backend.rag.utils import _apply_filename_boost, _build_filename_filter, _weighted_rrf_merge
+from backend.rag.utils import _apply_filename_boost, _build_filename_filter
+from backend.rag.retrieval import weighted_rrf_merge as _weighted_rrf_merge
 
 
 def _make_chunk(chunk_id: str, score: float, filename: str = "a.pdf", page: int = 1):

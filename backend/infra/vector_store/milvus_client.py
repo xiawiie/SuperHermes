@@ -12,6 +12,13 @@ from backend.infra.cache import cache
 logger = logging.getLogger(__name__)
 
 QUERY_MAX_LIMIT = 16384
+_RETRIEVAL_OUTPUT_FIELDS = [
+    "text", "retrieval_text", "filename", "file_type",
+    "page_number", "page_start", "page_end",
+    "chunk_id", "parent_chunk_id", "root_chunk_id",
+    "chunk_level", "chunk_role", "chunk_idx",
+    "section_title", "section_type", "section_path", "anchor_id",
+]
 AnnSearchRequest: Any = None
 DataType: Any = None
 MilvusClient: Any = None
@@ -274,25 +281,7 @@ class MilvusManager:
         sparse_drop_ratio: float = 0.2,
         filter_expr: str = "",
     ) -> list[dict]:
-        output_fields = [
-            "text",
-            "retrieval_text",
-            "filename",
-            "file_type",
-            "page_number",
-            "page_start",
-            "page_end",
-            "chunk_id",
-            "parent_chunk_id",
-            "root_chunk_id",
-            "chunk_level",
-            "chunk_role",
-            "chunk_idx",
-            "section_title",
-            "section_type",
-            "section_path",
-            "anchor_id",
-        ]
+        output_fields = _RETRIEVAL_OUTPUT_FIELDS
 
         search_limit = max(1, top_k * 2)
         effective_search_ef = _effective_hnsw_ef(search_ef, search_limit)
@@ -369,25 +358,7 @@ class MilvusManager:
                 anns_field="dense_embedding",
                 search_params={"metric_type": "IP", "params": {"ef": effective_search_ef}},
                 limit=top_k,
-                output_fields=[
-                    "text",
-                    "retrieval_text",
-                    "filename",
-                    "file_type",
-                    "page_number",
-                    "page_start",
-                    "page_end",
-                    "chunk_id",
-                    "parent_chunk_id",
-                    "root_chunk_id",
-                    "chunk_level",
-                    "chunk_role",
-                    "chunk_idx",
-                    "section_title",
-                    "section_type",
-                    "section_path",
-                    "anchor_id",
-                ],
+                output_fields=_RETRIEVAL_OUTPUT_FIELDS,
                 filter=filter_expr,
             ),
             operation_name="dense_search",
