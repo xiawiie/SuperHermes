@@ -265,7 +265,6 @@ def retrieve_initial(state: RAGState) -> RAGState:
         "rerank_enabled": retrieve_meta.get("rerank_enabled"),
         "rerank_applied": retrieve_meta.get("rerank_applied"),
         "rerank_model": retrieve_meta.get("rerank_model"),
-        "rerank_endpoint": retrieve_meta.get("rerank_endpoint"),
         "rerank_error": retrieve_meta.get("rerank_error"),
         "rerank_input_count": retrieve_meta.get("rerank_input_count"),
         "rerank_output_count": retrieve_meta.get("rerank_output_count"),
@@ -527,7 +526,6 @@ def retrieve_expanded(state: RAGState) -> RAGState:
     rerank_applied_any = False
     rerank_enabled_any = False
     rerank_model = None
-    rerank_endpoint = None
     rerank_errors = []
     rerank_input_count = 0
     rerank_output_count = 0
@@ -586,7 +584,6 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         rerank_applied_any = rerank_applied_any or bool(hyde_meta.get("rerank_applied"))
         rerank_enabled_any = rerank_enabled_any or bool(hyde_meta.get("rerank_enabled"))
         rerank_model = rerank_model or hyde_meta.get("rerank_model")
-        rerank_endpoint = rerank_endpoint or hyde_meta.get("rerank_endpoint")
         rerank_input_count += int(hyde_meta.get("rerank_input_count") or 0)
         rerank_output_count += int(hyde_meta.get("rerank_output_count") or 0)
         rerank_input_cap = rerank_input_cap if rerank_input_cap is not None else hyde_meta.get("rerank_input_cap")
@@ -630,7 +627,6 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         rerank_applied_any = rerank_applied_any or bool(step_meta.get("rerank_applied"))
         rerank_enabled_any = rerank_enabled_any or bool(step_meta.get("rerank_enabled"))
         rerank_model = rerank_model or step_meta.get("rerank_model")
-        rerank_endpoint = rerank_endpoint or step_meta.get("rerank_endpoint")
         rerank_input_count += int(step_meta.get("rerank_input_count") or 0)
         rerank_output_count += int(step_meta.get("rerank_output_count") or 0)
         rerank_input_cap = rerank_input_cap if rerank_input_cap is not None else step_meta.get("rerank_input_cap")
@@ -682,7 +678,6 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         "rerank_enabled": rerank_enabled_any,
         "rerank_applied": rerank_applied_any,
         "rerank_model": rerank_model,
-        "rerank_endpoint": rerank_endpoint,
         "rerank_error": "; ".join(rerank_errors) if rerank_errors else None,
         "rerank_input_count": rerank_input_count,
         "rerank_output_count": rerank_output_count,

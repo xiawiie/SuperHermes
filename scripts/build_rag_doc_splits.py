@@ -21,8 +21,8 @@ from scripts.rag_dataset_utils import (
 )
 
 
-DEFAULT_SPLITS = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_doc_splits_v1.json"
-DEFAULT_FROZEN = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_doc_frozen_eval_v1.jsonl"
+DEFAULT_SPLITS = PROJECT_ROOT / "eval" / "datasets" / "rag_doc_splits_v1.json"
+DEFAULT_FROZEN = PROJECT_ROOT / "eval" / "datasets" / "rag_doc_frozen_eval_v1.jsonl"
 
 
 def _file_sort_key(file_name: str) -> tuple[int, str]:

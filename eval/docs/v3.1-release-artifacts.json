@@ -1,0 +1,14 @@
+{
+  "artifacts": {
+    "qrel_v21": ".jbeval/qrels/rag_chunk_gold_v2.1.jsonl",
+    "regression_a_summary": ".jbeval/reports/regression-a-20260426/summary.json",
+    "regression_b_summary": ".jbeval/reports/regression-b-qrel-v21-20260426/summary.json",
+    "qrel_diff": ".jbeval/qrel_reviews/qrel_diff_explanation.json",
+    "golden_trace": ".jbeval/reports/golden-trace-20260426/golden_trace_analysis.json",
+    "page_miss_feasibility": ".jbeval/reports/page-miss-feasibility-20260426/page_miss_feasibility.json",
+    "fallback_simulation": ".jbeval/reports/fallback-simulation-20260426/fallback_simulation.json",
+    "full_convergence_snapshot": ".jbeval/reports/full-convergence-snapshot-20260426/summary.json",
+    "v3f_decision": ".jbeval/reports/v3f-rebuild-attempt-20260426/decision.json"
+  },
+  "missing": []
+}

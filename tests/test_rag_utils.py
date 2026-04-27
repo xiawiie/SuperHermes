@@ -63,10 +63,7 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         with (
             patch.object(rag_utils, "RAG_CANDIDATE_K", 80),
             patch.object(rag_utils, "RERANK_TOP_N", 20),
-            patch.object(rag_utils, "RERANK_PROVIDER", "api"),
             patch.object(rag_utils, "RERANK_MODEL", ""),
-            patch.object(rag_utils, "RERANK_API_KEY", ""),
-            patch.object(rag_utils, "RERANK_BINDING_HOST", ""),
             patch.object(rag_utils, "MILVUS_SEARCH_EF", 128),
             patch.object(rag_utils, "MILVUS_RRF_K", 70),
             patch.object(rag_utils, "MILVUS_SPARSE_DROP_RATIO", 0.1),
@@ -108,37 +105,23 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         self.assertFalse(result["meta"]["query_plan_enabled"])
         self.assertEqual(result["meta"]["semantic_query"], "《Manual》中，如何配置？")
 
-    def test_api_reranker_input_cap_limits_payload_documents(self):
-        class FakeResponse:
-            status_code = 200
-
-            @staticmethod
-            def json():
-                return {"results": [{"index": idx, "relevance_score": 1.0 - idx * 0.01} for idx in range(4)]}
-
-        captured_payloads = []
-
-        def fake_post(*args, **kwargs):
-            captured_payloads.append(kwargs["json"])
-            return FakeResponse()
+    def test_local_reranker_input_cap_limits_candidates(self):
+        class FakeReranker:
+            def predict(self, pairs):
+                return [1.0 - i * 0.01 for i in range(len(pairs))]
 
         docs = [{"text": f"doc {idx}", "chunk_id": f"c{idx}", "score": 1.0 / (idx + 1)} for idx in range(50)]
 
         with (
-            patch.object(rag_utils, "RERANK_PROVIDER", "api"),
+            patch.object(rag_utils, "RERANK_PROVIDER", "local"),
             patch.object(rag_utils, "RERANK_MODEL", "fake-reranker"),
-            patch.object(rag_utils, "RERANK_API_KEY", "key"),
-            patch.object(rag_utils, "RERANK_BINDING_HOST", "http://reranker"),
-            patch.object(rag_utils, "RERANK_DEVICE", "cuda"),
             patch.object(rag_utils, "RERANK_TOP_N", 0),
             patch.object(rag_utils, "RERANK_INPUT_K_GPU", 7),
             patch.object(rag_utils, "RERANK_CACHE_ENABLED", False),
-            patch("backend.rag.utils.requests.post", side_effect=fake_post),
+            patch.object(rag_utils, "_get_local_reranker", return_value=FakeReranker()),
         ):
             reranked, meta = rag_utils._rerank_documents("query", docs, top_k=4)
 
-        self.assertEqual(len(captured_payloads[0]["documents"]), 7)
-        self.assertEqual(captured_payloads[0]["top_n"], 4)
         self.assertEqual(meta["rerank_input_count"], 7)
         self.assertEqual(meta["rerank_output_count"], 4)
         self.assertEqual(len(reranked), 4)
@@ -174,9 +157,8 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         with (
             patch.object(rag_utils, "RERANK_PROVIDER", "local"),
             patch.object(rag_utils, "RERANK_MODEL", "fake-reranker"),
-            patch.object(rag_utils, "RERANK_DEVICE", "cpu"),
             patch.object(rag_utils, "RERANK_TOP_N", 0),
-            patch.object(rag_utils, "RERANK_INPUT_K_CPU", 10),
+            patch.object(rag_utils, "RERANK_INPUT_K_GPU", 10),
             patch.object(rag_utils, "RERANK_CACHE_ENABLED", True),
             patch.object(rag_utils, "cache", fake_cache),
             patch.object(rag_utils._embedding_service, "_total_docs", 42),

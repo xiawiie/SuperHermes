@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -221,7 +222,9 @@ def rerank_documents(query: str, docs: list[dict], top_k: int, runtime: RerankRu
             rerank_pair_text(doc, runtime.pair_enrichment_enabled, doc_text_getter=runtime.doc_text_getter)
             for doc in docs_for_rerank
         ]
+        predict_start = time.perf_counter()
         scores = reranker.predict([[query, text] for text in texts])
+        meta["ce_predict_ms"] = round((time.perf_counter() - predict_start) * 1000, 3)
         raw_scores = [float(score) for score in scores]
         reranked = _rank_from_scores(
             list(enumerate(raw_scores)),

@@ -14,9 +14,9 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.rag_dataset_utils import as_list, load_jsonl, loose_text, write_json, write_jsonl
 
 
-DEFAULT_INPUT = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_chunk_gold_v1.jsonl"
-DEFAULT_OUTPUT = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_contrastive_train_v1.jsonl"
-DEFAULT_REPORT = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_contrastive_train_v1.report.json"
+DEFAULT_INPUT = PROJECT_ROOT / "eval" / "datasets" / "rag_chunk_gold_v1.jsonl"
+DEFAULT_OUTPUT = PROJECT_ROOT / "eval" / "datasets" / "rag_contrastive_train_v1.jsonl"
+DEFAULT_REPORT = PROJECT_ROOT / "eval" / "datasets" / "rag_contrastive_train_v1.report.json"
 
 
 def _chunk_id(chunk: dict[str, Any]) -> str:

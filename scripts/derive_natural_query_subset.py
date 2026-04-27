@@ -7,8 +7,8 @@ book-title signal.
 
 Usage:
     python scripts/derive_natural_query_subset.py
-    python scripts/derive_natural_query_subset.py --input .jbeval/datasets/rag_doc_gold.jsonl
-    python scripts/derive_natural_query_subset.py --output .jbeval/datasets/rag_doc_gold_natural_v1.jsonl
+    python scripts/derive_natural_query_subset.py --input eval/datasets/rag_doc_gold.jsonl
+    python scripts/derive_natural_query_subset.py --output eval/datasets/rag_doc_gold_natural_v1.jsonl
 """
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_INPUT = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_doc_gold.jsonl"
-DEFAULT_OUTPUT = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_doc_gold_natural_v1.jsonl"
+DEFAULT_INPUT = PROJECT_ROOT / "eval" / "datasets" / "rag_doc_gold.jsonl"
+DEFAULT_OUTPUT = PROJECT_ROOT / "eval" / "datasets" / "rag_doc_gold_natural_v1.jsonl"
 
 _BOOK_TITLE_RE = re.compile(r"《[^》]+》中[，,]?\s*")
 _HEADING_PREFIX_RE = re.compile(r"^(如何|怎么|怎样|方法|步骤|操作|配置|设置|查看|修改|删除|添加|开启|关闭|恢复|登录|退出|重启|升级|备份|恢复|安装|卸载|连接|断开|启用|禁用|检查|测试|验证|调试|排查|解决|处理|清理|更新|调整|切换|绑定|解绑|注册|注销|下载|上传|导入|导出|保存|打印|分享|搜索|过滤|排序|分组|统计|分析|监控|告警|通知|授权|认证|加密|解密|签名|验签)\s*")

@@ -1936,7 +1936,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset", type=Path, default=None)
     parser.add_argument("--dataset-profile", choices=["frozen", "gold", "smoke", "natural", "custom"], default="frozen")
     parser.add_argument("--documents-dir", type=Path, default=DEFAULT_CANONICAL_CORPUS)
-    parser.add_argument("--output-root", type=Path, default=PROJECT_ROOT / ".jbeval" / "reports")
+    parser.add_argument("--output-root", type=Path, default=PROJECT_ROOT / "eval" / "reports")
     parser.add_argument("--run-id", default=f"rag-matrix-{datetime.now().strftime('%Y%m%d-%H%M')}")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--top-k", type=int, default=5)

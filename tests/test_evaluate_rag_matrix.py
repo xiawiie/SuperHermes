@@ -557,7 +557,7 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
             "Args",
             (),
             {
-                "dataset": PROJECT_ROOT / ".jbeval" / "datasets" / "rag_doc_gold.jsonl",
+                "dataset": PROJECT_ROOT / "eval" / "datasets" / "rag_doc_gold.jsonl",
                 "documents_dir": PROJECT_ROOT.parent / "doc",
                 "top_k": 5,
                 "mode": "retrieval",

@@ -14,7 +14,6 @@ class RagObservabilityTests(unittest.TestCase):
         docs = [{"text": "d1", "filename": "manual.pdf", "chunk_id": "c1", "score": 0.9}]
 
         with (
-            patch.object(rag_utils, "RERANK_PROVIDER", "api"),
             patch.object(rag_utils, "RERANK_MODEL", ""),
             patch.object(rag_utils._embedding_service, "get_embeddings", return_value=[[0.1, 0.2]]),
             patch.object(rag_utils._embedding_service, "get_sparse_embedding", return_value={1: 0.5}),
@@ -38,7 +37,6 @@ class RagObservabilityTests(unittest.TestCase):
         docs = [{"text": "d1", "filename": "manual.pdf", "chunk_id": "c1", "score": 0.9}]
 
         with (
-            patch.object(rag_utils, "RERANK_PROVIDER", "api"),
             patch.object(rag_utils, "RERANK_MODEL", ""),
             patch.object(rag_utils._embedding_service, "get_embeddings", return_value=[[0.1, 0.2]]),
             patch.object(rag_utils._embedding_service, "get_sparse_embedding", return_value={1: 0.5}),
