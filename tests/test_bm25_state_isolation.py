@@ -15,32 +15,23 @@ class TestBM25StateIsolation:
 
     def test_different_collection_different_path(self):
         """Verify that changing MILVUS_COLLECTION changes new service state paths."""
+        from unittest.mock import patch
         from backend.infra.embedding import EmbeddingService
 
-        old_collection = os.environ.get("MILVUS_COLLECTION")
-        old_text_mode = os.environ.get("EVAL_RETRIEVAL_TEXT_MODE")
         old_state_path = os.environ.pop("BM25_STATE_PATH", None)
         try:
-            os.environ["MILVUS_COLLECTION"] = "collection_a"
-            os.environ["EVAL_RETRIEVAL_TEXT_MODE"] = "title_context"
-            svc_a = EmbeddingService()
+            with patch("backend.infra.embedding.MILVUS_COLLECTION", "collection_a"), \
+                 patch("backend.infra.embedding.EVAL_RETRIEVAL_TEXT_MODE", "title_context"):
+                svc_a = EmbeddingService()
 
-            os.environ["MILVUS_COLLECTION"] = "collection_b"
-            os.environ["EVAL_RETRIEVAL_TEXT_MODE"] = "title_context_filename"
-            svc_b = EmbeddingService()
+            with patch("backend.infra.embedding.MILVUS_COLLECTION", "collection_b"), \
+                 patch("backend.infra.embedding.EVAL_RETRIEVAL_TEXT_MODE", "title_context_filename"):
+                svc_b = EmbeddingService()
 
             assert svc_a._state_path.name == "bm25_state_collection_a_title_context.json"
             assert svc_b._state_path.name == "bm25_state_collection_b_title_context_filename.json"
             assert svc_a._state_path != svc_b._state_path
         finally:
-            if old_collection is not None:
-                os.environ["MILVUS_COLLECTION"] = old_collection
-            else:
-                os.environ.pop("MILVUS_COLLECTION", None)
-            if old_text_mode is not None:
-                os.environ["EVAL_RETRIEVAL_TEXT_MODE"] = old_text_mode
-            else:
-                os.environ.pop("EVAL_RETRIEVAL_TEXT_MODE", None)
             if old_state_path is not None:
                 os.environ["BM25_STATE_PATH"] = old_state_path
 

@@ -63,7 +63,6 @@ LEGACY_MODULES = [
     "rag_trace",
     "rag_types",
     "rag_utils",
-    "schemas",
     "tools",
 ]
 

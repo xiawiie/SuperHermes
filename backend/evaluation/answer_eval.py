@@ -1,23 +1,27 @@
 from __future__ import annotations
 
-import os
 import re
 import time
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 
+from backend.config import (
+    ARK_API_KEY,
+    OPENAI_API_KEY,
+    BASE_URL,
+    MODEL,
+    FAST_MODEL,
+    GRADE_MODEL,
+    ANSWER_EVAL_GENERATION_MODEL,
+    ANSWER_EVAL_JUDGE_MODEL,
+)
 from backend.shared.json_utils import extract_json_object
 
-
-load_dotenv()
-
-API_KEY = os.getenv("ARK_API_KEY") or os.getenv("OPENAI_API_KEY")
-BASE_URL = os.getenv("BASE_URL") or os.getenv("OPENAI_BASE_URL")
-ANSWER_MODEL = os.getenv("ANSWER_EVAL_GENERATION_MODEL") or os.getenv("MODEL")
-JUDGE_MODEL = os.getenv("ANSWER_EVAL_JUDGE_MODEL") or os.getenv("FAST_MODEL") or os.getenv("GRADE_MODEL") or os.getenv("MODEL")
+API_KEY = ARK_API_KEY or OPENAI_API_KEY
+ANSWER_MODEL = ANSWER_EVAL_GENERATION_MODEL or MODEL
+JUDGE_MODEL = ANSWER_EVAL_JUDGE_MODEL or FAST_MODEL or GRADE_MODEL or MODEL
 
 _answer_model = None
 _judge_model = None

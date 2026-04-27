@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List
 
+from backend.config import EVAL_RETRIEVAL_TEXT_MODE
+
 
 @dataclass
 class _SplitDocument:
@@ -100,7 +102,7 @@ class DocumentLoader:
     )
 
     def __init__(self, chunk_size: int = 500, chunk_overlap: int = 50):
-        self.retrieval_text_mode = os.getenv("EVAL_RETRIEVAL_TEXT_MODE", "title_context").strip().lower()
+        self.retrieval_text_mode = EVAL_RETRIEVAL_TEXT_MODE.strip().lower()
         self._root_splitter = RecursiveCharacterTextSplitter(
             chunk_size=max(1200, chunk_size * 2),
             chunk_overlap=max(240, chunk_overlap * 2),
