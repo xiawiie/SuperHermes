@@ -534,8 +534,8 @@ def _get_local_reranker():
         return None
     if _local_reranker is None:
         from sentence_transformers import CrossEncoder
-        # GPU-only mode: force CUDA device
-        _local_reranker = CrossEncoder(RERANK_MODEL, device="cuda")
+        # GPU-only mode: force CUDA device with FP16 for faster inference
+        _local_reranker = CrossEncoder(RERANK_MODEL, device="cuda", model_kwargs={"torch_dtype": "float16"})
     return _local_reranker
 
 
