@@ -9,13 +9,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
-
-load_dotenv()
+from backend.config import MILVUS_COLLECTION, EVAL_RETRIEVAL_TEXT_MODE
 
 def _default_state_path() -> Path:
-    collection = os.getenv("MILVUS_COLLECTION", "embeddings_collection")
-    text_mode = os.getenv("EVAL_RETRIEVAL_TEXT_MODE", "title_context")
+    collection = MILVUS_COLLECTION
+    text_mode = EVAL_RETRIEVAL_TEXT_MODE
     return Path(__file__).resolve().parent.parent / "data" / f"bm25_state_{collection}_{text_mode}.json"
 
 

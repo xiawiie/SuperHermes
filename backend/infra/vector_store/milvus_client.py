@@ -6,11 +6,8 @@ import os
 import time
 from typing import Any, Callable
 
-from dotenv import load_dotenv
-
+from backend.config import MILVUS_COLLECTION
 from backend.infra.cache import cache
-
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +62,7 @@ class MilvusManager:
     def __init__(self) -> None:
         self.host = os.getenv("MILVUS_HOST", "localhost")
         self.port = os.getenv("MILVUS_PORT", "19530")
-        self.collection_name = os.getenv("MILVUS_COLLECTION", "embeddings_collection")
+        self.collection_name = MILVUS_COLLECTION
         self.uri = os.getenv("MILVUS_URI", f"http://{self.host}:{self.port}")
 
     def _new_client(self) -> MilvusClient:

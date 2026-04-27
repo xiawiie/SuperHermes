@@ -7,29 +7,29 @@ from __future__ import annotations
 class TestFallbackDisabledRouting:
     def test_fallback_bool_parser_requires_explicit_true(self, monkeypatch):
         """Fallback should only enable when explicitly set to true."""
-        import backend.rag.pipeline as rag_pipeline
+        from backend.config import env_bool
 
         monkeypatch.delenv("RAG_FALLBACK_ENABLED", raising=False)
-        assert rag_pipeline._env_bool("RAG_FALLBACK_ENABLED", False) is False
+        assert env_bool("RAG_FALLBACK_ENABLED", False) is False
 
         monkeypatch.setenv("RAG_FALLBACK_ENABLED", "1")
-        assert rag_pipeline._env_bool("RAG_FALLBACK_ENABLED", False) is False
+        assert env_bool("RAG_FALLBACK_ENABLED", False) is False
 
         monkeypatch.setenv("RAG_FALLBACK_ENABLED", "true")
-        assert rag_pipeline._env_bool("RAG_FALLBACK_ENABLED", False) is True
+        assert env_bool("RAG_FALLBACK_ENABLED", False) is True
 
     def test_confidence_gate_bool_parser_requires_explicit_true(self, monkeypatch):
         """Confidence gate should only enable when explicitly set to true."""
-        import backend.rag.utils as rag_utils
+        from backend.config import env_bool
 
         monkeypatch.delenv("CONFIDENCE_GATE_ENABLED", raising=False)
-        assert rag_utils._env_bool("CONFIDENCE_GATE_ENABLED", False) is False
+        assert env_bool("CONFIDENCE_GATE_ENABLED", False) is False
 
         monkeypatch.setenv("CONFIDENCE_GATE_ENABLED", "yes")
-        assert rag_utils._env_bool("CONFIDENCE_GATE_ENABLED", False) is False
+        assert env_bool("CONFIDENCE_GATE_ENABLED", False) is False
 
         monkeypatch.setenv("CONFIDENCE_GATE_ENABLED", "true")
-        assert rag_utils._env_bool("CONFIDENCE_GATE_ENABLED", False) is True
+        assert env_bool("CONFIDENCE_GATE_ENABLED", False) is True
 
     def test_grade_documents_short_circuit_when_disabled(self, monkeypatch):
         """When RAG_FALLBACK_ENABLED=False, grader should short-circuit."""

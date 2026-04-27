@@ -6,7 +6,6 @@ import hashlib
 import re
 import time
 import requests
-from dotenv import load_dotenv
 
 from backend.infra.cache import cache
 from backend.shared.json_utils import extract_json_object
@@ -48,19 +47,12 @@ from backend.rag.retrieval import (
 )
 from backend.rag.trace import candidate_identity, trace_text_hash
 from backend.rag.types import StageError
-
-load_dotenv()
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() == "true"
-
-ARK_API_KEY = os.getenv("ARK_API_KEY")
-MODEL = os.getenv("MODEL")
-BASE_URL = os.getenv("BASE_URL")
+from backend.config import (
+    ARK_API_KEY,
+    BASE_URL,
+    MODEL,
+    env_bool as _env_bool,
+)
 RERANK_MODEL = os.getenv("RERANK_MODEL")
 RERANK_BINDING_HOST = os.getenv("RERANK_BINDING_HOST")
 RERANK_API_KEY = os.getenv("RERANK_API_KEY")
@@ -201,6 +193,8 @@ def _finish_retrieval_pipeline(
     query_plan: QueryPlan | None = None,
     context_files: list[str] | None = None,
     base_filter: str | None = None,
+    retrieval_mode: str = "hybrid",
+    hybrid_error: str | None = None,
 ) -> Dict[str, Any]:
     """Complete the retrieval pipeline: rerank -> structure_rerank -> confidence_gate."""
     current_stage = "rerank"
@@ -222,7 +216,7 @@ def _finish_retrieval_pipeline(
         timings["confidence_ms"] = _elapsed_ms(stage_start)
         timings["total_retrieve_ms"] = _elapsed_ms(total_start)
 
-        rerank_meta["retrieval_mode"] = "hybrid_scoped" if (extra_trace and extra_trace.get("scope_filter_applied")) else "hybrid"
+        rerank_meta["retrieval_mode"] = retrieval_mode
         rerank_meta["candidate_k"] = candidate_k
         rerank_meta["candidate_count_before_rerank"] = len(retrieved)
         rerank_meta["candidate_count_after_rerank"] = len(reranked)
@@ -233,7 +227,7 @@ def _finish_retrieval_pipeline(
         rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
         rerank_meta["index_profile"] = RAG_INDEX_PROFILE
         rerank_meta["context_files"] = context_files or []
-        rerank_meta["hybrid_error"] = None
+        rerank_meta["hybrid_error"] = hybrid_error
         rerank_meta["dense_error"] = None
         rerank_meta["timings"] = dict(_ensure_retrieve_timing_defaults(timings))
         rerank_meta["stage_errors"] = stage_errors
@@ -260,7 +254,7 @@ def _finish_retrieval_pipeline(
                 "rerank_model": RERANK_MODEL,
                 "rerank_endpoint": _get_rerank_endpoint(),
                 "rerank_error": str(exc),
-                "hybrid_error": None,
+                "hybrid_error": hybrid_error,
                 "dense_error": None,
                 "retrieval_mode": "failed",
                 "candidate_k": candidate_k,
@@ -931,6 +925,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
             )
 
         # Continue with rerank + structure_rerank + confidence
+        scope_mode = "hybrid_scoped" if scope_trace.get("scope_filter_applied") else "hybrid"
         return _finish_retrieval_pipeline(
             query=query,
             search_query=search_query,
@@ -944,6 +939,7 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
             query_plan=query_plan,
             context_files=context_files,
             base_filter=base_filter,
+            retrieval_mode=scope_mode,
         )
 
     # --- Standard (non-scoped) retrieval path ---
@@ -995,45 +991,14 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
             global_trace["filename_boost_applied"] = boosted_count > 0
             global_trace["filename_boosted_candidate_count"] = boosted_count
 
-        current_stage = "rerank"
-        stage_start = time.perf_counter()
-        reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=top_k)
-        timings["rerank_ms"] = _elapsed_ms(stage_start)
-        if rerank_meta.get("rerank_error"):
-            stage_errors.append(_stage_error("rerank", str(rerank_meta.get("rerank_error")), "ranked_candidates"))
-
-        current_stage = "structure_rerank"
-        stage_start = time.perf_counter()
-        reranked_docs, structure_meta = _apply_structure_rerank(docs=reranked, top_k=top_k)
-        timings["structure_rerank_ms"] = _elapsed_ms(stage_start)
-
-        current_stage = "confidence_gate"
-        stage_start = time.perf_counter()
-        confidence_meta = _evaluate_retrieval_confidence(query=query, docs=reranked_docs)
-        timings["confidence_ms"] = _elapsed_ms(stage_start)
-        timings["total_retrieve_ms"] = _elapsed_ms(total_start)
-        rerank_meta["retrieval_mode"] = "hybrid_boosted" if global_trace.get("filename_boost_applied") else "hybrid"
-        rerank_meta["candidate_k"] = candidate_k
-        rerank_meta["candidate_count_before_rerank"] = len(retrieved)
-        rerank_meta["candidate_count_after_rerank"] = len(reranked)
-        rerank_meta["candidate_count_after_structure_rerank"] = len(reranked_docs)
-        rerank_meta["milvus_search_ef"] = MILVUS_SEARCH_EF
-        rerank_meta["milvus_sparse_drop_ratio"] = MILVUS_SPARSE_DROP_RATIO
-        rerank_meta["milvus_rrf_k"] = MILVUS_RRF_K
-        rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
-        rerank_meta["index_profile"] = RAG_INDEX_PROFILE
-        rerank_meta["context_files"] = context_files or []
-        rerank_meta["hybrid_error"] = None
-        rerank_meta["dense_error"] = None
-        rerank_meta["timings"] = dict(_ensure_retrieve_timing_defaults(timings))
-        rerank_meta["stage_errors"] = stage_errors
-        rerank_meta.update(structure_meta)
-        rerank_meta.update(confidence_meta)
-        rerank_meta["candidates_before_rerank"] = _candidate_trace(retrieved)
-        rerank_meta["candidates_after_rerank"] = _candidate_trace(reranked)
-        rerank_meta["candidates_after_structure_rerank"] = _candidate_trace(reranked_docs)
-        rerank_meta.update(global_trace)
-        return {"docs": reranked_docs, "meta": rerank_meta}
+        retrieval_mode = "hybrid_boosted" if global_trace.get("filename_boost_applied") else "hybrid"
+        return _finish_retrieval_pipeline(
+            query, search_query, retrieved, top_k,
+            candidate_k, timings, stage_errors, total_start,
+            extra_trace=global_trace,
+            context_files=context_files,
+            retrieval_mode=retrieval_mode,
+        )
     except Exception as exc:
         hybrid_error = str(exc)
         stage_errors.append(_stage_error(current_stage, hybrid_error, "dense_retrieve"))
@@ -1064,47 +1029,15 @@ def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | No
                 global_trace["filename_boost_applied"] = boosted_count > 0
                 global_trace["filename_boosted_candidate_count"] = boosted_count
 
-            current_stage = "rerank"
-            stage_start = time.perf_counter()
-            reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=top_k)
-            timings["rerank_ms"] = _elapsed_ms(stage_start)
-            if rerank_meta.get("rerank_error"):
-                stage_errors.append(_stage_error("rerank", str(rerank_meta.get("rerank_error")), "ranked_candidates"))
-
-            current_stage = "structure_rerank"
-            stage_start = time.perf_counter()
-            reranked_docs, structure_meta = _apply_structure_rerank(docs=reranked, top_k=top_k)
-            timings["structure_rerank_ms"] = _elapsed_ms(stage_start)
-
-            current_stage = "confidence_gate"
-            stage_start = time.perf_counter()
-            confidence_meta = _evaluate_retrieval_confidence(query=query, docs=reranked_docs)
-            timings["confidence_ms"] = _elapsed_ms(stage_start)
-            timings["total_retrieve_ms"] = _elapsed_ms(total_start)
-            rerank_meta["retrieval_mode"] = (
-                "dense_fallback_boosted" if global_trace.get("filename_boost_applied") else "dense_fallback"
+            retrieval_mode = "dense_fallback_boosted" if global_trace.get("filename_boost_applied") else "dense_fallback"
+            return _finish_retrieval_pipeline(
+                query, search_query, retrieved, top_k,
+                candidate_k, timings, stage_errors, total_start,
+                extra_trace=global_trace,
+                context_files=context_files,
+                retrieval_mode=retrieval_mode,
+                hybrid_error=hybrid_error,
             )
-            rerank_meta["candidate_k"] = candidate_k
-            rerank_meta["candidate_count_before_rerank"] = len(retrieved)
-            rerank_meta["candidate_count_after_rerank"] = len(reranked)
-            rerank_meta["candidate_count_after_structure_rerank"] = len(reranked_docs)
-            rerank_meta["milvus_search_ef"] = MILVUS_SEARCH_EF
-            rerank_meta["milvus_sparse_drop_ratio"] = MILVUS_SPARSE_DROP_RATIO
-            rerank_meta["milvus_rrf_k"] = MILVUS_RRF_K
-            rerank_meta["leaf_retrieve_level"] = LEAF_RETRIEVE_LEVEL
-            rerank_meta["index_profile"] = RAG_INDEX_PROFILE
-            rerank_meta["context_files"] = context_files or []
-            rerank_meta["hybrid_error"] = hybrid_error
-            rerank_meta["dense_error"] = None
-            rerank_meta["timings"] = dict(_ensure_retrieve_timing_defaults(timings))
-            rerank_meta["stage_errors"] = stage_errors
-            rerank_meta.update(structure_meta)
-            rerank_meta.update(confidence_meta)
-            rerank_meta["candidates_before_rerank"] = _candidate_trace(retrieved)
-            rerank_meta["candidates_after_rerank"] = _candidate_trace(reranked)
-            rerank_meta["candidates_after_structure_rerank"] = _candidate_trace(reranked_docs)
-            rerank_meta.update(global_trace)
-            return {"docs": reranked_docs, "meta": rerank_meta}
         except Exception as dense_exc:
             dense_error = str(dense_exc)
             stage_errors.append(_stage_error(current_stage, dense_error))

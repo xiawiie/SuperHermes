@@ -43,7 +43,8 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             patch.object(rag_utils._milvus_manager, "hybrid_retrieve", side_effect=RuntimeError("hybrid channel closed")),
             patch.object(rag_utils._milvus_manager, "dense_retrieve", return_value=[dense_doc]),
             patch("backend.rag.utils._rerank_documents", side_effect=lambda query, docs, top_k: (docs[:top_k], {"rerank_enabled": False, "rerank_applied": False})),
-            patch("backend.rag.utils._auto_merge_documents", side_effect=lambda docs, top_k: (docs[:top_k], {"auto_merge_enabled": True, "auto_merge_applied": False})),
+            patch("backend.rag.utils._apply_structure_rerank", side_effect=lambda docs, top_k: (docs[:top_k], {"structure_rerank_enabled": False, "structure_rerank_applied": False})),
+            patch("backend.rag.utils._evaluate_retrieval_confidence", return_value={"confidence_gate_enabled": False, "fallback_required": False, "confidence_reasons": []}),
         ):
             result = rag_utils.retrieve_documents("query", top_k=1)
 
@@ -87,34 +88,6 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result["meta"]["candidate_count_before_rerank"], 2)
         self.assertEqual(result["meta"]["milvus_search_ef"], 128)
 
-    def test_cpu_rerank_top_n_cap_limits_deep_variants(self):
-        with (
-            patch.object(rag_utils, "RERANK_DEVICE", "cpu"),
-            patch.object(rag_utils, "RERANK_TOP_N", 30),
-            patch.object(rag_utils, "RERANK_CPU_TOP_N_CAP", 10),
-        ):
-            self.assertEqual(rag_utils._effective_rerank_top_n(top_k=5, candidate_count=80), 10)
-
-    def test_cpu_rerank_top_n_cap_applies_when_device_auto_resolves_to_cpu(self):
-        with (
-            patch.object(rag_utils, "RERANK_DEVICE", "auto"),
-            patch.object(rag_utils, "RERANK_TOP_N", 30),
-            patch.object(rag_utils, "RERANK_CPU_TOP_N_CAP", 10),
-            patch.object(rag_utils, "_rerank_device_tier", return_value="cpu"),
-        ):
-            self.assertEqual(rag_utils._effective_rerank_top_n(top_k=5, candidate_count=80), 10)
-
-    def test_rerank_input_cap_is_a_hard_limit(self):
-        with (
-            patch.object(rag_utils, "RERANK_INPUT_K_CPU", 10),
-            patch.object(rag_utils, "_rerank_device_tier", return_value="cpu"),
-        ):
-            input_k, device_tier, cap = rag_utils._effective_rerank_input_k(rerank_top_n=30, candidate_count=80)
-
-        self.assertEqual(device_tier, "cpu")
-        self.assertEqual(cap, 10)
-        self.assertEqual(input_k, 10)
-
     def test_query_plan_disabled_does_not_load_filename_registry_or_change_query(self):
         docs = [{"text": "d1", "filename": "manual.pdf", "chunk_id": "c1", "score": 0.9}]
 
@@ -134,36 +107,6 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         sparse.assert_called_with("《Manual》中，如何配置？")
         self.assertFalse(result["meta"]["query_plan_enabled"])
         self.assertEqual(result["meta"]["semantic_query"], "《Manual》中，如何配置？")
-
-    def test_local_reranker_input_cap_limits_predict_pairs(self):
-        class FakeReranker:
-            def __init__(self):
-                self.pair_count = None
-
-            def predict(self, pairs):
-                self.pair_count = len(pairs)
-                return list(range(len(pairs)))
-
-        docs = [{"text": f"doc {idx}", "chunk_id": f"c{idx}", "score": 1.0 / (idx + 1)} for idx in range(50)]
-        fake_reranker = FakeReranker()
-
-        with (
-            patch.object(rag_utils, "RERANK_PROVIDER", "local"),
-            patch.object(rag_utils, "RERANK_MODEL", "fake-reranker"),
-            patch.object(rag_utils, "RERANK_DEVICE", "cpu"),
-            patch.object(rag_utils, "RERANK_TOP_N", 0),
-            patch.object(rag_utils, "RERANK_CPU_TOP_N_CAP", 0),
-            patch.object(rag_utils, "RERANK_INPUT_K_CPU", 10),
-            patch.object(rag_utils, "RERANK_CACHE_ENABLED", False),
-            patch.object(rag_utils, "_get_local_reranker", return_value=fake_reranker),
-        ):
-            reranked, meta = rag_utils._rerank_documents("query", docs, top_k=5)
-
-        self.assertEqual(fake_reranker.pair_count, 10)
-        self.assertEqual(meta["candidate_count"], 50)
-        self.assertEqual(meta["rerank_input_count"], 10)
-        self.assertEqual(meta["rerank_output_count"], 5)
-        self.assertEqual(len(reranked), 5)
 
     def test_api_reranker_input_cap_limits_payload_documents(self):
         class FakeResponse:

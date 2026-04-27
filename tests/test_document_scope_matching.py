@@ -120,7 +120,7 @@ class TestFilenameRegistryCache:
         query_plan._registry_cache.clear()
 
     def test_registry_uses_process_cache_and_index_version(self, monkeypatch):
-        monkeypatch.setenv("MILVUS_COLLECTION", "collection_a")
+        monkeypatch.setattr("backend.rag.query_plan.MILVUS_COLLECTION", "collection_a")
         fake_cache = FakeRegistryCache(version="7")
         manager = FakeMilvusManager()
 
@@ -137,7 +137,7 @@ class TestFilenameRegistryCache:
         assert manager.calls == 2
 
     def test_registry_reads_redis_cache_before_milvus(self, monkeypatch):
-        monkeypatch.setenv("MILVUS_COLLECTION", "collection_b")
+        monkeypatch.setattr("backend.rag.query_plan.MILVUS_COLLECTION", "collection_b")
         fake_cache = FakeRegistryCache(version="3")
         fake_cache.json_values["filename_registry:collection_b:v3"] = [
             {"raw": "Cached.pdf", "normalized": "cached"},

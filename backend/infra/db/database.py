@@ -1,13 +1,11 @@
 import os
 import logging
 from pathlib import Path
-from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-load_dotenv()
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent

@@ -19,6 +19,7 @@ from typing import Any, Literal
 
 import jieba
 
+from backend.config import MILVUS_COLLECTION
 from backend.shared.filename_normalization import normalize_filename_for_match
 
 logger = logging.getLogger(__name__)
@@ -190,7 +191,7 @@ def _store_registry_in_redis(
 
 def get_filename_registry(milvus_manager: Any, cache_client: Any = None) -> list[dict[str, str]]:
     """Get or refresh the filename registry from Milvus (with Redis caching)."""
-    collection = os.getenv("MILVUS_COLLECTION", "embeddings_collection")
+    collection = MILVUS_COLLECTION
     index_version = _index_version_from_cache(cache_client)
     cache_key = _registry_cache_key(collection, index_version)
     now = time.time()

@@ -2,34 +2,27 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Callable, Literal, TypedDict, List, Optional
 import os
 import time
-from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
 
+from backend.config import (
+    ARK_API_KEY as API_KEY,
+    BASE_URL,
+    FAST_MODEL,
+    GRADE_MODEL,
+    MODEL,
+    env_bool,
+)
 from backend.rag.utils import retrieve_context_documents, retrieve_documents, step_back_expand, generate_hypothetical_document, elapsed_ms
 from backend.rag.retrieval import dedupe_docs
 from backend.chat.tools import emit_rag_step
 
-load_dotenv()
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() == "true"
-
-API_KEY = os.getenv("ARK_API_KEY")
-MODEL = os.getenv("MODEL")
-BASE_URL = os.getenv("BASE_URL")
-GRADE_MODEL = os.getenv("GRADE_MODEL", "gpt-4.1")
 RAG_FALLBACK_TIMEOUT_SECONDS = float(os.getenv("RAG_FALLBACK_TIMEOUT_SECONDS", "6"))
 RAG_FALLBACK_WORKERS = int(os.getenv("RAG_FALLBACK_WORKERS", "4"))
-RAG_FALLBACK_ENABLED = _env_bool("RAG_FALLBACK_ENABLED", False)
-RAG_FALLBACK_USE_FAST_MODEL = _env_bool("RAG_FALLBACK_USE_FAST_MODEL", True)
+RAG_FALLBACK_ENABLED = env_bool("RAG_FALLBACK_ENABLED", False)
+RAG_FALLBACK_USE_FAST_MODEL = env_bool("RAG_FALLBACK_USE_FAST_MODEL", True)
 
-FAST_MODEL = os.getenv("FAST_MODEL")
 FAST_MODEL_ENABLED = RAG_FALLBACK_USE_FAST_MODEL and bool(FAST_MODEL) and FAST_MODEL != MODEL
 
 _grader_model = None

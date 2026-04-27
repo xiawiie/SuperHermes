@@ -1,9 +1,8 @@
-from dotenv import load_dotenv
-import os
 import json
 import asyncio
 import threading
 from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk, SystemMessage
+from backend.config import ARK_API_KEY as API_KEY, MODEL, BASE_URL
 from backend.infra.db.conversation_storage import ConversationStorage
 from backend.chat.tools import (
     get_current_weather,
@@ -13,12 +12,6 @@ from backend.chat.tools import (
     set_rag_context_files,
     set_rag_step_queue,
 )
-
-load_dotenv()
-
-API_KEY = os.getenv("ARK_API_KEY")
-MODEL = os.getenv("MODEL")
-BASE_URL = os.getenv("BASE_URL")
 _agent_lock = threading.Lock()
 agent = None
 model = None

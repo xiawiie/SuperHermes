@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from backend.security.auth import get_current_user
 from backend.infra.db.models import User
 from backend.contracts.schemas import ChatRequest, ChatResponse
-from backend.services.chat_service import run_chat, run_chat_stream
+from backend.chat.agent import chat_with_agent as run_chat, chat_with_agent_stream as run_chat_stream
 
 router = APIRouter()
 

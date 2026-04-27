@@ -46,7 +46,7 @@ class DocumentLoaderRetrievalTextTests(unittest.TestCase):
         self.assertEqual(text, "这里是正文内容。")
 
     def test_raw_retrieval_text_mode_keeps_raw_text(self):
-        with patch.dict("os.environ", {"EVAL_RETRIEVAL_TEXT_MODE": "raw"}):
+        with patch("backend.documents.loader.EVAL_RETRIEVAL_TEXT_MODE", "raw"):
             loader = DocumentLoader()
 
         text = loader._make_retrieval_text(
@@ -59,7 +59,7 @@ class DocumentLoaderRetrievalTextTests(unittest.TestCase):
         self.assertEqual(text, "原始正文")
 
     def test_title_context_filename_includes_metadata_prefix(self):
-        with patch.dict("os.environ", {"EVAL_RETRIEVAL_TEXT_MODE": "title_context_filename"}):
+        with patch("backend.documents.loader.EVAL_RETRIEVAL_TEXT_MODE", "title_context_filename"):
             loader = DocumentLoader()
 
         text = loader._make_retrieval_text(
@@ -79,7 +79,7 @@ class DocumentLoaderRetrievalTextTests(unittest.TestCase):
         self.assertLessEqual(len(text), 4000)
 
     def test_title_context_filename_truncates_to_milvus_limit(self):
-        with patch.dict("os.environ", {"EVAL_RETRIEVAL_TEXT_MODE": "title_context_filename"}):
+        with patch("backend.documents.loader.EVAL_RETRIEVAL_TEXT_MODE", "title_context_filename"):
             loader = DocumentLoader()
 
         text = loader._make_retrieval_text(
