@@ -105,6 +105,11 @@ Design consequence:
 5. The Agent must not repeatedly call `search_knowledge_base` in one turn.
 6. Production module names should not carry generation labels like `pipeline_v2`, `confidence_v2`, or `classifier_v4`.
 7. Candidate compression cannot become default unless full gold evaluation passes.
+8. Mode prediction is not enough; feature extraction must be evaluated separately.
+9. Deep active execution must stay off until rule-only Deep, citation verification, and security constraints pass.
+10. Every sub-retrieval must inherit the same user permission, context-file, and filter envelope.
+11. Retrieved text is untrusted evidence, never instructions for the synthesizer or Agent.
+12. Production trace must not persist uncapped document text or sensitive storage paths.
 
 ### Configuration And Rollout Controls
 
@@ -117,17 +122,24 @@ All routing changes are controlled by explicit flags. Defaults preserve current 
 | `RAG_FAST_ENABLED` | `false` | Allow FAST execution after classifier gates pass. |
 | `RAG_DEEP_MODE_ENABLED` | `false` | Allow Deep controller execution from the chat tool. |
 | `RAG_DEEP_SUGGEST_ONLY` | `true` | Return `suggested_mode="DEEP"` instead of executing Deep automatically. |
+| `RAG_DEEP_LLM_PLANNER_ENABLED` | `false` | Allow capped LLM planner fallback after rule-only Deep coverage gaps are measured. |
+| `RAG_DEEP_CITATION_VERIFIER_ENABLED` | `true` | Enforce post-synthesis citation and coverage checks before returning a Deep answer. |
 | `RAG_FALLBACK_ENABLED` | `false` | Keep or enable the existing LangGraph LLM fallback path during parity checks. |
 | `RAG_MODE_TRACE_VERBOSE` | `false` | Include full features and per-rule scoring in trace for eval/debug runs. |
+| `RAG_TRACE_RETENTION_PROFILE` | `prod` | Controls whether traces store previews only or full debug evidence. |
 
 Rollout order:
 
 1. Enable `RAG_MODE_SHADOW_ENABLED` only.
 2. Add classifier eval coverage and inspect trace mismatches.
-3. Enable `RAG_MODE_ROUTING_ENABLED` for STANDARD-equivalent plans only.
-4. Enable `RAG_FAST_ENABLED` after FAST false-positive gates pass.
-5. Enable `RAG_DEEP_MODE_ENABLED` with `RAG_DEEP_SUGGEST_ONLY=true`.
-6. Disable suggest-only only after Deep answer/citation evaluation passes.
+3. Add structured confidence meta without changing retrieval behavior.
+4. Enable `RAG_MODE_ROUTING_ENABLED` for STANDARD-equivalent plans only.
+5. Enable `RAG_FAST_ENABLED` for narrow scoped facts after FAST false-positive and latency gates pass.
+6. Enable Deep suggest-only with `RAG_DEEP_MODE_ENABLED=true` and `RAG_DEEP_SUGGEST_ONLY=true`.
+7. Add rule-only Deep controller; keep `RAG_DEEP_LLM_PLANNER_ENABLED=false`.
+8. Add Deep synthesis plus citation verifier; return partial/refusal when verifier fails.
+9. Disable suggest-only only after Deep answer, citation, ACL, and trace-retention gates pass.
+10. Consider LLM planner fallback only after rule-only Deep coverage gaps are measured.
 
 ---
 
@@ -300,6 +312,12 @@ Each row should be a compact, hand-labeled routing example:
   "expected_mode": "DEEP",
   "complexity_label": "compare",
   "must_not_fast": true,
+  "expected_features": {
+    "entity_count": 2,
+    "has_compare_intent": true,
+    "has_exhaustive_intent": false,
+    "question_type": "compare"
+  },
   "notes": "Two entities and compare intent require non-FAST routing."
 }
 ```
@@ -327,6 +345,21 @@ Classifier reports must include:
 - DEEP trigger rate
 - examples where `mode_reason` disagrees with the label rationale
 - top 10 highest-risk mismatches with features and scores
+
+Feature extraction reports must include per-feature precision, recall, and mismatch examples for:
+
+- `entity_count`
+- `has_precise_scope`
+- `has_single_file_match`
+- `has_anchor`
+- `has_compare_intent`
+- `has_exhaustive_intent`
+- `has_temporal_evolution_intent`
+- `has_negation`
+- `is_context_reference`
+- `question_type`
+
+Mode activation is blocked if the mode result looks correct only because scoring compensates for wrong features. The report must identify whether each mismatch came from feature extraction, scoring thresholds, or label ambiguity.
 
 ### 1.7 Typical Routing Examples
 
@@ -376,6 +409,20 @@ Initial plans:
 | STANDARD | Quality-first baseline using current V3Q FP16 behavior. No aggressive L1/CE compression by default. |
 | DEEP | Not used directly for sub-retrieval. Deep controller runs STANDARD subqueries with `allow_deep=False`. |
 
+FAST latency budget:
+
+| Stage | Target |
+| --- | ---: |
+| QueryPlan + mode classifier | <20 ms |
+| dense + sparse embedding | <80 ms |
+| Milvus dense/sparse retrieval | <150 ms |
+| candidate fusion and filtering | <30 ms |
+| CrossEncoder rerank | <250 ms |
+| confidence + formatting | <50 ms |
+| total | <600 ms |
+
+The initial FAST release is allowed to be a narrower quality-preserving path with partial latency improvement. It must not claim the `<600 ms` target until the stage budget is measured on representative hardware.
+
 ### 2.2 Capability Matrix
 
 | Capability | FAST | STANDARD | DEEP |
@@ -423,6 +470,10 @@ New meta fields:
 - `mode_initial`
 - `mode_final`
 - `mode_reason`
+- `routing_mode`
+- `execution_mode`
+- `deep_executed`
+- `upgrade_reason`
 - `fast_score`
 - `deep_score`
 - `retrieval_plan`
@@ -443,6 +494,20 @@ Legacy compatibility rules:
 - Map low-risk results to `answerable=True` even when legacy `fallback_required` is absent.
 - Do not remove `grade_score`, `grade_route`, `rewrite_needed`, or `fallback_executed` from LangGraph traces until streaming and regression reports are migrated.
 - New callers should read `answerable`, `suggested_mode`, and `needs_clarification`; old callers may continue reading `fallback_required`.
+
+Mode state semantics:
+
+| Field | Meaning |
+| --- | --- |
+| `routing_mode` | Classifier recommendation before confidence or rollout flags. |
+| `execution_mode` | Retrieval/controller path that actually ran. |
+| `mode_initial` | Backward-compatible alias for the first selected mode. |
+| `mode_final` | Backward-compatible summary of the final result path. |
+| `suggested_mode` | Recommended upgrade that did not necessarily execute. |
+| `deep_executed` | Whether the Deep controller actually ran. |
+| `upgrade_reason` | Why execution moved from FAST to STANDARD, or why DEEP was suggested/executed. |
+
+Trace consumers should prefer `routing_mode`, `execution_mode`, and `deep_executed` over inferring execution from `mode_final`.
 
 ### 2.4 Pipeline Orchestration
 
@@ -493,6 +558,19 @@ Decision:
 | 2.0-3.9 | answerable, medium confidence |
 | 4.0-5.9 | not answerable, suggested upgrade |
 | >=6.0 | not answerable, clarification needed |
+
+The additive weights are phase-one heuristics, not a calibrated truth source. Active answerability changes require a confidence calibration report by query bucket:
+
+| Query bucket | Required calibration metric |
+| --- | --- |
+| precise fact | answerable precision / recall |
+| single-file summary | missing-evidence rate |
+| compare | entity coverage recall |
+| exhaustive | unsupported omission rate |
+| temporal | version coverage recall |
+| context-reference | clarification-needed precision |
+
+Calibration reports must show threshold sweeps for `risk_score` and explain the selected threshold. If no threshold gives acceptable precision and recall for a bucket, that bucket must stay in STANDARD or clarification-only behavior.
 
 ### 2.6 ConfidenceVerdict
 
@@ -623,6 +701,28 @@ class DeepModeResult:
     trace: dict
 ```
 
+The chat tool should expose a union shape instead of forcing Deep answers into `docs + meta`:
+
+```python
+@dataclass(frozen=True)
+class RetrievalToolResult:
+    kind: Literal["retrieval"]
+    docs: list[dict]
+    meta: dict
+
+
+@dataclass(frozen=True)
+class DeepAnswerToolResult:
+    kind: Literal["deep_answer"]
+    final_answer: str
+    citations: list[dict]
+    missing_coverage: dict
+    evidence_snippets: list[dict]
+    trace: dict
+```
+
+`search_knowledge_base` can still return legacy-compatible text, but internal formatting must preserve the `kind` distinction so the Agent and frontend do not treat an answer-ready Deep result as ordinary evidence.
+
 ### 3.3 Query Decomposer
 
 Rules first:
@@ -631,6 +731,8 @@ Rules first:
 2. Temporal evolution: earliest state, latest state, change signal.
 3. Exhaustive global query: broad STANDARD retrieval plus optional targeted follow-up if coverage is low.
 4. Ambiguous complex query: LLM planner fallback, capped at 3 subqueries.
+
+The first Deep implementation is rule-only. The LLM planner fallback remains disabled until rule-only coverage reports show specific unresolved patterns and the added LLM call has an acceptance gate.
 
 Subquery invariant:
 
@@ -693,7 +795,29 @@ Output contract:
 - If `partial=true`, the first paragraph must say that the answer is partial.
 - If no cited evidence supports the requested comparison or exhaustive answer, return a refusal-to-answer with missing coverage instead of synthesis.
 
-### 3.7 Tool Enhancement
+### 3.7 Citation Verifier
+
+Deep synthesis must pass a post-synthesis verifier before the tool returns the answer. The first verifier should be rule-based; do not add another LLM verifier until the rule-based checks are insufficient.
+
+Verifier checks:
+
+- every paragraph or table row with a factual claim has at least one citation
+- every citation has `filename`, `page_number`, `chunk_id`, and `subquery_id`
+- compare answers include cited evidence for each required entity, or mark the missing side explicitly
+- temporal answers include cited evidence for each required version/time slice, or mark the missing slice explicitly
+- `partial=true` answers state missing coverage in the first paragraph
+- conclusions without citations are blocked
+
+Verifier outcomes:
+
+| Outcome | Tool behavior |
+| --- | --- |
+| pass | Return the Deep answer. |
+| missing citation but coverage exists | Return partial answer with verifier warning in trace. |
+| missing required entity/aspect | Return partial answer or refusal with missing coverage. |
+| unsupported conclusion | Block synthesis and return refusal with cited evidence summary. |
+
+### 3.8 Tool Enhancement
 
 `backend/chat/tools.py` keeps the one-call guard. It may internally dispatch to:
 
@@ -722,6 +846,21 @@ Tool response rules:
 - The outer Agent prompt should instruct the model to preserve `Deep Mode Answer` claims and citations, not re-synthesize unsupported claims.
 - Frontend trace stores both `deep_trace` and the underlying sub-retrieval traces.
 
+### 3.9 Security, Permissions, And Trace Retention
+
+Deep Mode expands the amount of retrieved evidence and trace data, so it needs explicit safety boundaries:
+
+| Risk | Requirement |
+| --- | --- |
+| document prompt injection | Synthesis prompt states retrieved text is untrusted evidence, never instructions. |
+| permission bypass | Every subquery inherits the same user ACL, `context_files`, metadata filters, and tenant/document scope as the original query. |
+| context-file escape | Decomposition cannot broaden beyond user-selected files unless the original request had no file constraint. |
+| citation leakage | Tool output must not expose storage paths, raw database IDs beyond allowed chunk identifiers, or backend-only filter details. |
+| verbose trace leakage | `prod` trace stores capped previews and hashes; full evidence is allowed only under debug retention. |
+| retained PII or sensitive text | Trace retention profile defines TTL, redaction, and whether evidence snippets are persisted. |
+
+Security invariants must be tested with at least one denied-document fixture and one prompt-injection fixture before Deep active rollout.
+
 ---
 
 ## Section 4: Observability
@@ -732,7 +871,11 @@ Mode:
 
 - `mode_initial`
 - `mode_final`
+- `routing_mode`
+- `execution_mode`
 - `mode_reason`
+- `upgrade_reason`
+- `deep_executed`
 - `fast_score`
 - `deep_score`
 - `retrieval_plan`
@@ -759,6 +902,13 @@ Retrieval quality:
 - rerank drop rate
 - structure drop rate
 
+Feature extraction:
+
+- per-feature precision / recall
+- feature mismatch reason distribution
+- feature-to-mode-error attribution
+- context-reference grounding failure rate
+
 ### 4.2 Confidence Metrics
 
 - `answerable`
@@ -770,6 +920,9 @@ Retrieval quality:
 - `clarification_question`
 - `fast_to_standard_upgrade_rate`
 - `standard_to_deep_suggestion_rate`
+- calibration bucket
+- selected risk threshold
+- threshold sweep summary
 
 ### 4.3 Deep Mode Metrics
 
@@ -792,6 +945,10 @@ Retrieval quality:
 - `deep_citation_coverage_rate`
 - `deep_partial_answer_rate`
 - `deep_unsupported_claim_count`
+- `deep_verifier_pass_rate`
+- `deep_verifier_block_rate`
+- `deep_acl_filter_inherited`
+- `deep_trace_retention_profile`
 
 ### 4.4 Agent Decision Metrics
 
@@ -807,17 +964,20 @@ Retrieval quality:
 
 | Phase | Content | Risk | Validation |
 | --- | --- | --- | --- |
-| P0 | Adopt/document `V3Q + FP16` as quality-first baseline. Behavior otherwise unchanged. | Low | tests + smoke eval |
-| P1 | Add shadow Mode Classifier and plan trace. No behavior change. | Low | classifier eval set |
-| P2 | Add plan-aware retrieval parameters to existing `retrieve_documents`. STANDARD remains quality-first. | Medium | saved-row regression |
-| P3 | Extend confidence into structured verdicts while preserving legacy meta fields. | Medium | fallback/confidence tests |
-| P4 | Activate FAST only for high-confidence precise fact queries; retry STANDARD on low confidence. | Medium | full gold eval gates |
-| P5 | Add internal Deep controller in chat layer. Subqueries are STANDARD and non-recursive. | Medium-High | deep eval set |
-| P6 | Sunset compatibility fallback for FAST/STANDARD after parity is proven; keep rollback flag for one release. | Medium | graph/non-graph parity |
+| P0 | Freeze V3Q FP16 baseline plus quality/latency dashboard. Behavior unchanged. | Low | tests + baseline gold eval |
+| P1 | Add shadow classifier, feature extraction eval, and structured routing trace. No behavior change. | Low | mode + feature eval reports |
+| P2 | Add structured confidence meta and calibration report. No behavior change. | Medium | confidence bucket calibration |
+| P3 | Enable STANDARD-equivalent routing only. | Medium | graph/non-graph parity and saved-row regression |
+| P4 | Activate FAST only for very narrow scoped fact queries; low confidence retries STANDARD. | Medium | FAST gates + latency budget |
+| P5 | Add Deep suggest-only result path with `suggested_mode` and missing reason. | Medium | suggestion trace + no execution |
+| P6 | Add rule-only Deep controller. LLM planner remains disabled. | Medium-High | deep retrieval coverage eval |
+| P7 | Add Deep synthesis, citation verifier, partial-answer gate, and security fixtures. | High | deep answer/citation/security eval |
+| P8 | Canary Deep active for low percentage of eligible traffic. | High | trigger, latency, verifier, and support metrics |
+| P9 | Consider capped LLM planner fallback only for measured rule gaps. | High | planner-specific acceptance gates |
 
-The original draft's intent remains, but implementation is staged to avoid a big-bang rewrite.
+The original draft's intent remains, but implementation is staged to avoid a big-bang rewrite. Each phase introduces one major uncertain variable.
 
-P6 note: current code already allows the fallback path to be disabled by configuration. P6 is not a big removal task; it is a controlled cleanup after traces, streaming events, and reports no longer depend on legacy fallback fields.
+Compatibility fallback note: current code already allows the fallback path to be disabled by configuration. Compatibility cleanup is not a big removal task; it should happen only after traces, streaming events, and reports no longer depend on legacy fallback fields.
 
 ---
 
@@ -840,7 +1000,9 @@ Do not create generation-labeled modules such as `pipeline_v2.py`, `confidence_v
 | --- | --- |
 | `eval/datasets/rag_mode_classifier_v1.jsonl` | Hand-labeled routing examples for classifier gates. |
 | `eval/datasets/rag_deep_mode_v1.jsonl` | Multi-hop, compare, exhaustive, and temporal questions with expected cited coverage. |
+| `eval/datasets/rag_security_fixtures_v1.jsonl` | Prompt-injection, denied-document, and trace-retention fixtures. |
 | `scripts/rag_eval/evaluate_mode_classifier.py` | Focused classifier report without Milvus or CrossEncoder dependency. |
+| `scripts/rag_eval/evaluate_confidence_calibration.py` | Bucketed confidence threshold and answerability calibration report. |
 | `scripts/rag_eval/evaluate_deep_mode.py` | Deep answer/citation coverage report. |
 
 ### Modified Files
@@ -855,7 +1017,7 @@ Do not create generation-labeled modules such as `pipeline_v2.py`, `confidence_v
 | `backend/chat/agent.py` | Update prompt and streaming trace handling for mode-aware retrieval. |
 | `backend/config.py` | Add flags and defaults. |
 | `scripts/rag_eval/variants.py` | Add shadow/active mode experiment variants without changing existing variants. |
-| `tests/*` | Add classifier, plan, confidence, FAST retry, Deep controller, and tool guard tests. |
+| `tests/*` | Add classifier, feature extraction, plan, confidence calibration, FAST retry, Deep controller, citation verifier, security, and tool guard tests. |
 
 ### Preserved Files
 
@@ -880,12 +1042,18 @@ Quality gates use `eval/datasets/rag_doc_gold.jsonl` as the canonical 125-row go
 | STANDARD Chunk@5 | no more than 0.5pp below baseline on rows with qrels |
 | STANDARD Root@5 | no more than 0.5pp below baseline on rows with qrels |
 | FAST complex false-positive rate | under 2% |
+| FAST latency budget | measured by stage; no `<600 ms` claim until total and stage budget pass |
 | DEEP normal-traffic trigger rate | under 15% |
 | Classifier eval examples | at least 100, with all required label categories covered |
 | Classifier confusion matrix | no FAST prediction for hard-blocked complex categories |
+| Feature extraction eval | per-feature precision / recall reported for all key classifier features |
+| Confidence calibration | risk threshold selected from bucketed precision/recall report |
 | Deep citation coverage | 100% of key claims cite at least one evidence item |
 | Deep unsupported claims | 0 on deep eval set |
 | Deep partial-answer honesty | 100% of partial answers state missing coverage |
+| Deep citation verifier | blocks unsupported conclusions and reports pass/block rates |
+| Deep security fixtures | prompt-injection ignored; denied documents not retrieved or cited |
+| Trace retention | prod traces contain capped previews/hashes, not full uncapped evidence |
 | Error rate | 0.0 on eval runs |
 | Recursive DEEP calls | 0 |
 
@@ -906,12 +1074,16 @@ If a faster plan misses quality gates, it remains experimental.
 Unit tests:
 
 - Mode classifier examples.
+- Feature extraction examples for entity count, intent flags, context references, and question type.
 - FAST hard blocks.
 - User explicit fast/deep handling.
 - Context reference behavior.
 - Confidence verdict risk scoring.
+- Confidence bucket calibration report generation.
 - FAST low-confidence retry to STANDARD.
 - Deep subqueries use STANDARD with `allow_deep=False`.
+- Deep citation verifier pass/block cases.
+- Deep security invariants for ACL inheritance and prompt-injection text.
 - Tool guard still prevents repeated Agent tool calls.
 - Tool output caps docs and characters.
 
@@ -923,6 +1095,8 @@ Integration tests:
 - Graph fallback path remains available.
 - Deep tool formatting preserves final answer, citations, and missing coverage.
 - Existing Agent tool guard still counts Deep as one external knowledge-base call.
+- Deep active canary can be disabled by flags without code changes.
+- Production trace retention omits uncapped evidence text.
 
 Verification commands:
 
@@ -938,6 +1112,7 @@ Focused mode-routing evaluation after the mode variants and evaluator scripts ex
 ```powershell
 uv run python scripts/evaluate_rag_matrix.py --dataset eval/datasets/rag_doc_gold.jsonl --variants V4_SHADOW,V4_ACTIVE --mode retrieval --skip-reindex --run-id mode-routing-check
 uv run python scripts/rag_eval/evaluate_mode_classifier.py --dataset eval/datasets/rag_mode_classifier_v1.jsonl
+uv run python scripts/rag_eval/evaluate_confidence_calibration.py --dataset eval/datasets/rag_doc_gold.jsonl
 uv run python scripts/rag_eval/evaluate_deep_mode.py --dataset eval/datasets/rag_deep_mode_v1.jsonl --skip-reindex
 ```
 
@@ -959,6 +1134,13 @@ uv run python scripts/rag_eval/evaluate_deep_mode.py --dataset eval/datasets/rag
 | Deep answer is re-synthesized by outer Agent | Citations drift or unsupported claims appear | Return an answer-ready Deep block and update Agent prompt to preserve it. |
 | Flag combinations create unclear behavior | Hard-to-debug rollout failures | Keep a single rollout table and test each flag combination that changes control flow. |
 | Classifier eval set is too easy | FAST looks safer than it is | Include hard negatives and user-explicit fast on complex queries. |
+| Feature extractor is unstable | Correct-looking scores hide wrong routing inputs | Evaluate key features separately from final mode labels. |
+| Confidence threshold is miscalibrated | Good evidence is rejected or weak evidence is answered | Require bucketed calibration and threshold sweeps before behavior changes. |
+| FAST latency target is aspirational | Performance claim does not hold on real hardware | Track stage-level latency budget and gate the claim separately from activation. |
+| Deep citation prompt is insufficient | Unsupported claims pass despite citations being required | Add rule-based citation verifier before returning Deep answers. |
+| Deep subquery broadens access | User sees evidence outside allowed scope | Inherit ACL/filter/context envelope on every sub-retrieval and test denied fixtures. |
+| Prompt injection in retrieved text | Model follows document instructions instead of user/system policy | Mark retrieved text as untrusted evidence and test injection fixtures. |
+| Trace captures sensitive evidence | Debug data leaks document contents or paths | Enforce prod/debug retention profiles and capped previews. |
 
 ---
 
@@ -970,6 +1152,9 @@ uv run python scripts/rag_eval/evaluate_deep_mode.py --dataset eval/datasets/rag
 4. Candidate compression requires full gold evaluation before default activation.
 5. Any future module extraction must remove complexity from an existing file, not create a parallel implementation stack.
 6. Deep execution should stay suggest-only until the Deep answer eval set exists.
+7. Deep LLM planner should remain disabled until rule-only Deep coverage gaps are measured.
+8. FAST latency claims require stage-level latency evidence, not only mode-level P50.
+9. Confidence thresholds require bucketed calibration before they change answerability behavior.
 
 ---
 
@@ -985,3 +1170,5 @@ The implementation strategy is tightened:
 - Prove routing before enabling it.
 - Keep Agent behavior bounded to one knowledge-base tool call.
 - Let full evaluation gates decide when a faster plan becomes default.
+- Introduce one major uncertain variable per phase.
+- Treat retrieved text as untrusted evidence and enforce citation verification for Deep answers.
