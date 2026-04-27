@@ -125,7 +125,7 @@ def diagnose(variant: str, compare_to: str | None = None) -> dict[str, Any]:
     bm25_path = env.get("BM25_STATE_PATH", "")
 
     qrel_records: list[dict[str, Any]] = []
-    dataset_path = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_doc_gold.jsonl"
+    dataset_path = PROJECT_ROOT / "eval" / "datasets" / "rag_doc_gold.jsonl"
     if dataset_path.exists():
         with dataset_path.open("r", encoding="utf-8") as f:
             for line in f:

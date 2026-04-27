@@ -60,7 +60,6 @@ class RagTrace(BaseModel):
     rerank_enabled: Optional[bool] = None
     rerank_applied: Optional[bool] = None
     rerank_model: Optional[str] = None
-    rerank_endpoint: Optional[str] = None
     rerank_error: Optional[str] = None
     hybrid_error: Optional[str] = None
     dense_error: Optional[str] = None

@@ -48,7 +48,7 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(".jbeval/datasets/rag_tuning_derived.jsonl"),
+        default=Path("eval/datasets/rag_tuning_derived.jsonl"),
         help="Output JSONL path",
     )
     args = parser.parse_args()

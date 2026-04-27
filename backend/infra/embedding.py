@@ -46,7 +46,6 @@ def _create_dense_embedder() -> Any:
         return OllamaEmbeddings(model=model_name, base_url=base_url)
 
     model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
-    device = os.getenv("EMBEDDING_DEVICE", "cuda")
     # GPU-only mode: force CUDA, never fallback to CPU
     import torch
 

@@ -12,7 +12,7 @@ from backend.shared.filename_normalization import normalize_filename_for_match
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATASET = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_doc_gold.jsonl"
+DEFAULT_DATASET = PROJECT_ROOT / "eval" / "datasets" / "rag_doc_gold.jsonl"
 
 
 @dataclass(frozen=True)

@@ -66,6 +66,7 @@ from backend.config import (
 RERANK_MODEL = os.getenv("RERANK_MODEL")
 RERANK_PROVIDER = os.getenv("RERANK_PROVIDER", "local").lower()
 RERANK_DEVICE = os.getenv("RERANK_DEVICE", "auto")
+RERANK_TORCH_DTYPE = os.getenv("RERANK_TORCH_DTYPE", "float16")
 AUTO_MERGE_ENABLED = os.getenv("AUTO_MERGE_ENABLED", "true").lower() != "false"
 AUTO_MERGE_THRESHOLD = int(os.getenv("AUTO_MERGE_THRESHOLD", "2"))
 LEAF_RETRIEVE_LEVEL = int(os.getenv("LEAF_RETRIEVE_LEVEL", "3"))
@@ -214,6 +215,25 @@ def _finish_retrieval_pipeline(
             )
             timings["l1_prefilter_ms"] = elapsed_ms(stage_start)
 
+            # L1 drop analysis for observability
+            _scope_file_set = set(scope_matched_files)
+            _l0_scope_fns = {d.get("filename", "") for d in retrieved if d.get("filename", "") in _scope_file_set}
+            _l1_scope_fns = {d.get("filename", "") for d in l1_candidates if d.get("filename", "") in _scope_file_set}
+            _l1_correct_file_dropped = sorted(_l0_scope_fns - _l1_scope_fns)
+            _l0_scope_pages = {
+                (d.get("filename", ""), d.get("page_number"))
+                for d in retrieved
+                if d.get("filename", "") in _scope_file_set and d.get("page_number") is not None
+            }
+            _l1_scope_pages = {
+                (d.get("filename", ""), d.get("page_number"))
+                for d in l1_candidates
+                if d.get("filename", "") in _scope_file_set and d.get("page_number") is not None
+            }
+            _l1_correct_page_dropped = [
+                {"filename": fn, "page": pg} for fn, pg in sorted(_l0_scope_pages - _l1_scope_pages)
+            ]
+
             # L2: Adaptive K
             scope_mode = query_plan.scope_mode if query_plan else "none"
             exact_file_match = len(scope_matched_files) == 1 if scope_mode == "filter" else False
@@ -232,6 +252,16 @@ def _finish_retrieval_pipeline(
             rerank_meta["rerank_input_k"] = ce_input_k
             rerank_meta["rerank_top_n"] = ce_top_n
             rerank_meta["l1_candidate_count"] = len(l1_candidates)
+
+            # CE trace metrics
+            rerank_meta["ce_dtype"] = RERANK_TORCH_DTYPE
+            rerank_meta["ce_input_count"] = rerank_meta.get("rerank_input_count", len(ce_candidates))
+            rerank_meta["ce_cache_hit"] = rerank_meta.get("rerank_cache_hit", False)
+            rerank_meta["ce_latency_ms"] = rerank_meta.get("ce_predict_ms", timings.get("rerank_ms", 0.0))
+            rerank_meta["model_warmup_state"] = "warm" if _local_reranker is not None else "cold"
+            rerank_meta["l1_selected_count"] = len(l1_candidates)
+            rerank_meta["l1_correct_file_dropped"] = _l1_correct_file_dropped
+            rerank_meta["l1_correct_page_dropped"] = _l1_correct_page_dropped
 
             # L3: Weak structure rerank
             current_stage = "structure_rerank"
@@ -253,6 +283,13 @@ def _finish_retrieval_pipeline(
             timings["rerank_ms"] = elapsed_ms(stage_start)
             if rerank_meta.get("rerank_error"):
                 stage_errors.append(_stage_error("rerank", str(rerank_meta.get("rerank_error")), "ranked_candidates"))
+
+            # CE trace metrics (original pipeline)
+            rerank_meta["ce_dtype"] = RERANK_TORCH_DTYPE
+            rerank_meta["ce_input_count"] = rerank_meta.get("rerank_input_count", 0)
+            rerank_meta["ce_cache_hit"] = rerank_meta.get("rerank_cache_hit", False)
+            rerank_meta["ce_latency_ms"] = rerank_meta.get("ce_predict_ms", timings.get("rerank_ms", 0.0))
+            rerank_meta["model_warmup_state"] = "warm" if _local_reranker is not None else "cold"
 
             current_stage = "structure_rerank"
             stage_start = time.perf_counter()
@@ -533,9 +570,11 @@ def _get_local_reranker():
     if not RERANK_MODEL:
         return None
     if _local_reranker is None:
+        import torch
         from sentence_transformers import CrossEncoder
-        # GPU-only mode: force CUDA device with FP16 for faster inference
-        _local_reranker = CrossEncoder(RERANK_MODEL, device="cuda", model_kwargs={"torch_dtype": "float16"})
+        dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
+        dtype = dtype_map.get(RERANK_TORCH_DTYPE.lower(), torch.float16)
+        _local_reranker = CrossEncoder(RERANK_MODEL, device="cuda", model_kwargs={"torch_dtype": dtype})
     return _local_reranker
 
 
@@ -544,6 +583,7 @@ _RETRIEVE_TIMING_KEYS = (
     "embed_sparse_ms",
     "milvus_hybrid_ms",
     "milvus_dense_fallback_ms",
+    "l1_prefilter_ms",
     "rerank_ms",
     "structure_rerank_ms",
     "confidence_ms",

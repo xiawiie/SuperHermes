@@ -22,10 +22,10 @@ from scripts.rag_dataset_utils import alignment_score, load_jsonl, write_json, w
 from scripts.rag_qrels import attach_canonical_ids, normalized_text_hash  # noqa: E402
 
 
-DEFAULT_INPUT = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_chunk_gold_v2.jsonl"
-DEFAULT_POOL = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_chunk_pool_gold_tcf.jsonl"
-DEFAULT_REVIEW_DIR = PROJECT_ROOT / ".jbeval" / "qrel_reviews"
-DEFAULT_OUTPUT = PROJECT_ROOT / ".jbeval" / "qrels" / "rag_chunk_gold_v2.1.jsonl"
+DEFAULT_INPUT = PROJECT_ROOT / "eval" / "datasets" / "rag_chunk_gold_v2.jsonl"
+DEFAULT_POOL = PROJECT_ROOT / "eval" / "datasets" / "rag_chunk_pool_gold_tcf.jsonl"
+DEFAULT_REVIEW_DIR = PROJECT_ROOT / "eval" / "qrel_reviews"
+DEFAULT_OUTPUT = PROJECT_ROOT / "eval" / "qrels" / "rag_chunk_gold_v2.1.jsonl"
 QREL_VERSION = "v2.1"
 
 

@@ -14,7 +14,7 @@ from scripts.rag_dataset_utils import write_jsonl
 from scripts.rag_qrels import attach_canonical_ids
 
 
-DEFAULT_OUTPUT = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_chunk_pool_v1.jsonl"
+DEFAULT_OUTPUT = PROJECT_ROOT / "eval" / "datasets" / "rag_chunk_pool_v1.jsonl"
 DEFAULT_DOCUMENTS_DIR = PROJECT_ROOT / "data" / "documents"
 SUPPORTED_DOCUMENT_SUFFIXES = {".pdf", ".doc", ".docx", ".xls", ".xlsx"}
 CHUNK_OUTPUT_FIELDS = [

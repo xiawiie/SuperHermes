@@ -11,8 +11,8 @@ Plus: CandRecall bucketing, fuzzy match histogram, family confusion,
 rerank drop list, false-retrieval top10.
 
 Usage:
-    python scripts/analyze_rag_misses.py --input .jbeval/reports/REPORT/miss_analysis.jsonl
-    python scripts/analyze_rag_misses.py --input .jbeval/reports/REPORT/results.jsonl
+    python scripts/analyze_rag_misses.py --input eval/reports/REPORT/miss_analysis.jsonl
+    python scripts/analyze_rag_misses.py --input eval/reports/REPORT/results.jsonl
 """
 from __future__ import annotations
 

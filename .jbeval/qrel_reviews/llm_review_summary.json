@@ -1,9 +1,0 @@
-{
-  "qrel_version": "v2.1",
-  "rows_reviewed": 68,
-  "proposed_status_counts": {
-    "llm_approved": 49,
-    "needs_human_review": 18,
-    "llm_remapped": 1
-  }
-}

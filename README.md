@@ -79,10 +79,10 @@ EMBEDDING_MODEL=BAAI/bge-m3
 EMBEDDING_DEVICE=cpu
 DENSE_EMBEDDING_DIM=1024
 
-# ===== Rerank (可选，不配则自动降级) =====
-RERANK_MODEL=your_rerank_model
-RERANK_BINDING_HOST=https://your-rerank-host
-RERANK_API_KEY=your_rerank_api_key
+# ===== Rerank (本地 GPU CrossEncoder) =====
+RERANK_PROVIDER=local
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_DEVICE=cuda
 
 # ===== Milvus =====
 MILVUS_HOST=127.0.0.1
@@ -155,7 +155,7 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 
 ## 关键创新点
 - **混合检索落地**：稠密向量 + BM25 稀疏向量，Milvus Hybrid Search + RRF 排序，兼顾语义与词匹配。
-- **Jina Rerank 接入**：Hybrid/Dense 召回后进行 API 级精排，支持返回 `rerank_score` 并在前端可视化。
+- **本地 CrossEncoder 精排**：Hybrid/Dense 召回后通过本地 GPU CrossEncoder 精排，支持返回 `rerank_score` 并在前端可视化。
 - **双向降级**：稀疏生成或 Hybrid 调用失败时自动降级为纯稠密检索，提升稳定性。
 - **流式输出（Streaming）**：后端基于 `agent.astream(stream_mode="messages")` 逐 token 推送，前端 SSE + ReadableStream 实现打字机效果。
 - **实时 RAG 过程可视化**：检索过程在模型"思考中"阶段就开始展示，通过 `asyncio.Queue` + 后台任务架构实现工具执行期间的实时推送。
@@ -277,7 +277,7 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 1. **初次召回**：`retrieve_initial`
   - 调用 `retrieve_documents`。
   - 先按 `chunk_level == 3` 执行 Milvus Hybrid 检索（Dense + Sparse + RRF）。
-  - 取更大候选集后走 Jina Rerank 精排。
+  - 取更大候选集后走本地 CrossEncoder 精排。
   - 对召回叶子块执行 Auto-merging（L3->L2->L1），父块从 DocStore 读取。
 2. **相关性打分门控**：`grade_documents`
   - 使用结构化输出打分 `yes/no`。
@@ -317,7 +317,7 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 
 ## 技术栈
 - 后端：FastAPI、LangChain Agents、Pydantic、Uvicorn、SQLAlchemy、PostgreSQL、Redis。
-- 向量与检索：Milvus（HNSW 稠密索引 + SPARSE_INVERTED_INDEX 稀疏索引）、RRF 融合、Jina Rerank 精排。
+- 向量与检索：Milvus（HNSW 稠密索引 + SPARSE_INVERTED_INDEX 稀疏索引）、RRF 融合、本地 CrossEncoder 精排。
 - 嵌入与稀疏：`langchain_huggingface` 本地稠密向量（默认 `BAAI/bge-m3`）；中英混合规则分词 + BM25 手写稀疏向量，统计持久化至 `bm25_state.json`。
 - 前端：Vue 3 (CDN)、marked、highlight.js、纯静态部署。
 - 工具链：dotenv 配置、requests、langchain_text_splitters、langchain_community.loaders。
@@ -327,7 +327,7 @@ uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
 - 模型相关：`ARK_API_KEY`、`MODEL`、`BASE_URL`
 - 稠密向量：`EMBEDDING_MODEL`、`EMBEDDING_DEVICE`、`DENSE_EMBEDDING_DIM`（需与 Milvus 集合 `dense_embedding` 维度一致）
 - BM25 持久化：`BM25_STATE_PATH`（可选，默认 `data/bm25_state.json`）
-- Rerank 相关：`RERANK_MODEL`、`RERANK_BINDING_HOST`、`RERANK_API_KEY`
+- Rerank 相关：`RERANK_PROVIDER`、`RERANK_MODEL`、`RERANK_DEVICE`
 - Milvus：`MILVUS_HOST`、`MILVUS_PORT`、`MILVUS_COLLECTION`
 - 数据库缓存：`DATABASE_URL`、`REDIS_URL`
 - 鉴权相关：`JWT_SECRET_KEY`、`ADMIN_INVITE_CODE`、`JWT_ALGORITHM`、`JWT_EXPIRE_MINUTES`

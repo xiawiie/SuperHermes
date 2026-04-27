@@ -8,11 +8,26 @@ wheels/
 
 # Virtual environments
 .venv
-.env    
+.env
 
-#docker files
+# Docker volumes
 volumes/
 
 # OS files
 .DS_Store
+
+# Runtime data
 data/
+
+# Eval reports (large, regenerated)
+eval/reports/
+
+# IDE / tool config
+.idea/
+.cursor/
+.omx/
+.superpowers/
+.jbeval/
+
+# BM25 backups
+*.bak-*

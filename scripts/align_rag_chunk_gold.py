@@ -30,9 +30,9 @@ from scripts.rag_qrels import (
 )
 
 
-DEFAULT_SPLITS = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_doc_splits_v1.json"
-DEFAULT_OUTPUT = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_chunk_gold_v2.jsonl"
-DEFAULT_REPORT = PROJECT_ROOT / ".jbeval" / "datasets" / "rag_chunk_gold_v2.report.json"
+DEFAULT_SPLITS = PROJECT_ROOT / "eval" / "datasets" / "rag_doc_splits_v1.json"
+DEFAULT_OUTPUT = PROJECT_ROOT / "eval" / "datasets" / "rag_chunk_gold_v2.jsonl"
+DEFAULT_REPORT = PROJECT_ROOT / "eval" / "datasets" / "rag_chunk_gold_v2.report.json"
 MIN_ALIGNMENT_SCORE = 0.75
 AMBIGUOUS_ALIGNMENT_SCORE = 0.55
 
