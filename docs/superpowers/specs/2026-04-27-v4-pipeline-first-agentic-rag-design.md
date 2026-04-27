@@ -117,7 +117,7 @@ All routing changes are controlled by explicit flags. Defaults preserve current 
 | `RAG_FAST_ENABLED` | `false` | Allow FAST execution after classifier gates pass. |
 | `RAG_DEEP_MODE_ENABLED` | `false` | Allow Deep controller execution from the chat tool. |
 | `RAG_DEEP_SUGGEST_ONLY` | `true` | Return `suggested_mode="DEEP"` instead of executing Deep automatically. |
-| `RAG_FALLBACK_ENABLED` | current default | Keep or disable the existing LangGraph LLM fallback path during parity checks. |
+| `RAG_FALLBACK_ENABLED` | `false` | Keep or enable the existing LangGraph LLM fallback path during parity checks. |
 | `RAG_MODE_TRACE_VERBOSE` | `false` | Include full features and per-rule scoring in trace for eval/debug runs. |
 
 Rollout order:
@@ -871,7 +871,7 @@ Do not create generation-labeled modules such as `pipeline_v2.py`, `confidence_v
 
 ## Acceptance Gates
 
-Quality gates use the 125-row gold dataset when available.
+Quality gates use `eval/datasets/rag_doc_gold.jsonl` as the canonical 125-row gold dataset. If that dataset is unavailable, block active routing instead of substituting the smaller frozen set.
 
 | Metric | Gate |
 | --- | --- |
@@ -933,7 +933,7 @@ uv run python -m compileall backend scripts
 uv run python scripts/evaluate_rag_matrix.py --dataset eval/datasets/rag_doc_gold.jsonl --variants V3Q --mode retrieval --skip-reindex --run-id baseline-check
 ```
 
-Focused mode-routing evaluation:
+Focused mode-routing evaluation after the mode variants and evaluator scripts exist:
 
 ```powershell
 uv run python scripts/evaluate_rag_matrix.py --dataset eval/datasets/rag_doc_gold.jsonl --variants V4_SHADOW,V4_ACTIVE --mode retrieval --skip-reindex --run-id mode-routing-check
