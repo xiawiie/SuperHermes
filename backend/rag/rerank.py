@@ -1,25 +1,19 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any, Callable
-
-import requests
 
 
 @dataclass(frozen=True)
 class RerankRuntime:
     provider: str
     model: str | None
-    binding_host: str | None
-    api_key: str | None
     cpu_top_n_cap: int
     cache_enabled: bool
     pair_enrichment_enabled: bool
     score_fusion_enabled: bool
     fusion_weights: dict[str, float]
     milvus_rrf_k: int
-    get_endpoint: Callable[[], str]
     effective_top_n: Callable[[int, int], int]
     effective_input_k: Callable[[int, int], tuple[int, str, int]]
     get_local_reranker: Callable[[], Any]
@@ -27,7 +21,6 @@ class RerankRuntime:
     load_cached_result: Callable[[str, list[dict], int], list[dict] | None]
     store_result: Callable[[str, list[dict], list[dict]], None]
     doc_text_getter: Callable[[dict], str]
-    post: Callable[..., Any]
 
 
 def build_enriched_pair(doc: dict, *, doc_text_getter) -> str:
@@ -178,24 +171,15 @@ def rerank_documents(query: str, docs: list[dict], top_k: int, runtime: RerankRu
     )
     rerank_top_n = min(rerank_top_n, rerank_input_k)
     docs_for_rerank = docs_with_rank[:rerank_input_k]
-    is_local = runtime.provider == "local" and bool(runtime.model)
-    is_ollama = runtime.provider == "ollama" and bool(runtime.model and runtime.binding_host)
-    is_api = runtime.provider not in ("local", "ollama") and bool(
-        runtime.model and runtime.api_key and runtime.binding_host
-    )
     meta: dict[str, Any] = {
-        "rerank_enabled": is_local or is_ollama or is_api,
+        "rerank_enabled": bool(runtime.model),
         "rerank_applied": False,
         "rerank_model": runtime.model,
-        "rerank_provider": runtime.provider,
-        "rerank_endpoint": runtime.get_endpoint()
-        if is_api
-        else (f"{runtime.binding_host.rstrip('/')}/api/rerank" if is_ollama and runtime.binding_host else None),
         "rerank_error": None,
         "candidate_count": len(docs_with_rank),
         "rerank_top_n": rerank_top_n,
         "rerank_cpu_top_n_cap": runtime.cpu_top_n_cap,
-        "rerank_input_count": rerank_input_k if (is_local or is_ollama or is_api) else 0,
+        "rerank_input_count": rerank_input_k if runtime.model else 0,
         "rerank_output_count": 0,
         "rerank_input_cap": rerank_input_cap,
         "rerank_input_device_tier": rerank_input_device_tier,
@@ -205,7 +189,7 @@ def rerank_documents(query: str, docs: list[dict], top_k: int, runtime: RerankRu
         "rerank_score_fusion_enabled": runtime.score_fusion_enabled,
         "rerank_fusion_weights": runtime.fusion_weights,
     }
-    if not docs_with_rank or not meta["rerank_enabled"]:
+    if not docs_with_rank or not runtime.model:
         result = docs_with_rank[:rerank_top_n]
         meta["rerank_output_count"] = len(result)
         return result, meta
@@ -226,98 +210,33 @@ def rerank_documents(query: str, docs: list[dict], top_k: int, runtime: RerankRu
             meta["rerank_output_count"] = len(cached_result)
             return cached_result, meta
 
-    if is_local:
-        try:
-            reranker = runtime.get_local_reranker()
-            if not reranker:
-                meta["rerank_error"] = "local_reranker_not_loaded"
-                result = docs_for_rerank[:rerank_top_n]
-                meta["rerank_output_count"] = len(result)
-                return result, meta
-            texts = [
-                rerank_pair_text(doc, runtime.pair_enrichment_enabled, doc_text_getter=runtime.doc_text_getter)
-                for doc in docs_for_rerank
-            ]
-            scores = reranker.predict([[query, text] for text in texts])
-            raw_scores = [float(score) for score in scores]
-            reranked = _rank_from_scores(
-                list(enumerate(raw_scores)),
-                {idx: score for idx, score in enumerate(raw_scores)},
-                docs_for_rerank,
-                rerank_top_n,
-                runtime,
-            )
-            meta["rerank_applied"] = True
-            result = reranked[:rerank_top_n]
-            meta["rerank_output_count"] = len(result)
-            if rerank_cache_key:
-                runtime.store_result(rerank_cache_key, result, docs_for_rerank)
-            return result, meta
-        except Exception as exc:
-            meta["rerank_error"] = str(exc)
+    try:
+        reranker = runtime.get_local_reranker()
+        if not reranker:
+            meta["rerank_error"] = "local_reranker_not_loaded"
             result = docs_for_rerank[:rerank_top_n]
             meta["rerank_output_count"] = len(result)
             return result, meta
-
-    payload = {
-        "model": runtime.model,
-        "query": query,
-        "documents": [
+        texts = [
             rerank_pair_text(doc, runtime.pair_enrichment_enabled, doc_text_getter=runtime.doc_text_getter)
             for doc in docs_for_rerank
-        ],
-        "top_n": rerank_input_k if runtime.score_fusion_enabled else rerank_top_n,
-    }
-    headers = None
-    timeout = 30
-    if is_api:
-        payload["return_documents"] = False
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {runtime.api_key}",
-        }
-        timeout = 15
-
-    try:
-        meta["rerank_applied"] = True
-        response = runtime.post(
-            meta["rerank_endpoint"],
-            headers=headers,
-            json=payload,
-            timeout=timeout,
+        ]
+        scores = reranker.predict([[query, text] for text in texts])
+        raw_scores = [float(score) for score in scores]
+        reranked = _rank_from_scores(
+            list(enumerate(raw_scores)),
+            {idx: score for idx, score in enumerate(raw_scores)},
+            docs_for_rerank,
+            rerank_top_n,
+            runtime,
         )
-        if response.status_code >= 400:
-            meta["rerank_error"] = f"HTTP {response.status_code}: {response.text}"
-            result = docs_for_rerank[:rerank_top_n]
-            meta["rerank_output_count"] = len(result)
-            return result, meta
-
-        items = response.json().get("results", [])
-        raw_indexed_scores = []
-        raw_scores_by_idx = {}
-        for item in items:
-            idx = item.get("index")
-            if isinstance(idx, int) and 0 <= idx < len(docs_for_rerank):
-                score = item.get("relevance_score")
-                try:
-                    raw_score = float(score if score is not None else 0.0)
-                except (TypeError, ValueError):
-                    raw_score = 0.0
-                raw_scores_by_idx[idx] = raw_score
-                raw_indexed_scores.append((idx, raw_score))
-
-        if raw_indexed_scores:
-            result = _rank_from_scores(raw_indexed_scores, raw_scores_by_idx, docs_for_rerank, rerank_top_n, runtime)
-            meta["rerank_output_count"] = len(result)
-            if rerank_cache_key:
-                runtime.store_result(rerank_cache_key, result, docs_for_rerank)
-            return result, meta
-
-        meta["rerank_error"] = "empty_rerank_results"
-        result = docs_for_rerank[:rerank_top_n]
+        meta["rerank_applied"] = True
+        result = reranked[:rerank_top_n]
         meta["rerank_output_count"] = len(result)
+        if rerank_cache_key:
+            runtime.store_result(rerank_cache_key, result, docs_for_rerank)
         return result, meta
-    except (requests.RequestException, json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
+    except Exception as exc:
         meta["rerank_error"] = str(exc)
         result = docs_for_rerank[:rerank_top_n]
         meta["rerank_output_count"] = len(result)
