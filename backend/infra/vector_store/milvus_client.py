@@ -343,6 +343,128 @@ class MilvusManager:
 
         return formatted_results
 
+    def split_retrieve(
+        self,
+        dense_embedding: list[float],
+        sparse_embedding: dict,
+        dense_top_k: int = 80,
+        sparse_top_k: int = 80,
+        search_ef: int = 64,
+        sparse_drop_ratio: float = 0.2,
+        filter_expr: str = "",
+    ) -> list[dict]:
+        """Retrieve via separate dense and sparse searches, returning per-path scores."""
+        output_fields = _RETRIEVAL_OUTPUT_FIELDS
+        dense_ef = _effective_hnsw_ef(search_ef, dense_top_k)
+
+        # Dense search
+        dense_results = self._call_with_reconnect(
+            lambda client: client.search(
+                collection_name=self.collection_name,
+                data=[dense_embedding],
+                anns_field="dense_embedding",
+                search_params={"metric_type": "IP", "params": {"ef": dense_ef}},
+                limit=dense_top_k,
+                output_fields=output_fields,
+                filter=filter_expr,
+            ),
+            operation_name="dense_split_search",
+        )
+
+        # Sparse search
+        sparse_results = self._call_with_reconnect(
+            lambda client: client.search(
+                collection_name=self.collection_name,
+                data=[sparse_embedding],
+                anns_field="sparse_embedding",
+                search_params={"metric_type": "IP", "params": {"drop_ratio_search": sparse_drop_ratio}},
+                limit=sparse_top_k,
+                output_fields=output_fields,
+                filter=filter_expr,
+            ),
+            operation_name="sparse_split_search",
+        )
+
+        # Format and index by chunk_id
+        pool: dict[str, dict] = {}
+
+        for hits in dense_results:
+            for rank_0, hit in enumerate(hits):
+                entity = hit.get("entity", {})
+                cid = entity.get("chunk_id", "")
+                if not cid:
+                    continue
+                pool[cid] = {
+                    "id": hit.get("id"),
+                    "chunk_id": cid,
+                    "text": entity.get("text", ""),
+                    "retrieval_text": entity.get("retrieval_text", ""),
+                    "filename": entity.get("filename", ""),
+                    "file_type": entity.get("file_type", ""),
+                    "page_number": entity.get("page_number", 0),
+                    "page_start": entity.get("page_start", entity.get("page_number", 0)),
+                    "page_end": entity.get("page_end", entity.get("page_number", 0)),
+                    "parent_chunk_id": entity.get("parent_chunk_id", ""),
+                    "root_chunk_id": entity.get("root_chunk_id", ""),
+                    "chunk_level": entity.get("chunk_level", 0),
+                    "chunk_role": entity.get("chunk_role", ""),
+                    "chunk_idx": entity.get("chunk_idx", 0),
+                    "section_title": entity.get("section_title", ""),
+                    "section_type": entity.get("section_type", ""),
+                    "section_path": entity.get("section_path", ""),
+                    "anchor_id": entity.get("anchor_id", ""),
+                    "dense_score": hit.get("distance", 0.0),
+                    "dense_rank": rank_0 + 1,
+                    "in_dense": True,
+                    "sparse_score": 0.0,
+                    "sparse_rank": None,
+                    "in_sparse": False,
+                    "score": hit.get("distance", 0.0),
+                }
+
+        for hits in sparse_results:
+            for rank_0, hit in enumerate(hits):
+                entity = hit.get("entity", {})
+                cid = entity.get("chunk_id", "")
+                if not cid:
+                    continue
+                sparse_rank = rank_0 + 1
+                sparse_score = hit.get("distance", 0.0)
+                if cid in pool:
+                    pool[cid]["sparse_score"] = sparse_score
+                    pool[cid]["sparse_rank"] = sparse_rank
+                    pool[cid]["in_sparse"] = True
+                else:
+                    pool[cid] = {
+                        "id": hit.get("id"),
+                        "chunk_id": cid,
+                        "text": entity.get("text", ""),
+                        "retrieval_text": entity.get("retrieval_text", ""),
+                        "filename": entity.get("filename", ""),
+                        "file_type": entity.get("file_type", ""),
+                        "page_number": entity.get("page_number", 0),
+                        "page_start": entity.get("page_start", entity.get("page_number", 0)),
+                        "page_end": entity.get("page_end", entity.get("page_number", 0)),
+                        "parent_chunk_id": entity.get("parent_chunk_id", ""),
+                        "root_chunk_id": entity.get("root_chunk_id", ""),
+                        "chunk_level": entity.get("chunk_level", 0),
+                        "chunk_role": entity.get("chunk_role", ""),
+                        "chunk_idx": entity.get("chunk_idx", 0),
+                        "section_title": entity.get("section_title", ""),
+                        "section_type": entity.get("section_type", ""),
+                        "section_path": entity.get("section_path", ""),
+                        "anchor_id": entity.get("anchor_id", ""),
+                        "dense_score": 0.0,
+                        "dense_rank": None,
+                        "in_dense": False,
+                        "sparse_score": sparse_score,
+                        "sparse_rank": sparse_rank,
+                        "in_sparse": True,
+                        "score": sparse_score,
+                    }
+
+        return list(pool.values())
+
     def dense_retrieve(
         self,
         dense_embedding: list[float],
