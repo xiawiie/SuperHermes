@@ -125,7 +125,10 @@ class RagPipelinePromptTests(unittest.TestCase):
             "context_files": [],
             "expansion_type": "step_back",
             "expanded_query": "expanded q",
-            "rag_trace": {},
+            "rag_trace": {
+                "timings": {"initial_retrieve_ms": 7.0},
+                "stage_errors": [{"stage": "initial_warning", "error": "kept"}],
+            },
             "fallback_deadline": time.perf_counter() + 5,
         }
         candidate_result = {
@@ -146,7 +149,7 @@ class RagPipelinePromptTests(unittest.TestCase):
                 "rerank_execution_mode": "executed",
                 "rerank_input_count": len(kwargs["retrieved"]),
                 "timings": {"total_retrieve_ms": 20.0},
-                "stage_errors": [],
+                "stage_errors": [{"stage": "final_warning", "error": "merged"}],
             }
             return {"docs": kwargs["retrieved"][:1], "meta": meta}
 
@@ -171,6 +174,12 @@ class RagPipelinePromptTests(unittest.TestCase):
         self.assertEqual(trace["final_rerank_execution_mode"], "executed")
         self.assertEqual(trace["rerank_execution_mode"], "executed")
         self.assertEqual(trace["fallback_saved_full_retrievals"], 1)
+        self.assertEqual(trace["timings"]["initial_retrieve_ms"], 7.0)
+        self.assertEqual(trace["timings"]["total_retrieve_ms"], 20.0)
+        self.assertEqual(
+            [item["stage"] for item in trace["stage_errors"]],
+            ["initial_warning", "final_warning"],
+        )
 
     def test_retrieve_expanded_candidate_only_complex_runs_candidate_queries_in_parallel(self):
         runtime_config = replace(load_runtime_config({}), fallback_candidate_only_enabled=True)

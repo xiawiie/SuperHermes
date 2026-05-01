@@ -637,6 +637,8 @@ def _retrieve_expanded_candidate_only(
     docs = final_result.get("docs", [])
     meta = dict(final_result.get("meta", {}))
     meta.setdefault("final_rerank_execution_mode", meta.get("rerank_execution_mode"))
+    final_timings = dict(meta.pop("timings", {}) or {})
+    final_stage_errors = list(meta.pop("stage_errors", []) or [])
     context = _format_docs(docs)
     merge_expanded_rag_trace(
         rag_trace,
@@ -655,7 +657,8 @@ def _retrieve_expanded_candidate_only(
             "retrieved_chunk_count": len(docs),
             "final_context_chunk_count": len(docs),
         },
-        timings=meta.get("timings") or {},
+        timings=final_timings,
+        stage_errors=final_stage_errors,
     )
     emit_rag_step("✅", f"候选池扩展检索完成，共 {len(docs)} 个片段")
     return {"docs": docs, "context": context, "rag_trace": rag_trace}

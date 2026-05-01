@@ -1,8 +1,12 @@
-# V3Q_LAYERED: Dual-Path Retrieval with Layered Rerank
+# K2_LAYERED: Dual-Path Retrieval with Layered Candidate Strategy
 
 **Date:** 2026-04-27
-**Status:** Draft
+**Status:** Historical draft superseded by `K2_LAYERED` and `RAG_CANDIDATE_STRATEGY=layered`
 **Target:** Production API latency reduction with zero quality regression
+
+> Current implementation note: this document preserves the original design history.
+> Active runtime code must use `RAG_CANDIDATE_STRATEGY=layered`; do not restore
+> the old layered rerank environment flag as a behavior switch.
 
 ## Problem
 
@@ -249,14 +253,14 @@ for doc in ce_top3:
 
 ## New Variant Registration
 
-Register `V3Q_LAYERED` in `scripts/rag_eval/variants.py`:
+Register `K2_LAYERED` in `scripts/rag_eval/variants.py`:
 
 ```python
-"V3Q_LAYERED": {
+"K2_LAYERED": {
     "env": {
         "RAG_INDEX_PROFILE": "v3_quality",
         "TEXT_MODE": "title_context_filename",
-        "LAYERED_RERANK_ENABLED": "true",
+        "RAG_CANDIDATE_STRATEGY": "layered",
         "RAG_CANDIDATE_K": "80",
         "L0_DENSE_TOP_K": "80",
         "L0_SPARSE_TOP_K": "80",
@@ -340,7 +344,7 @@ Register `V3Q_LAYERED` in `scripts/rag_eval/variants.py`:
 
 ## Latency Estimate
 
-| Stage | V3Q baseline | V3Q_LAYERED estimate |
+| Stage | K2 baseline | K2_LAYERED estimate |
 |-------|-------------|---------------------|
 | Embedding | ~50ms | ~50ms |
 | Milvus | ~40ms | ~60ms (parallel dense+sparse+hybrid) |
@@ -359,7 +363,7 @@ Latency depends on adaptive K distribution. Target: 50%+ queries at K=25/32, 15%
 |--------|-----------|
 | File@5 | Degradation <= 0.3pp (from 0.955) |
 | File+Page@5 | Degradation <= 0.5pp (from 0.727) |
-| Chunk@5 | No degradation vs V3Q_OPT |
+| Chunk@5 | No degradation vs K3 |
 | L1 File Recall@40 | >= 0.99 |
 | L1 Chunk Recall@40 | >= current K=50 baseline |
 | L1 Root Recall@40 | >= 0.98 |
@@ -369,7 +373,7 @@ Latency depends on adaptive K distribution. Target: 50%+ queries at K=25/32, 15%
 
 Core quality gates (must pass both):
 1. File@5 degradation <= 0.3pp
-2. Chunk@5 not below V3Q_OPT
+2. Chunk@5 not below K3
 
 ---
 
@@ -377,8 +381,8 @@ Core quality gates (must pass both):
 
 | ID | L0 | L1 | L2 K | L3 | Purpose |
 |----|-----|-----|------|-----|---------|
-| C0 | Current hybrid | None | 80 | Current | V3Q baseline |
-| C1 | Current hybrid | None | 50 | Current | V3Q_OPT baseline |
+| C0 | Current hybrid | None | 80 | Current | K2 baseline |
+| C1 | Current hybrid | None | 50 | Current | K3 baseline |
 | C2 | Split 80/80 | Simple fusion top40 | 40 | Current | Validate L0 split |
 | C2.5 | Split 80/80 + hybrid top20 | Simple fusion top40 | 40 | Current | Validate hybrid guarantee |
 | C3 | Split 80/80 | File-aware | 40 | Current | Validate L1 |
@@ -402,12 +406,12 @@ Recommended path: C0 → C2 → C3 → C6 → production.
 ### Modified files
 
 - `backend/infra/vector_store/milvus_client.py` — Add `split_retrieve` method
-- `backend/rag/utils.py` — Wire LAYERED_RERANK_ENABLED into pipeline
+- `backend/rag/utils.py` — Wire `RAG_CANDIDATE_STRATEGY=layered` into candidate selection
 - `backend/rag/context.py` — L3 weak structure + CE top3 protection
 - `backend/rag/trace.py` — New L0/L1/L2/L3 trace fields
-- `scripts/rag_eval/variants.py` — Register V3Q_LAYERED variant
+- `scripts/rag_eval/variants.py` — Register K2_LAYERED variant
 - `scripts/evaluate_rag_matrix.py` — New trace metrics in eval output
 
 ### Config (environment variables)
 
-All configuration via environment variables with `LAYERED_RERANK_ENABLED` as the master toggle. When disabled, pipeline falls back to current V3Q behavior exactly.
+All active layered behavior is selected through `RAG_CANDIDATE_STRATEGY=layered`. When unset, the pipeline uses the standard candidate strategy and the same shared rerank/postprocess contract.
