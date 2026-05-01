@@ -25,10 +25,10 @@ def _variant_label(summary: dict[str, Any], variant: str) -> str:
     if not isinstance(variants, dict):
         variants = {}
     metadata = variants.get(variant) or {}
-    label = metadata.get("profile_name") or variant
-    alias = metadata.get("historical_alias")
+    label = metadata.get("rag_profile") or metadata.get("profile_name") or variant
+    alias = metadata.get("legacy_variant") or metadata.get("historical_alias")
     if alias and alias != variant:
-        return f"{label} (historical: {alias})"
+        return f"{label} (legacy: {alias})"
     return str(label)
 
 
@@ -63,11 +63,11 @@ def render_summary_markdown(summary: dict[str, Any]) -> str:
         if isinstance(variant_fingerprints, dict) and variant_fingerprints:
             lines.extend(["### RAG Profiles", ""])
             for variant, metadata in variant_fingerprints.items():
-                alias = metadata.get("historical_alias") or "-"
+                alias = metadata.get("legacy_variant") or metadata.get("historical_alias") or "-"
                 lines.append(
-                    "- `{variant}` => `{profile}`; historical=`{alias}`; collection=`{collection}`; hash=`{hash}`".format(
+                    "- `{variant}` => `{profile}`; legacy=`{alias}`; collection=`{collection}`; hash=`{hash}`".format(
                         variant=variant,
-                        profile=metadata.get("profile_name") or variant,
+                        profile=metadata.get("rag_profile") or metadata.get("profile_name") or variant,
                         alias=alias,
                         collection=metadata.get("collection"),
                         hash=metadata.get("profile_config_hash"),

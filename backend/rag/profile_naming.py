@@ -54,6 +54,13 @@ class RagProfile:
 
     def as_metadata(self) -> dict[str, str | None]:
         return {
+            "rag_profile": self.profile_name,
+            "rag_k": self.profile_key,
+            "rag_i": self.index_key,
+            "rag_m": self.mode_key,
+            "rag_a": self.acceleration_key,
+            "rag_dtype": self.dtype_key,
+            "legacy_variant": self.historical_alias,
             "profile_key": self.profile_key,
             "index_key": self.index_key,
             "mode_key": self.mode_key,

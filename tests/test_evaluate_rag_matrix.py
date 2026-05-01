@@ -11,7 +11,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.evaluate_rag_matrix import (
     DEFAULT_VARIANTS,
-    HISTORICAL_VARIANT_ALIASES,
     VARIANT_CONFIGS,
     compare_sample_rank,
     compute_retrieval_metrics,
@@ -32,6 +31,7 @@ from scripts.evaluate_rag_matrix import (
     _stage_metrics,
 )
 from scripts.rag_qrels import attach_canonical_ids, merge_chunk_qrels
+from scripts.rag_eval.variants import LEGACY_VARIANT_ALIASES, PAIR_DEFINITIONS
 
 
 class EvaluateRagMatrixMetricTests(unittest.TestCase):
@@ -623,7 +623,7 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
                 self.assertEqual(env["RERANK_TOP_N"], "30")
 
     def test_layered_eval_variants_use_candidate_strategy_contract(self):
-        env = VARIANT_CONFIGS["V3Q_LAYERED"]["env"]
+        env = VARIANT_CONFIGS["K2_LAYERED"]["env"]
 
         self.assertEqual(env["RAG_CANDIDATE_STRATEGY"], "layered")
         self.assertNotIn("LAYERED_" + "RERANK_ENABLED", env)
@@ -631,10 +631,13 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
         self.assertNotIn("L" + "3_ROOT_WEIGHT", env)
 
     def test_historical_layered_experiments_collapse_to_single_variant(self):
-        self.assertEqual(set(HISTORICAL_VARIANT_ALIASES.values()), {"V3Q_LAYERED"})
-        self.assertEqual(parse_variants("EXP_C2,EXP_C25,EXP_C3,EXP_C4,EXP_C5,EXP_C7"), ["V3Q_LAYERED"])
+        historical_aliases = {
+            alias: target for alias, target in LEGACY_VARIANT_ALIASES.items() if alias.startswith("EXP_C")
+        }
+        self.assertEqual(set(historical_aliases.values()), {"K2_LAYERED"})
+        self.assertEqual(parse_variants("EXP_C2,EXP_C25,EXP_C3,EXP_C4,EXP_C5,EXP_C7"), ["K2_LAYERED"])
 
-        for alias in HISTORICAL_VARIANT_ALIASES:
+        for alias in historical_aliases:
             with self.subTest(alias=alias):
                 self.assertNotIn(alias, VARIANT_CONFIGS)
 
@@ -663,9 +666,10 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
 
     def test_v4_final_variant_names_are_available(self):
         self.assertEqual(
-            parse_variants("B0_legacy,S1_linear,S2,S2H,S2HR,S3"),
+            parse_variants("B0_legacy,K1,S2,S2H,S2HR,S3"),
             ["B0_legacy", "K1", "S2", "S2H", "S2HR", "S3"],
         )
+        self.assertEqual(parse_variants("S1_linear"), ["K1"])
         self.assertEqual(VARIANT_CONFIGS["B0_legacy"]["env"], {})
         self.assertEqual(VARIANT_CONFIGS["K1"]["env"]["CONFIDENCE_GATE_ENABLED"], "false")
         self.assertEqual(VARIANT_CONFIGS["K1"]["env"]["RAG_FALLBACK_ENABLED"], "false")
@@ -679,19 +683,39 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
     def test_v3_variants_are_isolated_profiles(self):
         self.assertEqual(parse_variants("K2,V3F"), ["K2", "V3F"])
         self.assertEqual(parse_variants("V3Q,V3Q_OPT"), ["K2", "K3"])
+        self.assertEqual(parse_variants("K2,V3Q,K3,V3Q_OPT"), ["K2", "K3"])
         self.assertEqual(VARIANT_CONFIGS["K2"]["env"]["RAG_INDEX_PROFILE"], "v3_quality")
         self.assertEqual(VARIANT_CONFIGS["K2"]["env"]["MILVUS_COLLECTION"], "embeddings_collection_v3_quality")
         self.assertEqual(VARIANT_CONFIGS["K2"]["env"]["RERANK_SCORE_FUSION_ENABLED"], "true")
         self.assertEqual(VARIANT_CONFIGS["V3F"]["env"]["RAG_INDEX_PROFILE"], "v3_fast")
         self.assertEqual(VARIANT_CONFIGS["V3F"]["env"]["MILVUS_COLLECTION"], "embeddings_collection_v3_fast")
 
-    def test_short_profile_variants_match_historical_configs(self):
+    def test_short_profile_variants_are_public_configs_and_legacy_names_are_aliases(self):
         self.assertEqual(parse_variants("K1,K2,K3"), ["K1", "K2", "K3"])
-        self.assertEqual(VARIANT_CONFIGS["K1"]["env"], VARIANT_CONFIGS["S1_linear"]["env"])
-        self.assertEqual(VARIANT_CONFIGS["K2"]["env"], VARIANT_CONFIGS["V3Q"]["env"])
-        self.assertEqual(VARIANT_CONFIGS["K3"]["env"], VARIANT_CONFIGS["V3Q_OPT"]["env"])
-        self.assertEqual(VARIANT_CONFIGS["K2"]["historical_alias"], "V3Q")
-        self.assertEqual(VARIANT_CONFIGS["K3"]["historical_alias"], "V3Q_OPT")
+        self.assertEqual(LEGACY_VARIANT_ALIASES["S1_linear"], "K1")
+        self.assertEqual(LEGACY_VARIANT_ALIASES["V3Q"], "K2")
+        self.assertEqual(LEGACY_VARIANT_ALIASES["V3Q_OPT"], "K3")
+        self.assertEqual(parse_variants("V3Q_LAYERED,EXP_C5"), ["K2_LAYERED"])
+        self.assertNotIn("S1_linear", VARIANT_CONFIGS)
+        self.assertNotIn("V3Q", VARIANT_CONFIGS)
+        self.assertNotIn("V3Q_OPT", VARIANT_CONFIGS)
+        self.assertNotIn("EXP_C5", VARIANT_CONFIGS)
+        self.assertIn("K2_LAYERED", VARIANT_CONFIGS)
+        self.assertEqual(VARIANT_CONFIGS["K2"]["legacy_variant"], "V3Q")
+        self.assertEqual(VARIANT_CONFIGS["K3"]["legacy_variant"], "V3Q_OPT")
+        self.assertEqual(VARIANT_CONFIGS["K2_LAYERED"]["rag_profile"], "K2_LAYERED/I2/M0/A1/fp16")
+        self.assertEqual(VARIANT_CONFIGS["K2_LAYERED"]["rag_k"], "K2")
+
+    def test_default_variants_use_short_profile_names(self):
+        self.assertEqual(parse_variants(DEFAULT_VARIANTS), ["K2", "K3"])
+
+    def test_pair_definitions_use_canonical_profile_names(self):
+        rendered_pairs = "\n".join("|".join(pair) for pair in PAIR_DEFINITIONS)
+        self.assertNotIn("S1_linear", rendered_pairs)
+        self.assertNotIn("V3Q", rendered_pairs)
+        self.assertNotIn("V3Q_OPT", rendered_pairs)
+        self.assertIn(("K2_vs_GS3", "GS3", "K2"), PAIR_DEFINITIONS)
+        self.assertIn(("K3_vs_K2", "K2", "K3"), PAIR_DEFINITIONS)
 
     def test_short_profile_config_hash_matches_historical_alias(self):
         args = type(
@@ -705,13 +729,22 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
             },
         )()
 
-        fingerprint = _build_fingerprint(args, ["K2", "V3Q"], reindex_events=[])
+        variants = parse_variants("K2,V3Q")
+        fingerprint = _build_fingerprint(args, variants, reindex_events=[])
 
-        self.assertEqual(
-            fingerprint["variants"]["K2"]["profile_config_hash"],
-            fingerprint["variants"]["V3Q"]["profile_config_hash"],
-        )
-        self.assertEqual(fingerprint["variants"]["K2"]["resolved_config"], fingerprint["variants"]["V3Q"]["resolved_config"])
+        self.assertEqual(variants, ["K2"])
+        metadata = fingerprint["variants"]["K2"]
+        self.assertEqual(metadata["rag_profile"], "K2/I2/M0/A1/fp16")
+        self.assertEqual(metadata["rag_k"], "K2")
+        self.assertEqual(metadata["rag_i"], "I2")
+        self.assertEqual(metadata["rag_m"], "M0")
+        self.assertEqual(metadata["rag_a"], "A1")
+        self.assertEqual(metadata["rag_dtype"], "fp16")
+        self.assertEqual(metadata["legacy_variant"], "V3Q")
+        self.assertEqual(metadata["collection"], "embeddings_collection_v3_quality")
+        self.assertTrue(str(metadata["bm25_state_path"]).endswith("bm25_state_v3_quality.json"))
+        self.assertEqual(metadata["retrieval_text_mode"], "title_context_filename")
+        self.assertEqual(metadata["rerank_torch_dtype"], "float16")
 
     def test_profile_fingerprint_includes_reranker_identity(self):
         args = type(
@@ -830,7 +863,7 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
         rendered = render_summary_markdown(summary)
 
         self.assertIn("K2/I2/M0/A1/fp16", rendered)
-        self.assertIn("historical: V3Q", rendered)
+        self.assertIn("legacy: V3Q", rendered)
 
     def test_chunk_root_metrics_render_from_qrels(self):
         rows = [
@@ -862,11 +895,11 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
             },
         ]
 
-        summary = summarize_results(rows, variants=["B0_legacy", "S1_linear"])
+        summary = summarize_results(rows, variants=parse_variants("B0_legacy,S1_linear"))
         rendered = render_summary_markdown(summary)
 
         self.assertIn("| B0_legacy |", rendered)
-        self.assertIn("S1_linear_vs_B0_legacy", rendered)
+        self.assertIn("K1_vs_B0_legacy", rendered)
         self.assertEqual(summary["variants"]["B0_legacy"]["root_hit_at_5"], 1.0)
 
     def test_answer_eval_metrics_render_when_present(self):
@@ -997,7 +1030,7 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
             run_saved_results_summary(args)
 
             summary = json.loads((tmp_path / "saved" / "summary.json").read_text(encoding="utf-8"))
-            self.assertEqual(set(summary["variants"]), {"GS3", "V3Q"})
+            self.assertEqual(set(summary["variants"]), {"GS3", "K2"})
             self.assertEqual(summary["variants"]["GS3"]["file_hit_at_5"], 1.0)
 
 

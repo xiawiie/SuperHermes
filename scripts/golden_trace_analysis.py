@@ -130,7 +130,7 @@ def render_md(report: dict[str, Any]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build golden trace analysis from results.jsonl")
     parser.add_argument("--results", type=Path, required=True)
-    parser.add_argument("--variants", default="GS3,V3Q,GS2HR")
+    parser.add_argument("--variants", default="GS3,K2,GS2HR")
     parser.add_argument("--sample-count", type=int, default=12)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
