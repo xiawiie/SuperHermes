@@ -57,7 +57,8 @@ from backend.rag.layered_candidates import (
 from backend.rag.runtime_config import RagRuntimeConfig, load_runtime_config
 from backend.rag.trace import build_retrieval_meta, candidate_identity, trace_text_hash
 from backend.rag.types import StageError, StageErrorDict
-from backend.rag.profile_naming import resolve_dtype as resolve_dtype
+# resolve_dtype is re-exported from this module for older callers/tests.
+from backend.rag.profile_naming import resolve_dtype, resolve_runtime_dtype  # noqa: F401
 from backend.config import (
     ARK_API_KEY,
     BASE_URL,

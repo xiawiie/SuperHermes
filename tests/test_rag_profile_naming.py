@@ -40,6 +40,19 @@ class RagProfileNamingTests(unittest.TestCase):
         self.assertEqual(new_profile.historical_alias, old_profile.historical_alias)
         self.assertEqual(new_profile.profile_name, old_profile.profile_name)
 
+    def test_profile_metadata_uses_public_report_field_names(self):
+        metadata = resolve_profile("K2", rag_i="I2", rag_m="M0", rag_a="A1", dtype="fp16").as_metadata()
+
+        self.assertEqual(metadata["rag_profile"], "K2/I2/M0/A1/fp16")
+        self.assertEqual(metadata["rag_k"], "K2")
+        self.assertEqual(metadata["rag_i"], "I2")
+        self.assertEqual(metadata["rag_m"], "M0")
+        self.assertEqual(metadata["rag_a"], "A1")
+        self.assertEqual(metadata["rag_dtype"], "fp16")
+        self.assertEqual(metadata["legacy_variant"], "V3Q")
+        self.assertEqual(metadata["rerank_torch_dtype"], "float16")
+        self.assertEqual(metadata["device_request"], "auto")
+
     def test_dtype_mapping_is_explicit(self):
         self.assertEqual(resolve_dtype("fp16"), "float16")
         self.assertEqual(resolve_dtype("bf16"), "bfloat16")

@@ -34,7 +34,7 @@ from scripts.rag_eval.variants import (  # noqa: E402
     DEFAULT_S3_COLLECTION,
     DEFAULT_VARIANTS,
     EVAL_SCHEMA_VERSION,
-    HISTORICAL_VARIANT_ALIASES,
+    LEGACY_VARIANT_ALIASES,
     PAIR_DEFINITIONS,
     VARIANT_CONFIGS,
 )
@@ -917,8 +917,54 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
     _write_jsonl(path, rows)
 
 
+def _canonical_eval_variant_name(value: str) -> str:
+    token = str(value).strip()
+    if not token:
+        return token
+    alias_by_upper = {alias.upper(): target for alias, target in LEGACY_VARIANT_ALIASES.items()}
+    direct_by_upper = {variant.upper(): variant for variant in VARIANT_CONFIGS}
+    if token.upper() in alias_by_upper:
+        return alias_by_upper[token.upper()]
+    if token.upper() in direct_by_upper:
+        return direct_by_upper[token.upper()]
+    try:
+        return canonical_variant_name(token)
+    except ValueError:
+        return token
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _canonicalize_result_rows(rows: list[dict]) -> list[dict]:
+    normalized: list[dict] = []
+    for row in rows:
+        raw_variant = row.get("variant")
+        if raw_variant is None:
+            normalized.append(row)
+            continue
+        canonical_variant = _canonical_eval_variant_name(str(raw_variant))
+        if canonical_variant == raw_variant:
+            normalized.append(row)
+            continue
+        normalized_row = dict(row)
+        normalized_row["variant"] = canonical_variant
+        normalized_row.setdefault("legacy_variant", raw_variant)
+        normalized.append(normalized_row)
+    return normalized
+
+
 def summarize_results(rows: list[dict], variants: list[str]) -> dict[str, Any]:
-    return _summarize_results(rows, variants, pair_definitions=PAIR_DEFINITIONS)
+    canonical_variants = _dedupe_preserve_order([_canonical_eval_variant_name(variant) for variant in variants])
+    return _summarize_results(_canonicalize_result_rows(rows), canonical_variants, pair_definitions=PAIR_DEFINITIONS)
 
 def render_summary_markdown(summary: dict) -> str:
     return _render_summary_markdown(summary)
@@ -1567,6 +1613,7 @@ def _variant_fingerprints(args: argparse.Namespace, variants: list[str]) -> dict
     dataset_sha = _sha256_file(args.dataset)
     out: dict[str, dict[str, Any]] = {}
     for variant in variants:
+        config = VARIANT_CONFIGS[variant]
         env = _merged_env(variant)
         try:
             profile_metadata = resolve_variant_profile(
@@ -1579,6 +1626,32 @@ def _variant_fingerprints(args: argparse.Namespace, variants: list[str]) -> dict
                 "profile_name": variant,
                 "historical_alias": None,
             }
+        profile_metadata.update(
+            {
+                key: value
+                for key, value in config.items()
+                if key
+                in {
+                    "rag_profile",
+                    "rag_k",
+                    "rag_i",
+                    "rag_m",
+                    "rag_a",
+                    "rag_dtype",
+                    "legacy_variant",
+                    "historical_alias",
+                    "profile_key",
+                    "index_key",
+                    "mode_key",
+                    "acceleration_key",
+                    "dtype_key",
+                    "profile_name",
+                    "rerank_torch_dtype",
+                    "device_request",
+                }
+                and value is not None
+            }
+        )
         resolved_config = {
             "index_profile": env.get("RAG_INDEX_PROFILE") or "legacy",
             "collection": env.get("MILVUS_COLLECTION") or "embeddings_collection",
@@ -1609,13 +1682,23 @@ def _variant_fingerprints(args: argparse.Namespace, variants: list[str]) -> dict
         }
         out[variant] = {
             **profile_metadata,
+            "rag_profile": profile_metadata.get("rag_profile") or profile_metadata.get("profile_name") or variant,
+            "rag_k": profile_metadata.get("rag_k") or profile_metadata.get("profile_key") or variant,
+            "rag_i": profile_metadata.get("rag_i") or profile_metadata.get("index_key"),
+            "rag_m": profile_metadata.get("rag_m") or profile_metadata.get("mode_key"),
+            "rag_a": profile_metadata.get("rag_a") or profile_metadata.get("acceleration_key"),
+            "rag_dtype": profile_metadata.get("rag_dtype") or profile_metadata.get("dtype_key"),
+            "legacy_variant": profile_metadata.get("legacy_variant") or profile_metadata.get("historical_alias"),
             "index_profile": env.get("RAG_INDEX_PROFILE") or "legacy",
             "collection": env.get("MILVUS_COLLECTION") or "embeddings_collection",
             "text_mode": env.get("EVAL_RETRIEVAL_TEXT_MODE"),
             "bm25_state": env.get("BM25_STATE_PATH"),
+            "bm25_state_path": env.get("BM25_STATE_PATH"),
+            "retrieval_text_mode": env.get("EVAL_RETRIEVAL_TEXT_MODE"),
             "embedding_provider": env.get("EMBEDDING_PROVIDER") or os.getenv("EMBEDDING_PROVIDER", "local"),
             "embedding_model": env.get("EMBEDDING_MODEL") or os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"),
             "reranker_model": env.get("RERANK_MODEL") or os.getenv("RERANK_MODEL"),
+            "rerank_torch_dtype": resolved_config["rerank_torch_dtype"],
             "resolved_config": resolved_config,
             "profile_config_hash": _config_hash(payload),
         }
@@ -1793,7 +1876,13 @@ def _miss_analysis_rows(rows: list[dict]) -> list[dict]:
 
 
 def _saved_results_variants(rows: list[dict], raw_variants: str) -> list[str]:
-    row_variants = sorted({str(row.get("variant")) for row in rows if row.get("variant")})
+    row_variants = sorted(
+        {
+            _canonical_eval_variant_name(str(row.get("variant")))
+            for row in rows
+            if row.get("variant")
+        }
+    )
     if not row_variants:
         return []
     if raw_variants == DEFAULT_VARIANTS:
@@ -1993,28 +2082,13 @@ def run_matrix(args: argparse.Namespace) -> int:
 
 
 def parse_variants(raw: str) -> list[str]:
-    canonical_by_upper = {variant.upper(): variant for variant in VARIANT_CONFIGS}
-    historical_by_upper = {alias.upper(): canonical for alias, canonical in HISTORICAL_VARIANT_ALIASES.items()}
     variants: list[str] = []
     for item in raw.split(","):
         stripped = item.strip()
         if not stripped:
             continue
-        direct = canonical_by_upper.get(stripped.upper()) or historical_by_upper.get(stripped.upper())
-        if direct:
-            try:
-                resolved = canonical_variant_name(direct)
-            except ValueError:
-                resolved = direct
-            if resolved not in variants:
-                variants.append(resolved)
-            continue
-        try:
-            resolved = canonical_variant_name(stripped)
-        except ValueError:
-            resolved = stripped
-        if resolved not in variants:
-            variants.append(resolved)
+        variants.append(_canonical_eval_variant_name(stripped))
+    variants = _dedupe_preserve_order(variants)
     unknown = [variant for variant in variants if variant not in VARIANT_CONFIGS]
     if unknown:
         raise ValueError(f"unknown variants: {', '.join(unknown)}")

@@ -51,7 +51,7 @@ K2 / I2 / M0 / A1 / fp16
 | `S1_linear` | `K1` |
 | `V3Q` | `K2` |
 | `V3Q_OPT` | `K3` |
-| `V3Q_LAYERED` / `EXP_C*` | 实验档，不作为默认产品名 |
+| `V3Q_LAYERED` / `EXP_C*` | `K2_LAYERED` 兼容实验档，不作为默认产品名 |
 | `V4_SHADOW` | `M1` |
 | `V4_ACTIVE` | `M2` |
 | `FP16` / `BF16` / `FP32` | dtype 维度 |
@@ -65,8 +65,8 @@ K2 / I2 / M0 / A1 / fp16
 | `S1_linear` | `K1` | 默认稳定档，关闭 QueryPlan 和强 CE 路径，适合低延迟基线 |
 | `V3Q` | `K2` | 当前强证据档，包含 QueryPlan、heading lexical、pair enrichment、score fusion |
 | `V3Q_OPT` | `K3` | `K2` 的轻量版，降低 candidate 和 CrossEncoder 成本 |
-| `V3Q_LAYERED` | 实验档 | 分层重排实验，不作为默认产品名 |
-| `EXP_C*` | 实验档 | 参数探索记录，不作为默认产品名 |
+| `V3Q_LAYERED` | `K2_LAYERED` 实验档 | 分层重排兼容入口，不作为默认产品名 |
+| `EXP_C*` | `K2_LAYERED` 实验档 | 参数探索兼容入口，不作为默认产品名 |
 | `V4_SHADOW` | `M1` | 只记录模式路由判断，不影响结果 |
 | `V4_ACTIVE` | `M2` | 模式路由真正影响链路，未接入前不能描述为默认 active |
 
@@ -145,7 +145,7 @@ K3/I2/M0/A1/fp16 (legacy: V3Q_OPT)
 
 1. 文档层：本文档先固定映射、历史数据和新报告写法。
 2. 评测层：`evaluate_rag_matrix.py` 接受 `K1/K2/K3`，旧名解析到对应短名。
-3. 报告层：新报告主显示完整短名，同时记录 historical alias、collection、BM25 state 和配置指纹。
+3. 报告层：新报告主显示完整短名，同时记录 legacy alias、collection、BM25 state 和配置指纹。
 4. 运行层：`.env` 中的 `RAG_DTYPE` 被实际 rerank 链路消费；`RAG_A` 被设备解析链路消费。
 5. 清理层：新文档、新命令和新 PR 描述使用短名；旧名只保留在 alias 表、历史报告说明和兼容入口里。
 
@@ -217,3 +217,10 @@ RERANK_TOP_N=30
 3. 旧名只做 alias，不再作为新文档标题或默认入口。
 4. 评测报告必须同时记录短名、旧 alias、collection、BM25 path、dtype 和关键开关。
 5. Deep Mode 在真正接入执行链路前，只能标记为 `M1` shadow 或 suggest-only，不能描述为默认 active。
+
+## 项目约束
+
+- `scripts/rag_eval/variants.py` 中属于 RAG 产品档的公开配置使用规范名；`S1_linear`、`V3Q`、`V3Q_OPT`、`V3Q_LAYERED`、`EXP_C*` 只能出现在 `LEGACY_VARIANT_ALIASES`、历史说明或兼容测试中。
+- 默认评测入口使用 `K2,K3`；旧命令 `--variants V3Q,V3Q_OPT` 必须解析为 `K2,K3`，并且结果去重。
+- 新报告和 fingerprint 必须输出 `rag_profile`、`rag_k`、`rag_i`、`rag_m`、`rag_a`、`rag_dtype`、`legacy_variant`、collection、BM25 path、dtype 和关键检索参数。
+- 新增测试、评测脚本和项目文档默认写 `K/I/M/A/dtype` 命名；需要提旧名时必须明确它是 legacy alias 或历史报告上下文。
