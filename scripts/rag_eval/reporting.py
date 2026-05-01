@@ -152,6 +152,33 @@ def render_summary_markdown(summary: dict[str, Any]) -> str:
             )
         )
 
+    if any(
+        metrics.get("rerank_enabled_rate") is not None
+        or metrics.get("rerank_applied_rate") is not None
+        or metrics.get("ce_predict_executed_rate") is not None
+        for metrics in summary.get("variants", {}).values()
+    ):
+        lines.extend([
+            "",
+            "## Rerank / CE",
+            "",
+            "| Variant | RerankEnabled | RerankApplied | CEPredictExec | CECacheHit | CEInputAvg | CEP50 ms | CEP95 ms |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ])
+        for variant, metrics in summary.get("variants", {}).items():
+            lines.append(
+                "| {variant} | {enabled} | {applied} | {executed} | {cache_hit} | {input_avg} | {p50} | {p95} |".format(
+                    variant=_variant_label(summary, variant),
+                    enabled=fmt_metric(metrics.get("rerank_enabled_rate")),
+                    applied=fmt_metric(metrics.get("rerank_applied_rate")),
+                    executed=fmt_metric(metrics.get("ce_predict_executed_rate")),
+                    cache_hit=fmt_metric(metrics.get("ce_cache_hit_rate")),
+                    input_avg=fmt_metric(metrics.get("avg_ce_input_count")),
+                    p50=fmt_metric(metrics.get("p50_ce_latency_ms")),
+                    p95=fmt_metric(metrics.get("p95_ce_latency_ms")),
+                )
+            )
+
     lines.extend([
         "",
         "## Qrel Coverage",

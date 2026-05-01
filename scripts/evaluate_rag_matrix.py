@@ -1059,6 +1059,27 @@ def _stage_metrics(meta: dict, expected: dict[str, Any], top_k: int) -> dict[str
     }
 
 
+def _rerank_observability_metrics(meta: dict) -> dict[str, Any]:
+    ce_latency = meta.get("ce_latency_ms")
+    try:
+        ce_latency_value = float(ce_latency) if ce_latency is not None else None
+    except (TypeError, ValueError):
+        ce_latency_value = None
+    try:
+        ce_input_count = int(meta.get("ce_input_count") or meta.get("rerank_input_count") or 0)
+    except (TypeError, ValueError):
+        ce_input_count = 0
+    ce_cache_hit = bool(meta.get("ce_cache_hit") or meta.get("rerank_cache_hit"))
+    return {
+        "rerank_enabled": bool(meta.get("rerank_enabled")),
+        "rerank_applied": bool(meta.get("rerank_applied")),
+        "ce_predict_executed": ce_latency_value is not None and not ce_cache_hit,
+        "ce_cache_hit": ce_cache_hit,
+        "ce_input_count": ce_input_count,
+        "ce_latency_ms": ce_latency_value,
+    }
+
+
 def _metric_success(metrics: dict[str, Any]) -> bool:
     id_recall = metrics.get("id_context_recall_at_5")
     return bool(metrics.get("hit_at_5") or (isinstance(id_recall, (int, float)) and id_recall > 0))
@@ -1154,6 +1175,7 @@ def evaluate_sample(record: dict, variant: str, top_k: int, mode: str = "retriev
                     "fallback_hurt": False,
                 }
             )
+        metrics.update(_rerank_observability_metrics(meta))
         if answer_eval is not None:
             metrics.update(
                 {
@@ -1323,6 +1345,7 @@ def _summarize_trace(meta: dict) -> dict[str, Any]:
         "leaf_retrieve_level",
         "rerank_enabled",
         "rerank_applied",
+        "rerank_model",
         "rerank_top_n",
         "rerank_cpu_top_n_cap",
         "rerank_input_count",
@@ -1367,6 +1390,11 @@ def _summarize_trace(meta: dict) -> dict[str, Any]:
         "context_chars",
         "retrieved_chunk_count",
         "final_context_chunk_count",
+        "fallback_second_pass_mode",
+        "expanded_retrieval_skipped_reason",
+        "expanded_candidate_count",
+        "final_rerank_input_count",
+        "fallback_saved_rerank",
     ]
     summary = {key: meta.get(key) for key in keys if key in meta}
     for trace_key in (
@@ -1541,6 +1569,8 @@ def _variant_fingerprints(args: argparse.Namespace, variants: list[str]) -> dict
             "rerank_input_k_gpu": env.get("RERANK_INPUT_K_GPU"),
             "rerank_input_k_cpu": env.get("RERANK_INPUT_K_CPU"),
             "rerank_top_n": env.get("RERANK_TOP_N"),
+            "rerank_provider": env.get("RERANK_PROVIDER"),
+            "rerank_model": env.get("RERANK_MODEL"),
             "rerank_torch_dtype": profile_metadata.get("rerank_torch_dtype") or env.get("RERANK_TORCH_DTYPE"),
             "query_plan_enabled": env.get("QUERY_PLAN_ENABLED"),
             "heading_lexical_enabled": env.get("HEADING_LEXICAL_ENABLED"),

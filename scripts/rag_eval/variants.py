@@ -17,6 +17,11 @@ GOLD_TC_COLLECTION = "embeddings_collection_gold_tc"
 GOLD_TCF_COLLECTION = "embeddings_collection_gold_tcf"
 V3_QUALITY_COLLECTION = "embeddings_collection_v3_quality"
 V3_FAST_COLLECTION = "embeddings_collection_v3_fast"
+DEFAULT_RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
+DEFAULT_CE_ENV = {
+    "RERANK_MODEL": DEFAULT_RERANK_MODEL,
+    "RERANK_PROVIDER": "local",
+}
 DEFAULT_VARIANTS = "A0,A1,B1,G0,G1,G2,G3"
 
 VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
@@ -205,6 +210,7 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "LOW_CONF_ROOT_SHARE": "0.45",
             "LOW_CONF_TOP_SCORE": "0.20",
             "ENABLE_ANCHOR_GATE": "true",
+            "RAG_FALLBACK_ENABLED": "true",
             "RERANK_TOP_N": "0",
         },
     },
@@ -341,6 +347,7 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "HEADING_LEXICAL_WEIGHT": "0.15",
             "RERANK_PAIR_ENRICHMENT_ENABLED": "true",
             "RERANK_SCORE_FUSION_ENABLED": "true",
+            **DEFAULT_CE_ENV,
             "RERANK_FUSION_RERANK_WEIGHT": "0.65",
             "RERANK_FUSION_RRF_WEIGHT": "0.20",
             "RERANK_FUSION_SCOPE_WEIGHT": "0.10",
@@ -376,6 +383,7 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "HEADING_LEXICAL_WEIGHT": "0.15",
             "RERANK_PAIR_ENRICHMENT_ENABLED": "true",
             "RERANK_SCORE_FUSION_ENABLED": "true",
+            **DEFAULT_CE_ENV,
             "RERANK_FUSION_RERANK_WEIGHT": "0.65",
             "RERANK_FUSION_RRF_WEIGHT": "0.20",
             "RERANK_FUSION_SCOPE_WEIGHT": "0.10",
@@ -401,6 +409,7 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "STRUCTURE_RERANK_ENABLED": "true",
             "RERANK_SCORE_FUSION_ENABLED": "true",
             "RERANK_PAIR_ENRICHMENT_ENABLED": "true",
+            **DEFAULT_CE_ENV,
             "CONFIDENCE_GATE_ENABLED": "false",
             "QUERY_PLAN_ENABLED": "true",
             "HEADING_LEXICAL_ENABLED": "true",
@@ -675,6 +684,7 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "HEADING_LEXICAL_WEIGHT": "0.15",
             "RERANK_PAIR_ENRICHMENT_ENABLED": "true",
             "RERANK_SCORE_FUSION_ENABLED": "true",
+            **DEFAULT_CE_ENV,
             "RERANK_FUSION_RERANK_WEIGHT": "0.65",
             "RERANK_FUSION_RRF_WEIGHT": "0.20",
             "RERANK_FUSION_SCOPE_WEIGHT": "0.10",
@@ -700,6 +710,25 @@ def _profiled_env(base_variant: str, *, profile: str, collection: str, state_nam
             "BM25_STATE_PATH": str(PROJECT_ROOT / "data" / state_name),
         }
     )
+    return env
+
+
+def _profile_fallback_env(base_variant: str, *, candidate_only: bool = False) -> dict[str, str]:
+    env = {key: str(value) for key, value in VARIANT_CONFIGS[base_variant]["env"].items()}
+    env.update(
+        {
+            "CONFIDENCE_GATE_ENABLED": "true",
+            "LOW_CONF_TOP_MARGIN": "0.05",
+            "LOW_CONF_ROOT_SHARE": "0.45",
+            "LOW_CONF_TOP_SCORE": "0.20",
+            "ENABLE_ANCHOR_GATE": "true",
+            "RAG_FALLBACK_ENABLED": "true",
+        }
+    )
+    if candidate_only:
+        env["RAG_FALLBACK_CANDIDATE_ONLY"] = "true"
+    else:
+        env.pop("RAG_FALLBACK_CANDIDATE_ONLY", None)
     return env
 
 
@@ -792,6 +821,35 @@ VARIANT_CONFIGS.update(
     }
 )
 
+VARIANT_CONFIGS.update(
+    {
+        "K2F": {
+            **VARIANT_CONFIGS["K2"],
+            "description": "K2 quality with confidence gate and full fallback enabled",
+            "requires_reindex": False,
+            "env": _profile_fallback_env("K2"),
+        },
+        "K2F_CAND": {
+            **VARIANT_CONFIGS["K2"],
+            "description": "K2 quality with confidence gate and candidate-only fallback enabled",
+            "requires_reindex": False,
+            "env": _profile_fallback_env("K2", candidate_only=True),
+        },
+        "K3F": {
+            **VARIANT_CONFIGS["K3"],
+            "description": "K3 fast evidence with confidence gate and full fallback enabled",
+            "requires_reindex": False,
+            "env": _profile_fallback_env("K3"),
+        },
+        "K3F_CAND": {
+            **VARIANT_CONFIGS["K3"],
+            "description": "K3 fast evidence with confidence gate and candidate-only fallback enabled",
+            "requires_reindex": False,
+            "env": _profile_fallback_env("K3", candidate_only=True),
+        },
+    }
+)
+
 PAIR_DEFINITIONS = (
     ("A1_vs_A0", "A0", "A1"),
     ("B1_vs_A1", "A1", "B1"),
@@ -819,6 +877,10 @@ PAIR_DEFINITIONS = (
     ("V3Q_vs_S3", "S3", "V3Q"),
     ("V3F_vs_V3Q", "V3Q", "V3F"),
     ("V3Q_OPT_vs_V3Q", "V3Q", "V3Q_OPT"),
+    ("K2F_vs_K2", "K2", "K2F"),
+    ("K2F_CAND_vs_K2F", "K2F", "K2F_CAND"),
+    ("K3F_vs_K3", "K3", "K3F"),
+    ("K3F_CAND_vs_K3F", "K3F", "K3F_CAND"),
 )
 
 
