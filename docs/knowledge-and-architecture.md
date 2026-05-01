@@ -318,7 +318,7 @@ PDF/Word/Excel 文件
        │    │   → Milvus RRFRanker(k=60) 融合
        │    └── 如果 scope == "boost": 应用文件名加权
        │
-       └─── [Layered 路径] LAYERED_RERANK_ENABLED 时
+       └─── [Layered 候选策略] RAG_CANDIDATE_STRATEGY=layered 时
             ├── split_retrieve(): 分离 dense/sparse 检索
             │   各自独立返回带分数的候选集
             ├── 添加 hybrid_guarantee 候选（确保混合策略的覆盖）
@@ -331,39 +331,22 @@ PDF/Word/Excel 文件
        │  可选: filename_boost / heading_lexical_scoring
        │
        ▼
-  ⑥ 重排序流水线 — 两条路径
+  ⑥ 候选策略 + 共享重排序流水线
        │
-       ├─── [分层重排序] Layered L0→L1→L2→L3
+       ├─── [候选层] standard / layered
        │    │
-       │    ├── L1 Prefilter (3-Slot 架构):
+       │    ├── layered L1 Prefilter (3-Slot 架构):
        │    │   ├── Slot C (保证槽): 锚点块 + scope 匹配文件块 (≤20)
        │    │   ├── Slot A (文件感知槽): 按文件聚合评分，top12 文件各取 top-N 块 (≥18)
        │    │   └── Slot B (路径保证槽): dense-only + sparse-only + metadata 块 (≥6)
        │    │   → 合并去重 → L1 候选集 (30~40 个)
        │    │
-       │    ├── L2 自适应 K:
-       │    │   ├── 高置信: CE 输入 25, 输出 15
-       │    │   ├── 默认:   CE 输入 32, 输出 15
-       │    │   └── 低置信: CE 输入 40, 输出 20
-       │    │
-       │    ├── L3 神经重排序:
-       │    │   CrossEncoder.predict([[query, text], ...])
-       │    │   + 分数融合 (CE 65% + RRF 20% + scope 10% + metadata 5%)
-       │    │
-       │    └── L4 结构重排序:
-       │         root 加权 + 同 root 多样性上限
+       │    └── standard 直接输出 scoped/global hybrid 候选池
        │
-       └─── [标准重排序]
-            ├── 神经重排序策略路由 (rerank_policy.py):
-            │   规则优先决策:
-            │     <3 候选 → skip_ce
-            │     精确文件匹配 + 高 margin → skip_ce
-            │     大多样池 (>30, ≥5 roots) → use_ce_full
-            │     低 margin (<0.08) → use_ce_light
-            │     不确定 → LLM 路由决策
-            │
-            ├── CrossEncoder 重排序
-            └── 分数融合 (同上权重)
+       └─── [共享 L2/L3]
+            ├── rerank.py 是唯一 CrossEncoder 重排序实现
+            ├── shared-rerank-v2 统一 pair enrichment / cache / 分数融合
+            └── shared-postprocess-v1 统一结构 rerank / confidence / trace 收口
        │
        ▼
   ⑦ 置信度门控 (confidence.py)
