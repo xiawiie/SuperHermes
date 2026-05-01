@@ -228,7 +228,108 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             )
 
         self.assertEqual(result.trace_patch["candidate_strategy"], "layered_split")
+        self.assertEqual(result.trace_patch["candidate_strategy_family"], "layered")
+        self.assertEqual(result.trace_patch["candidate_strategy_version"], "candidate-strategy-v1")
         self.assertEqual(result.trace_patch["rerank_strategy"], "shared_pipeline")
+        self.assertEqual(result.trace_patch["rerank_contract_version"], "shared-rerank-v1")
+
+    def test_global_candidate_strategy_marks_shared_rerank_contract(self):
+        trace_patch = {"query_plan_enabled": True}
+        embeddings = rag_utils.QueryEmbeddings(dense=[0.1, 0.2], sparse={1: 0.5})
+        docs = [{"text": "candidate", "filename": "manual.pdf", "chunk_id": "c1", "score": 0.5}]
+
+        with patch.object(rag_utils._milvus_manager, "hybrid_retrieve", return_value=docs):
+            result = rag_utils.retrieve_global_candidates(
+                embeddings,
+                candidate_k=5,
+                filter_expr="chunk_level == 3",
+                timings={},
+                trace_patch=trace_patch,
+            )
+
+        self.assertEqual(result.trace_patch["candidate_strategy"], "global_hybrid")
+        self.assertEqual(result.trace_patch["candidate_strategy_family"], "standard")
+        self.assertEqual(result.trace_patch["rerank_strategy"], "shared_pipeline")
+        self.assertEqual(result.trace_patch["rerank_contract_version"], "shared-rerank-v1")
+
+    def test_scoped_candidate_strategy_marks_shared_rerank_contract(self):
+        trace_patch = {"query_plan_enabled": True, "scope_filter_applied": True}
+        embeddings = rag_utils.QueryEmbeddings(dense=[0.1, 0.2], sparse={1: 0.5})
+        filters = rag_utils.RetrievalFilters(
+            base_filter="chunk_level == 3",
+            filename_filter="",
+            effective_filter="chunk_level == 3",
+            scoped_filter='chunk_level == 3 and filename in ["manual.pdf"]',
+            matched_files=[("manual.pdf", 1.0)],
+        )
+        docs = [{"text": "candidate", "filename": "manual.pdf", "chunk_id": "c1", "score": 0.5}]
+
+        with patch.object(rag_utils._milvus_manager, "hybrid_retrieve", return_value=docs):
+            result = rag_utils.retrieve_scoped_candidates(
+                embeddings,
+                candidate_k=5,
+                filters=filters,
+                timings={},
+                trace_patch=trace_patch,
+            )
+
+        self.assertEqual(result.trace_patch["candidate_strategy"], "scoped_hybrid")
+        self.assertEqual(result.trace_patch["candidate_strategy_family"], "standard")
+        self.assertEqual(result.trace_patch["rerank_strategy"], "shared_pipeline")
+        self.assertEqual(result.trace_patch["rerank_contract_version"], "shared-rerank-v1")
+
+    def test_layered_retrieve_documents_uses_shared_rerank_once(self):
+        docs = [
+            {
+                "text": "candidate",
+                "retrieval_text": "candidate",
+                "filename": "manual.pdf",
+                "chunk_id": "c1",
+                "score": 0.5,
+                "dense_rank": 1,
+                "sparse_rank": 1,
+                "in_dense": True,
+                "in_sparse": True,
+            }
+        ]
+
+        with (
+            patch.object(rag_utils, "_LAYERED_CONFIG", load_layered_rerank_config({"LAYERED_RERANK_ENABLED": "true"})),
+            patch.object(rag_utils._embedding_service, "get_embeddings", return_value=[[0.1, 0.2]]),
+            patch.object(rag_utils._embedding_service, "get_sparse_embedding", return_value={1: 0.5}),
+            patch.object(rag_utils._milvus_manager, "split_retrieve", return_value=docs),
+            patch.object(rag_utils._milvus_manager, "hybrid_retrieve", return_value=[]),
+            patch(
+                "backend.rag.utils._rerank_documents",
+                side_effect=lambda query, docs, top_k: (
+                    docs[:top_k],
+                    {
+                        "rerank_enabled": True,
+                        "rerank_applied": True,
+                        "rerank_model": "fake-reranker",
+                        "rerank_error": None,
+                    },
+                ),
+            ) as rerank,
+            patch(
+                "backend.rag.utils._apply_structure_rerank",
+                side_effect=lambda docs, top_k: (
+                    docs[:top_k],
+                    {"structure_rerank_enabled": False, "structure_rerank_applied": False},
+                ),
+            ),
+            patch(
+                "backend.rag.utils._evaluate_retrieval_confidence",
+                return_value={"confidence_gate_enabled": False, "fallback_required": False, "confidence_reasons": []},
+            ),
+        ):
+            result = rag_utils.retrieve_documents("query", top_k=1)
+
+        self.assertEqual(rerank.call_count, 1)
+        self.assertEqual(result["meta"]["candidate_strategy"], "layered_split")
+        self.assertEqual(result["meta"]["candidate_strategy_family"], "layered")
+        self.assertEqual(result["meta"]["rerank_strategy"], "shared_pipeline")
+        self.assertEqual(result["meta"]["rerank_contract_version"], "shared-rerank-v1")
 
     def test_retrieval_knobs_are_passed_to_milvus_and_trace(self):
         docs = [

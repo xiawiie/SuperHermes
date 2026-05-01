@@ -2,6 +2,7 @@
 
 The final CrossEncoder and structure rerank live in the shared retrieval pipeline.
 This module only shapes the candidate pool before that shared post-processing.
+The filename is kept for compatibility with existing imports and flags.
 """
 from __future__ import annotations
 
