@@ -6,7 +6,8 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 import backend.rag.utils as rag_utils  # noqa: E402
-from backend.rag.runtime_config import load_layered_rerank_config, load_runtime_config  # noqa: E402
+from backend.rag.candidate_strategy import CandidateStrategyId  # noqa: E402
+from backend.rag.runtime_config import load_candidate_strategy_config, load_runtime_config  # noqa: E402
 
 
 class RagUtilsDiagnosticsTests(unittest.TestCase):
@@ -16,11 +17,7 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             "RERANK_TOP_N": "9",
             "MILVUS_SEARCH_EF": "111",
             "MILVUS_RRF_K": "44",
-            "LAYERED_RERANK_ENABLED": "true",
-            "L0_DENSE_TOP_K": "21",
-            "L1_CHUNKS_PER_SCOPE_FILE": "8",
-            "L2_CE_DEFAULT_K": "13",
-            "L3_ROOT_WEIGHT": "0.27",
+            "RAG_CANDIDATE_STRATEGY": "layered",
             "RAG_FAST_ENABLED": "true",
             "RAG_DEEP_ENABLED": "true",
             "RAG_FAST_EXPERIMENT": "shadow",
@@ -35,7 +32,7 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         }
 
         config = load_runtime_config(env)
-        layered = load_layered_rerank_config(env)
+        candidate_strategy = load_candidate_strategy_config(env)
 
         self.assertEqual(config.rag_candidate_k, 77)
         self.assertEqual(config.rerank_top_n, 9)
@@ -45,7 +42,7 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         self.assertEqual(config.execution_mode, "STANDARD")
         self.assertFalse(config.deep_executed)
         self.assertFalse(config.plan_applied)
-        self.assertTrue(config.layered_candidate_enabled)
+        self.assertEqual(config.candidate_strategy.strategy, CandidateStrategyId.LAYERED)
         self.assertTrue(config.citation_verify_enabled)
         self.assertTrue(config.unified_execution_enabled)
         self.assertTrue(config.deep_shadow_enabled)
@@ -56,11 +53,13 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         self.assertEqual(config.reserved_flags["RAG_FAST_EXPERIMENT"], "shadow")
         self.assertEqual(config.reserved_flags["RAG_DEEP_TRACE"], "shadow")
         self.assertNotIn("RAG_MODEL", config.reserved_flags)
-        self.assertTrue(layered.enabled)
-        self.assertEqual(layered.l0_dense_top_k, 21)
-        self.assertEqual(layered.l1_chunks_per_scope_file, 8)
-        self.assertEqual(layered.l2_ce_default_k, 13)
-        self.assertEqual(layered.l3_root_weight, 0.27)
+        self.assertEqual(candidate_strategy.strategy, CandidateStrategyId.LAYERED)
+
+    def test_legacy_layered_env_is_ignored_by_runtime_config(self):
+        legacy_flag = "LAYERED_" + "RERANK_ENABLED"
+        config = load_runtime_config({legacy_flag: "true"})
+
+        self.assertEqual(config.candidate_strategy.strategy, CandidateStrategyId.STANDARD)
 
     def test_candidate_trace_includes_stable_signature_fields(self):
         traced = rag_utils._candidate_trace(
@@ -123,7 +122,7 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             patch.object(rag_utils._milvus_manager, "split_retrieve", side_effect=RuntimeError("split down")),
             patch.object(rag_utils._milvus_manager, "hybrid_retrieve", return_value=docs),
         ):
-            result = rag_utils.retrieve_layered_candidates(
+            result = rag_utils.retrieve_layered_candidate_pool(
                 embeddings,
                 candidate_k=5,
                 filter_expr='chunk_level == 3 and filename in ["manual.pdf"]',
@@ -157,7 +156,7 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         docs = [{"text": "fallback", "filename": "manual.pdf", "chunk_id": "c1", "score": 0.5}]
 
         with patch.object(rag_utils._milvus_manager, "dense_retrieve", return_value=docs):
-            result = rag_utils.retrieve_layered_candidates(
+            result = rag_utils.retrieve_layered_candidate_pool(
                 embeddings,
                 candidate_k=5,
                 filter_expr='chunk_level == 3 and filename in ["manual.pdf"]',
@@ -204,7 +203,7 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             patch.object(rag_utils._milvus_manager, "split_retrieve", return_value=docs),
             patch.object(rag_utils._milvus_manager, "hybrid_retrieve", return_value=[]),
         ):
-            result = rag_utils.retrieve_layered_candidates(
+            result = rag_utils.retrieve_layered_candidate_pool(
                 embeddings,
                 candidate_k=5,
                 filter_expr='chunk_level == 3',
@@ -227,11 +226,14 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
                 retrieval_mode="hybrid",
             )
 
-        self.assertEqual(result.trace_patch["candidate_strategy"], "layered_split")
-        self.assertEqual(result.trace_patch["candidate_strategy_family"], "layered")
-        self.assertEqual(result.trace_patch["candidate_strategy_version"], "candidate-strategy-v1")
-        self.assertEqual(result.trace_patch["rerank_strategy"], "shared_pipeline")
-        self.assertEqual(result.trace_patch["rerank_contract_version"], "shared-rerank-v1")
+        self.assertEqual(result.trace_patch["pipeline_stage_model"], "rag-l0-l3-v1")
+        self.assertEqual(result.trace_patch["candidate_strategy_requested"], "layered")
+        self.assertEqual(result.trace_patch["candidate_strategy_effective"], "layered")
+        self.assertEqual(result.trace_patch["candidate_strategy_detail"], "layered_split")
+        self.assertEqual(result.trace_patch["candidate_strategy_version"], "candidate-strategy-v2")
+        self.assertEqual(result.trace_patch["rerank_contract"], "shared_rerank")
+        self.assertEqual(result.trace_patch["rerank_contract_version"], "shared-rerank-v2")
+        self.assertEqual(result.trace_patch["postprocess_contract"], "shared_retrieval_postprocess")
 
     def test_global_candidate_strategy_marks_shared_rerank_contract(self):
         trace_patch = {"query_plan_enabled": True}
@@ -247,10 +249,11 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
                 trace_patch=trace_patch,
             )
 
-        self.assertEqual(result.trace_patch["candidate_strategy"], "global_hybrid")
-        self.assertEqual(result.trace_patch["candidate_strategy_family"], "standard")
-        self.assertEqual(result.trace_patch["rerank_strategy"], "shared_pipeline")
-        self.assertEqual(result.trace_patch["rerank_contract_version"], "shared-rerank-v1")
+        self.assertEqual(result.trace_patch["candidate_strategy_requested"], "standard")
+        self.assertEqual(result.trace_patch["candidate_strategy_effective"], "standard")
+        self.assertEqual(result.trace_patch["candidate_strategy_detail"], "global_hybrid")
+        self.assertEqual(result.trace_patch["rerank_contract"], "shared_rerank")
+        self.assertEqual(result.trace_patch["rerank_contract_version"], "shared-rerank-v2")
 
     def test_scoped_candidate_strategy_marks_shared_rerank_contract(self):
         trace_patch = {"query_plan_enabled": True, "scope_filter_applied": True}
@@ -273,10 +276,11 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
                 trace_patch=trace_patch,
             )
 
-        self.assertEqual(result.trace_patch["candidate_strategy"], "scoped_hybrid")
-        self.assertEqual(result.trace_patch["candidate_strategy_family"], "standard")
-        self.assertEqual(result.trace_patch["rerank_strategy"], "shared_pipeline")
-        self.assertEqual(result.trace_patch["rerank_contract_version"], "shared-rerank-v1")
+        self.assertEqual(result.trace_patch["candidate_strategy_requested"], "standard")
+        self.assertEqual(result.trace_patch["candidate_strategy_effective"], "standard")
+        self.assertEqual(result.trace_patch["candidate_strategy_detail"], "scoped_hybrid")
+        self.assertEqual(result.trace_patch["rerank_contract"], "shared_rerank")
+        self.assertEqual(result.trace_patch["rerank_contract_version"], "shared-rerank-v2")
 
     def test_layered_retrieve_documents_uses_shared_rerank_once(self):
         docs = [
@@ -294,7 +298,7 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         ]
 
         with (
-            patch.object(rag_utils, "_LAYERED_CONFIG", load_layered_rerank_config({"LAYERED_RERANK_ENABLED": "true"})),
+            patch.object(rag_utils, "_RUNTIME_CONFIG", load_runtime_config({"RAG_CANDIDATE_STRATEGY": "layered"})),
             patch.object(rag_utils._embedding_service, "get_embeddings", return_value=[[0.1, 0.2]]),
             patch.object(rag_utils._embedding_service, "get_sparse_embedding", return_value={1: 0.5}),
             patch.object(rag_utils._milvus_manager, "split_retrieve", return_value=docs),
@@ -326,10 +330,12 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             result = rag_utils.retrieve_documents("query", top_k=1)
 
         self.assertEqual(rerank.call_count, 1)
-        self.assertEqual(result["meta"]["candidate_strategy"], "layered_split")
-        self.assertEqual(result["meta"]["candidate_strategy_family"], "layered")
-        self.assertEqual(result["meta"]["rerank_strategy"], "shared_pipeline")
-        self.assertEqual(result["meta"]["rerank_contract_version"], "shared-rerank-v1")
+        self.assertEqual(result["meta"]["candidate_strategy_requested"], "layered")
+        self.assertEqual(result["meta"]["candidate_strategy_effective"], "layered")
+        self.assertEqual(result["meta"]["candidate_strategy_detail"], "layered_split")
+        self.assertEqual(result["meta"]["rerank_contract"], "shared_rerank")
+        self.assertEqual(result["meta"]["rerank_contract_version"], "shared-rerank-v2")
+        self.assertEqual(result["meta"]["rerank_execution_mode"], "executed")
 
     def test_retrieval_knobs_are_passed_to_milvus_and_trace(self):
         docs = [
@@ -379,6 +385,7 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         self.assertEqual([doc["chunk_id"] for doc in result["candidates"]], ["c1", "c2"])
         self.assertTrue(result["meta"]["candidate_only"])
         self.assertFalse(result["meta"]["rerank_applied"])
+        self.assertEqual(result["meta"]["rerank_execution_mode"], "skipped_candidate_only")
         self.assertEqual(result["meta"]["candidate_k"], 3)
 
     def test_query_plan_disabled_does_not_load_filename_registry_or_change_query(self):

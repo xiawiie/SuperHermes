@@ -491,6 +491,11 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
                     "ce_latency_ms": 12.5,
                     "mrr": 1.0,
                 },
+                "trace": {
+                    "candidate_strategy_requested": "layered",
+                    "candidate_strategy_effective": "layered",
+                    "rerank_execution_mode": "executed",
+                },
                 "latency_ms": 30.0,
             },
             {
@@ -504,6 +509,11 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
                     "ce_input_count": 0,
                     "mrr": 0.0,
                 },
+                "trace": {
+                    "candidate_strategy_requested": "layered",
+                    "candidate_strategy_effective": "dense_fallback",
+                    "rerank_execution_mode": "skipped_candidate_only",
+                },
                 "latency_ms": 10.0,
             },
         ]
@@ -516,6 +526,9 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
         self.assertEqual(summary["variants"]["K2"]["ce_cache_hit_rate"], 0.5)
         self.assertEqual(summary["variants"]["K2"]["avg_ce_input_count"], 15.0)
         self.assertEqual(summary["variants"]["K2"]["p50_ce_latency_ms"], 12.5)
+        self.assertEqual(summary["variants"]["K2"]["candidate_strategy_requested_distribution"], {"layered": 2})
+        self.assertEqual(summary["variants"]["K2"]["candidate_strategy_effective_distribution"], {"layered": 1, "dense_fallback": 1})
+        self.assertEqual(summary["variants"]["K2"]["rerank_execution_mode_distribution"], {"executed": 1, "skipped_candidate_only": 1})
 
     def test_report_renders_ce_observability_section(self):
         rendered = render_summary_markdown(
@@ -532,6 +545,9 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
                         "avg_ce_input_count": 30.0,
                         "p50_ce_latency_ms": 12.5,
                         "p95_ce_latency_ms": 12.5,
+                        "candidate_strategy_requested_distribution": {"layered": 1},
+                        "candidate_strategy_effective_distribution": {"layered": 1},
+                        "rerank_execution_mode_distribution": {"executed": 1},
                     }
                 },
                 "paired_comparisons": {},
@@ -542,6 +558,8 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
         self.assertIn("## Rerank / CE", rendered)
         self.assertIn("CEInputAvg", rendered)
         self.assertIn("| K2 | 1.000 | 1.000 | 1.000 | 0.000 | 30.000 | 12.500 | 12.500 |", rendered)
+        self.assertIn("## Candidate Strategy", rendered)
+        self.assertIn("| K2 | layered=1 | layered=1 | executed=1 |", rendered)
 
     def test_summarize_trace_keeps_candidate_only_fallback_fields(self):
         trace = _summarize_trace(
@@ -551,6 +569,9 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
                 "expanded_candidate_count": 3,
                 "final_rerank_input_count": 5,
                 "fallback_saved_rerank": True,
+                "candidate_strategy_requested": "layered",
+                "candidate_strategy_effective": "layered",
+                "rerank_execution_mode": "skipped_candidate_only",
             }
         )
 
@@ -558,6 +579,9 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
         self.assertEqual(trace["expanded_candidate_count"], 3)
         self.assertEqual(trace["final_rerank_input_count"], 5)
         self.assertTrue(trace["fallback_saved_rerank"])
+        self.assertEqual(trace["candidate_strategy_requested"], "layered")
+        self.assertEqual(trace["candidate_strategy_effective"], "layered")
+        self.assertEqual(trace["rerank_execution_mode"], "skipped_candidate_only")
 
     def test_phase2_sparse_variants_are_available(self):
         self.assertEqual(parse_variants("P1,P2,P3"), ["P1", "P2", "P3"])
@@ -584,6 +608,14 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
                 self.assertEqual(env["RERANK_MODEL"], "BAAI/bge-reranker-v2-m3")
                 self.assertEqual(env["RERANK_PROVIDER"], "local")
                 self.assertEqual(env["RERANK_TOP_N"], "30")
+
+    def test_layered_eval_variants_use_candidate_strategy_contract(self):
+        env = VARIANT_CONFIGS["V3Q_LAYERED"]["env"]
+
+        self.assertEqual(env["RAG_CANDIDATE_STRATEGY"], "layered")
+        self.assertNotIn("LAYERED_" + "RERANK_ENABLED", env)
+        self.assertNotIn("L2_" + "CE_DEFAULT_K", env)
+        self.assertNotIn("L" + "3_ROOT_WEIGHT", env)
 
     def test_profile_fallback_variants_are_fair_and_candidate_only_is_explicit(self):
         self.assertEqual(parse_variants("K2F,K2F_CAND,K3F,K3F_CAND"), ["K2F", "K2F_CAND", "K3F", "K3F_CAND"])

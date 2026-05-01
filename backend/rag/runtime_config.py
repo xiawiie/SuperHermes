@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Mapping
 
+from backend.rag.candidate_strategy import CandidateStrategyConfig, normalize_candidate_strategy
 from backend.rag.profile_naming import resolve_runtime_dtype
 from backend.rag.profiles import normalize_index_profile
 
@@ -55,36 +56,6 @@ def _bounded_float(env: EnvMapping, name: str, default: float, *, low: float, hi
 
 
 @dataclass(frozen=True)
-class LayeredRerankConfig:
-    enabled: bool = False
-    l0_dense_top_k: int = 80
-    l0_sparse_top_k: int = 80
-    l0_hybrid_guarantee_k: int = 20
-    l0_fallback_pool_min: int = 60
-    l1_top_files: int = 12
-    l1_chunks_per_file_default: int = 3
-    l1_chunks_per_file_top3: int = 4
-    l1_chunks_per_scope_file: int = 6
-    l1_chunk_margin_threshold: float = 0.05
-    l1_route_guarantee_k: int = 5
-    l1_slot_c_max: int = 20
-    l1_slot_a_min: int = 18
-    l1_slot_b_min: int = 6
-    l1_min_candidates: int = 30
-    l1_max_candidates: int = 40
-    l2_ce_high_conf_k: int = 25
-    l2_ce_default_k: int = 32
-    l2_ce_low_conf_k: int = 40
-    l2_ce_top_n: int = 15
-    l2_ce_top_n_low_conf: int = 20
-    l3_root_weight: float = 0.15
-    l3_same_root_cap_default: int = 3
-    l3_same_root_cap_scope_query: int = 5
-    l3_same_root_cap_broad_query: int = 2
-    l3_protect_ce_top3: bool = True
-
-
-@dataclass(frozen=True)
 class RagRuntimeConfig:
     rerank_model: str | None = None
     rerank_provider: str = "local"
@@ -127,47 +98,16 @@ class RagRuntimeConfig:
     deep_shadow_enabled: bool = False
     deep_active_enabled: bool = False
     deep_min_coverage: float = 0.75
-    layered: LayeredRerankConfig = field(default_factory=LayeredRerankConfig)
+    candidate_strategy: CandidateStrategyConfig = field(default_factory=CandidateStrategyConfig)
     execution_mode: str = "STANDARD"
     deep_executed: bool = False
     plan_applied: bool = False
     reserved_flags: dict[str, str] = field(default_factory=dict)
 
-    @property
-    def layered_candidate_enabled(self) -> bool:
-        return self.layered.enabled
 
-
-def load_layered_rerank_config(env: EnvMapping | None = None) -> LayeredRerankConfig:
+def load_candidate_strategy_config(env: EnvMapping | None = None) -> CandidateStrategyConfig:
     env = os.environ if env is None else env
-    return LayeredRerankConfig(
-        enabled=_bool(env, "LAYERED_RERANK_ENABLED", False),
-        l0_dense_top_k=_int(env, "L0_DENSE_TOP_K", 80),
-        l0_sparse_top_k=_int(env, "L0_SPARSE_TOP_K", 80),
-        l0_hybrid_guarantee_k=_int(env, "L0_HYBRID_GUARANTEE_K", 20),
-        l0_fallback_pool_min=_int(env, "L0_FALLBACK_HYBRID_WHEN_POOL_LT", 60),
-        l1_top_files=_int(env, "L1_TOP_FILES", 12),
-        l1_chunks_per_file_default=_int(env, "L1_CHUNKS_PER_FILE_DEFAULT", 3),
-        l1_chunks_per_file_top3=_int(env, "L1_CHUNKS_PER_FILE_TOP3", 4),
-        l1_chunks_per_scope_file=_int(env, "L1_CHUNKS_PER_SCOPE_FILE", 6),
-        l1_chunk_margin_threshold=_float(env, "L1_CHUNK_MARGIN_THRESHOLD", 0.05),
-        l1_route_guarantee_k=_int(env, "L1_ROUTE_GUARANTEE_K", 5),
-        l1_slot_c_max=_int(env, "L1_SLOT_C_MAX", 20),
-        l1_slot_a_min=_int(env, "L1_SLOT_A_MIN", 18),
-        l1_slot_b_min=_int(env, "L1_SLOT_B_MIN", 6),
-        l1_min_candidates=_int(env, "L1_MIN_CANDIDATES", 30),
-        l1_max_candidates=_int(env, "L1_MAX_CANDIDATES", 40),
-        l2_ce_high_conf_k=_int(env, "L2_CE_HIGH_CONF_K", 25),
-        l2_ce_default_k=_int(env, "L2_CE_DEFAULT_K", 32),
-        l2_ce_low_conf_k=_int(env, "L2_CE_LOW_CONF_K", 40),
-        l2_ce_top_n=_int(env, "L2_CE_TOP_N", 15),
-        l2_ce_top_n_low_conf=_int(env, "L2_CE_TOP_N_LOW_CONF", 20),
-        l3_root_weight=_float(env, "L3_ROOT_WEIGHT", 0.15),
-        l3_same_root_cap_default=_int(env, "L3_SAME_ROOT_CAP_DEFAULT", 3),
-        l3_same_root_cap_scope_query=_int(env, "L3_SAME_ROOT_CAP_SCOPE_QUERY", 5),
-        l3_same_root_cap_broad_query=_int(env, "L3_SAME_ROOT_CAP_BROAD_QUERY", 2),
-        l3_protect_ce_top3=_bool(env, "L3_PROTECT_CE_TOP3", True),
-    )
+    return normalize_candidate_strategy(_value(env, "RAG_CANDIDATE_STRATEGY"))
 
 
 def load_runtime_config(env: EnvMapping | None = None) -> RagRuntimeConfig:
@@ -226,6 +166,6 @@ def load_runtime_config(env: EnvMapping | None = None) -> RagRuntimeConfig:
         deep_shadow_enabled=_bool(env, "RAG_DEEP_SHADOW", False),
         deep_active_enabled=_bool(env, "RAG_DEEP_ACTIVE", False),
         deep_min_coverage=_bounded_float(env, "RAG_DEEP_MIN_COVERAGE", 0.75, low=0.0, high=1.0),
-        layered=load_layered_rerank_config(env),
+        candidate_strategy=load_candidate_strategy_config(env),
         reserved_flags=reserved_flags,
     )
