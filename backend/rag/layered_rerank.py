@@ -1,41 +1,47 @@
-"""Layered rerank: L0 split retrieval orchestration, L1 prefilter, L2 adaptive K, L3 helpers."""
+"""Layered candidate strategy: split retrieval orchestration and L1 prefilter helpers.
+
+The final CrossEncoder and structure rerank live in the shared retrieval pipeline.
+This module only shapes the candidate pool before that shared post-processing.
+"""
 from __future__ import annotations
 
-import os
 from collections import defaultdict
 
+from backend.rag.runtime_config import LayeredRerankConfig
 
-# --- Configuration ---
-LAYERED_RERANK_ENABLED = os.getenv("LAYERED_RERANK_ENABLED", "false").lower() == "true"
 
-L0_DENSE_TOP_K = int(os.getenv("L0_DENSE_TOP_K", "80"))
-L0_SPARSE_TOP_K = int(os.getenv("L0_SPARSE_TOP_K", "80"))
-L0_HYBRID_GUARANTEE_K = int(os.getenv("L0_HYBRID_GUARANTEE_K", "20"))
-L0_FALLBACK_POOL_MIN = int(os.getenv("L0_FALLBACK_HYBRID_WHEN_POOL_LT", "60"))
+# --- Backward-compatible default constants ---
+_DEFAULT_CONFIG = LayeredRerankConfig()
 
-L1_TOP_FILES = int(os.getenv("L1_TOP_FILES", "12"))
-L1_CHUNKS_PER_FILE_DEFAULT = int(os.getenv("L1_CHUNKS_PER_FILE_DEFAULT", "3"))
-L1_CHUNKS_PER_FILE_TOP3 = int(os.getenv("L1_CHUNKS_PER_FILE_TOP3", "4"))
-L1_CHUNKS_PER_SCOPE_FILE = int(os.getenv("L1_CHUNKS_PER_SCOPE_FILE", "6"))
-L1_CHUNK_MARGIN_THRESHOLD = float(os.getenv("L1_CHUNK_MARGIN_THRESHOLD", "0.05"))
-L1_ROUTE_GUARANTEE_K = int(os.getenv("L1_ROUTE_GUARANTEE_K", "5"))
-L1_SLOT_C_MAX = int(os.getenv("L1_SLOT_C_MAX", "20"))
-L1_SLOT_A_MIN = int(os.getenv("L1_SLOT_A_MIN", "18"))
-L1_SLOT_B_MIN = int(os.getenv("L1_SLOT_B_MIN", "6"))
-L1_MIN_CANDIDATES = int(os.getenv("L1_MIN_CANDIDATES", "30"))
-L1_MAX_CANDIDATES = int(os.getenv("L1_MAX_CANDIDATES", "40"))
+LAYERED_RERANK_ENABLED = _DEFAULT_CONFIG.enabled
+L0_DENSE_TOP_K = _DEFAULT_CONFIG.l0_dense_top_k
+L0_SPARSE_TOP_K = _DEFAULT_CONFIG.l0_sparse_top_k
+L0_HYBRID_GUARANTEE_K = _DEFAULT_CONFIG.l0_hybrid_guarantee_k
+L0_FALLBACK_POOL_MIN = _DEFAULT_CONFIG.l0_fallback_pool_min
 
-L2_CE_HIGH_CONF_K = int(os.getenv("L2_CE_HIGH_CONF_K", "25"))
-L2_CE_DEFAULT_K = int(os.getenv("L2_CE_DEFAULT_K", "32"))
-L2_CE_LOW_CONF_K = int(os.getenv("L2_CE_LOW_CONF_K", "40"))
-L2_CE_TOP_N = int(os.getenv("L2_CE_TOP_N", "15"))
-L2_CE_TOP_N_LOW_CONF = int(os.getenv("L2_CE_TOP_N_LOW_CONF", "20"))
+L1_TOP_FILES = _DEFAULT_CONFIG.l1_top_files
+L1_CHUNKS_PER_FILE_DEFAULT = _DEFAULT_CONFIG.l1_chunks_per_file_default
+L1_CHUNKS_PER_FILE_TOP3 = _DEFAULT_CONFIG.l1_chunks_per_file_top3
+L1_CHUNKS_PER_SCOPE_FILE = _DEFAULT_CONFIG.l1_chunks_per_scope_file
+L1_CHUNK_MARGIN_THRESHOLD = _DEFAULT_CONFIG.l1_chunk_margin_threshold
+L1_ROUTE_GUARANTEE_K = _DEFAULT_CONFIG.l1_route_guarantee_k
+L1_SLOT_C_MAX = _DEFAULT_CONFIG.l1_slot_c_max
+L1_SLOT_A_MIN = _DEFAULT_CONFIG.l1_slot_a_min
+L1_SLOT_B_MIN = _DEFAULT_CONFIG.l1_slot_b_min
+L1_MIN_CANDIDATES = _DEFAULT_CONFIG.l1_min_candidates
+L1_MAX_CANDIDATES = _DEFAULT_CONFIG.l1_max_candidates
 
-L3_ROOT_WEIGHT = float(os.getenv("L3_ROOT_WEIGHT", "0.15"))
-L3_SAME_ROOT_CAP_DEFAULT = int(os.getenv("L3_SAME_ROOT_CAP_DEFAULT", "3"))
-L3_SAME_ROOT_CAP_SCOPE_QUERY = int(os.getenv("L3_SAME_ROOT_CAP_SCOPE_QUERY", "5"))
-L3_SAME_ROOT_CAP_BROAD_QUERY = int(os.getenv("L3_SAME_ROOT_CAP_BROAD_QUERY", "2"))
-L3_PROTECT_CE_TOP3 = os.getenv("L3_PROTECT_CE_TOP3", "true").lower() == "true"
+L2_CE_HIGH_CONF_K = _DEFAULT_CONFIG.l2_ce_high_conf_k
+L2_CE_DEFAULT_K = _DEFAULT_CONFIG.l2_ce_default_k
+L2_CE_LOW_CONF_K = _DEFAULT_CONFIG.l2_ce_low_conf_k
+L2_CE_TOP_N = _DEFAULT_CONFIG.l2_ce_top_n
+L2_CE_TOP_N_LOW_CONF = _DEFAULT_CONFIG.l2_ce_top_n_low_conf
+
+L3_ROOT_WEIGHT = _DEFAULT_CONFIG.l3_root_weight
+L3_SAME_ROOT_CAP_DEFAULT = _DEFAULT_CONFIG.l3_same_root_cap_default
+L3_SAME_ROOT_CAP_SCOPE_QUERY = _DEFAULT_CONFIG.l3_same_root_cap_scope_query
+L3_SAME_ROOT_CAP_BROAD_QUERY = _DEFAULT_CONFIG.l3_same_root_cap_broad_query
+L3_PROTECT_CE_TOP3 = _DEFAULT_CONFIG.l3_protect_ce_top3
 
 
 # --- L1 Score Functions ---
@@ -86,14 +92,19 @@ def file_aggregate_score(chunk_scores: list[float]) -> float:
     return max(sorted_scores) + 0.30 * (sum(top3) / len(top3))
 
 
-def _per_file_cap(file_rank: int, is_scope: bool, in_file_margin: float) -> int:
+def _per_file_cap(
+    file_rank: int,
+    is_scope: bool,
+    in_file_margin: float,
+    config: LayeredRerankConfig,
+) -> int:
     if is_scope:
-        return L1_CHUNKS_PER_SCOPE_FILE
+        return config.l1_chunks_per_scope_file
     if file_rank <= 3:
-        return L1_CHUNKS_PER_FILE_TOP3
-    if in_file_margin < L1_CHUNK_MARGIN_THRESHOLD:
-        return L1_CHUNKS_PER_FILE_TOP3
-    return L1_CHUNKS_PER_FILE_DEFAULT
+        return config.l1_chunks_per_file_top3
+    if in_file_margin < config.l1_chunk_margin_threshold:
+        return config.l1_chunks_per_file_top3
+    return config.l1_chunks_per_file_default
 
 
 def build_l1_candidates(
@@ -102,13 +113,15 @@ def build_l1_candidates(
     anchor_chunk_ids: list[str],
     min_k: int | None = None,
     max_k: int | None = None,
+    config: LayeredRerankConfig | None = None,
 ) -> list[dict]:
     """Build L1 candidate set using 3-slot architecture."""
-    min_k = min_k or L1_MIN_CANDIDATES
-    max_k = max_k or L1_MAX_CANDIDATES
+    config = config or _DEFAULT_CONFIG
+    min_k = min_k or config.l1_min_candidates
+    max_k = max_k or config.l1_max_candidates
     anchor_set = set(anchor_chunk_ids)
     scope_set = set(scope_matched_files)
-    top_k = L0_DENSE_TOP_K
+    top_k = config.l0_dense_top_k
 
     # Compute L1 scores for all candidates
     scored: list[dict] = []
@@ -143,13 +156,13 @@ def build_l1_candidates(
 
     for fn, docs in scope_by_file.items():
         docs.sort(key=lambda d: d["l1_score"], reverse=True)
-        for doc in docs[:L1_CHUNKS_PER_SCOPE_FILE]:
+        for doc in docs[: config.l1_chunks_per_scope_file]:
             cid = doc.get("chunk_id", "")
             if cid not in seen_c:
                 slot_c.append(doc)
                 seen_c.add(cid)
 
-    slot_c = slot_c[:L1_SLOT_C_MAX]
+    slot_c = slot_c[: config.l1_slot_c_max]
 
     # --- Slot A: File-aware ---
     by_file: dict[str, list[dict]] = defaultdict(list)
@@ -165,7 +178,7 @@ def build_l1_candidates(
     slot_a: list[dict] = []
     seen_a: set[str] = set(seen_c)
 
-    for file_rank, (fn, _fs) in enumerate(file_scores[:L1_TOP_FILES], 1):
+    for file_rank, (fn, _fs) in enumerate(file_scores[: config.l1_top_files], 1):
         docs = by_file[fn]
         docs.sort(key=lambda d: d["l1_score"], reverse=True)
         is_scope = fn in scope_set
@@ -174,7 +187,7 @@ def build_l1_candidates(
         if len(docs) >= 2:
             margin = abs(docs[0]["l1_score"] - docs[min(3, len(docs) - 1)]["l1_score"])
 
-        cap = _per_file_cap(file_rank, is_scope, margin)
+        cap = _per_file_cap(file_rank, is_scope, margin, config)
         for doc in docs[:cap]:
             cid = doc.get("chunk_id", "")
             if cid not in seen_a:
@@ -194,7 +207,7 @@ def build_l1_candidates(
         count = 0
         for doc in bucket:
             cid = doc.get("chunk_id", "")
-            if cid not in seen_b and count < L1_ROUTE_GUARANTEE_K:
+            if cid not in seen_b and count < config.l1_route_guarantee_k:
                 slot_b.append(doc)
                 seen_b.add(cid)
                 count += 1
@@ -226,17 +239,19 @@ def select_ce_k(
     exact_file_match: bool,
     is_ambiguous: bool,
     dense_sparse_disagree: bool,
+    config: LayeredRerankConfig | None = None,
 ) -> tuple[int, int]:
     """Return (ce_input_k, ce_top_n)."""
+    config = config or _DEFAULT_CONFIG
     if is_ambiguous or dense_sparse_disagree:
-        return L2_CE_LOW_CONF_K, L2_CE_TOP_N_LOW_CONF
+        return config.l2_ce_low_conf_k, config.l2_ce_top_n_low_conf
 
     top_margin = 0.0
     if len(candidates) >= 2:
         top_margin = abs(candidates[0].get("l1_score", 0) - candidates[1].get("l1_score", 0))
 
     if scope_mode == "filter" and exact_file_match and top_margin > 0.15:
-        return L2_CE_HIGH_CONF_K, L2_CE_TOP_N
+        return config.l2_ce_high_conf_k, config.l2_ce_top_n
 
     if len(candidates) >= 2:
         dense_agree = (
@@ -248,9 +263,9 @@ def select_ce_k(
             and candidates[1].get("sparse_rank") is not None
         )
         if (dense_agree or sparse_agree) and top_margin > 0.20:
-            return L2_CE_DEFAULT_K, L2_CE_TOP_N
+            return config.l2_ce_default_k, config.l2_ce_top_n
 
-    return L2_CE_DEFAULT_K, L2_CE_TOP_N
+    return config.l2_ce_default_k, config.l2_ce_top_n
 
 
 # --- L3 Helpers ---
@@ -260,9 +275,11 @@ def select_root_cap(
     exact_file_match: bool,
     dominant_root_share: float,
     query_is_broad: bool,
+    config: LayeredRerankConfig | None = None,
 ) -> int:
+    config = config or _DEFAULT_CONFIG
     if scope_mode in ("filter", "boost") and exact_file_match:
-        return L3_SAME_ROOT_CAP_SCOPE_QUERY
+        return config.l3_same_root_cap_scope_query
     if dominant_root_share > 0.8 and query_is_broad:
-        return L3_SAME_ROOT_CAP_BROAD_QUERY
-    return L3_SAME_ROOT_CAP_DEFAULT
+        return config.l3_same_root_cap_broad_query
+    return config.l3_same_root_cap_default

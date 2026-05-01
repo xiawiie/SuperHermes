@@ -109,6 +109,100 @@ class RagPipelinePromptTests(unittest.TestCase):
         self.assertFalse(result["rag_trace"].get("fallback_timed_out", False))
         self.assertEqual(result["rag_trace"]["retrieval_stage"], "expanded")
 
+    def test_retrieve_expanded_candidate_only_skips_full_second_retrieval(self):
+        state = {
+            "question": "q",
+            "docs": [{"text": "initial", "filename": "a.pdf", "chunk_id": "c1"}],
+            "context": "initial context",
+            "context_files": [],
+            "expansion_type": "step_back",
+            "expanded_query": "expanded q",
+            "rag_trace": {},
+            "fallback_deadline": time.perf_counter() + 5,
+        }
+        candidate_result = {
+            "candidates": [{"text": "expanded", "filename": "b.pdf", "chunk_id": "c2"}],
+            "meta": {
+                "retrieval_mode": "hybrid",
+                "timings": {"total_retrieve_ms": 12.0},
+                "stage_errors": [],
+            },
+        }
+
+        def fake_finish(**kwargs):
+            meta = {
+                **kwargs["extra_trace"],
+                "retrieval_mode": kwargs["retrieval_mode"],
+                "rerank_applied": True,
+                "rerank_input_count": len(kwargs["retrieved"]),
+                "timings": {"total_retrieve_ms": 20.0},
+                "stage_errors": [],
+            }
+            return {"docs": kwargs["retrieved"][:1], "meta": meta}
+
+        with (
+            patch.object(rag_pipeline, "RAG_FALLBACK_CANDIDATE_ONLY", True),
+            patch("backend.rag.pipeline.retrieve_candidate_pool", return_value=candidate_result) as pool,
+            patch("backend.rag.pipeline.retrieve_documents", side_effect=AssertionError("full retrieval should not run")),
+            patch("backend.rag.pipeline.finish_retrieval_pipeline", side_effect=fake_finish) as finish,
+        ):
+            result = rag_pipeline.retrieve_expanded(state)
+
+        pool.assert_called_once()
+        finish.assert_called_once()
+        self.assertEqual(result["rag_trace"]["fallback_second_pass_mode"], "candidate_only")
+        self.assertTrue(result["rag_trace"]["fallback_saved_rerank"])
+        self.assertEqual(result["rag_trace"]["expanded_candidate_count"], 1)
+        self.assertEqual(result["rag_trace"]["final_rerank_input_count"], 2)
+
+    def test_retrieve_expanded_candidate_only_complex_runs_candidate_queries_in_parallel(self):
+        state = {
+            "question": "q",
+            "docs": [],
+            "context": "",
+            "context_files": [],
+            "expansion_type": "complex",
+            "expanded_query": "step query",
+            "hypothetical_doc": "hyde query",
+            "rag_trace": {},
+            "fallback_deadline": time.perf_counter() + 5,
+        }
+
+        def slow_candidate_pool(query, top_k=5, context_files=None, candidate_k=None):
+            time.sleep(0.2)
+            return {
+                "candidates": [{"text": query, "filename": f"{query}.pdf", "chunk_id": query}],
+                "meta": {
+                    "retrieval_mode": "hybrid",
+                    "timings": {"total_retrieve_ms": 200.0},
+                    "stage_errors": [],
+                },
+            }
+
+        def fake_finish(**kwargs):
+            return {
+                "docs": kwargs["retrieved"],
+                "meta": {
+                    **kwargs["extra_trace"],
+                    "retrieval_mode": kwargs["retrieval_mode"],
+                    "timings": {"total_retrieve_ms": 210.0},
+                    "stage_errors": [],
+                },
+            }
+
+        started = time.perf_counter()
+        with (
+            patch.object(rag_pipeline, "RAG_FALLBACK_CANDIDATE_ONLY", True),
+            patch("backend.rag.pipeline.retrieve_candidate_pool", side_effect=slow_candidate_pool),
+            patch("backend.rag.pipeline.finish_retrieval_pipeline", side_effect=fake_finish),
+        ):
+            result = rag_pipeline.retrieve_expanded(state)
+        elapsed = time.perf_counter() - started
+
+        self.assertLess(elapsed, 0.35)
+        self.assertEqual(len(result["docs"]), 2)
+        self.assertEqual(result["rag_trace"]["fallback_second_pass_mode"], "candidate_only")
+
 
 if __name__ == "__main__":
     unittest.main()

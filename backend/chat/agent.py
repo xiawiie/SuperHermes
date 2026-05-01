@@ -3,8 +3,15 @@ import asyncio
 import threading
 from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk, SystemMessage
 from backend.config import ARK_API_KEY as API_KEY, MODEL, BASE_URL
-from backend.shared.filename_utils import dedupe_filenames
 from backend.infra.db.conversation_storage import ConversationStorage
+from backend.chat.rag_execution import (
+    RagExecutionPolicy,
+    RagTurnRequest,
+    mark_rag_execution_policy,
+    plan_rag_turn,
+)
+from backend.rag.citations import maybe_verify_citation_trace
+from backend.rag.trace import mark_context_delivery
 from backend.chat.tools import (
     get_current_weather,
     search_knowledge_base,
@@ -105,10 +112,6 @@ def get_agent_instance():
 storage = ConversationStorage()
 
 
-def _normalize_context_files(context_files: list[str] | None) -> list[str]:
-    return dedupe_filenames(context_files, max_count=5)
-
-
 def _with_context_file_instruction(messages: list, context_files: list[str]) -> list:
     if not context_files:
         return messages
@@ -123,34 +126,52 @@ def _with_context_file_instruction(messages: list, context_files: list[str]) -> 
 
 
 def _with_retrieved_context_instruction(messages: list, context_files: list[str], retrieved_context: str) -> list:
-    if not context_files:
-        return messages
     file_list = "\n".join(f"- {filename}" for filename in context_files)
+    file_section = f"Attached files:\n{file_list}\n\n" if context_files else ""
     if retrieved_context:
         instruction = (
             "You are answering the user's current turn with uploaded document context. "
             "The indexed content below has already been retrieved from the attached files. "
             "Do not say that no document was provided. Do not ask the user to paste the document. "
             "Answer in the user's language using the retrieved context. If the context is insufficient, say exactly what is missing.\n\n"
-            f"Attached files:\n{file_list}\n\n"
+            f"{file_section}"
             f"Retrieved document context:\n{retrieved_context}"
         )
     else:
-        instruction = (
-            "The user attached document files, but no indexed text chunks were retrieved for this turn. "
-            "Do not say that no document was provided; say the document was uploaded but no readable indexed text was found, "
-            "and suggest checking upload processing or file text extraction.\n\n"
-            f"Attached files:\n{file_list}"
-        )
+        if context_files:
+            instruction = (
+                "The user attached document files, but no indexed text chunks were retrieved for this turn. "
+                "Do not say that no document was provided; say the document was uploaded but no readable indexed text was found, "
+                "and suggest checking upload processing or file text extraction.\n\n"
+                f"Attached files:\n{file_list}"
+            )
+        else:
+            instruction = (
+                "No relevant indexed knowledge-base chunks were retrieved for this turn. "
+                "Do not fabricate retrieved content; answer from general knowledge only when appropriate, "
+                "or say the indexed knowledge base did not provide enough evidence."
+            )
     return messages[:-1] + [SystemMessage(content=instruction), messages[-1]]
 
 
 def _retrieve_attached_context(user_text: str, context_files: list[str]) -> dict:
-    if not context_files:
-        return {"docs": [], "context": "", "rag_trace": None}
     from backend.rag.pipeline import run_rag_graph
 
     return run_rag_graph(user_text, context_files=context_files)
+
+
+def _attached_context_payload(rag_result: dict | None) -> tuple[str, dict | None]:
+    if not isinstance(rag_result, dict):
+        return "", None
+    docs = rag_result.get("docs", [])
+    context = rag_result.get("context", "")
+    rag_trace = mark_context_delivery(
+        rag_result.get("rag_trace"),
+        delivery_mode="system_message",
+        context=context,
+        docs=docs,
+    )
+    return context, rag_trace
 
 def summarize_old_messages(model, messages: list) -> str:
     """将旧消息总结为摘要"""
@@ -184,7 +205,8 @@ def chat_with_agent(
     # 清理可能残留的 RAG 上下文，避免跨请求污染
     get_last_rag_context(clear=True)
     reset_tool_call_guards()
-    context_files = _normalize_context_files(context_files)
+    turn_context = plan_rag_turn(RagTurnRequest(user_text=user_text, context_files=context_files or [], stream=False))
+    context_files = turn_context.context_files
     set_rag_context_files(context_files)
     
     if len(messages) > 50:
@@ -198,18 +220,18 @@ def chat_with_agent(
     user_message = HumanMessage(content=user_text)
     messages.append(user_message)
     attached_rag_trace = None
-    if context_files:
+    if turn_context.policy == RagExecutionPolicy.FORCED_PRELOAD:
         rag_result = _retrieve_attached_context(user_text, context_files)
-        attached_rag_trace = rag_result.get("rag_trace") if isinstance(rag_result, dict) else None
+        retrieved_context, attached_rag_trace = _attached_context_payload(rag_result)
         agent_messages = _with_retrieved_context_instruction(
             messages,
             context_files,
-            rag_result.get("context", "") if isinstance(rag_result, dict) else "",
+            retrieved_context,
         )
     else:
         agent_messages = _with_context_file_instruction(messages, context_files)
     try:
-        if context_files:
+        if turn_context.policy == RagExecutionPolicy.FORCED_PRELOAD:
             result = model_instance.invoke(agent_messages)
         else:
             result = agent_instance.invoke(
@@ -238,6 +260,8 @@ def chat_with_agent(
 
     rag_context = get_last_rag_context(clear=True)
     rag_trace = (rag_context.get("rag_trace") if rag_context else None) or attached_rag_trace
+    rag_trace = mark_rag_execution_policy(rag_trace, turn_context) or rag_trace
+    rag_trace = maybe_verify_citation_trace(response_content, rag_trace)
 
     if compacted_history:
         extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
@@ -275,7 +299,8 @@ async def chat_with_agent_stream(
     # 清理可能残留的 RAG 上下文
     get_last_rag_context(clear=True)
     reset_tool_call_guards()
-    context_files = _normalize_context_files(context_files)
+    turn_context = plan_rag_turn(RagTurnRequest(user_text=user_text, context_files=context_files or [], stream=True))
+    context_files = turn_context.context_files
     set_rag_context_files(context_files)
 
     # 统一输出队列：所有事件（content / rag_step）都汇入这里
@@ -307,13 +332,13 @@ async def chat_with_agent_stream(
         user_message = HumanMessage(content=user_text)
         messages.append(user_message)
     attached_rag_trace = None
-    if context_files:
+    if turn_context.policy == RagExecutionPolicy.FORCED_PRELOAD:
         rag_result = await asyncio.to_thread(_retrieve_attached_context, user_text, context_files)
-        attached_rag_trace = rag_result.get("rag_trace") if isinstance(rag_result, dict) else None
+        retrieved_context, attached_rag_trace = _attached_context_payload(rag_result)
         agent_messages = _with_retrieved_context_instruction(
             messages,
             context_files,
-            rag_result.get("context", "") if isinstance(rag_result, dict) else "",
+            retrieved_context,
         )
     else:
         agent_messages = _with_context_file_instruction(messages, context_files)
@@ -324,7 +349,7 @@ async def chat_with_agent_stream(
         """后台任务：运行 agent 并将内容 chunk 推入输出队列。"""
         nonlocal full_response
         try:
-            if context_files:
+            if turn_context.policy == RagExecutionPolicy.FORCED_PRELOAD:
                 stream = model_instance.astream(agent_messages)
             else:
                 stream = agent_instance.astream(
@@ -333,7 +358,7 @@ async def chat_with_agent_stream(
                     config={"recursion_limit": 8},
                 )
             async for item in stream:
-                if context_files:
+                if turn_context.policy == RagExecutionPolicy.FORCED_PRELOAD:
                     msg = item
                 else:
                     msg, metadata = item
@@ -391,6 +416,8 @@ async def chat_with_agent_stream(
     # 获取 RAG trace
     rag_context = get_last_rag_context(clear=True)
     rag_trace = (rag_context.get("rag_trace") if rag_context else None) or attached_rag_trace
+    rag_trace = mark_rag_execution_policy(rag_trace, turn_context) or rag_trace
+    rag_trace = maybe_verify_citation_trace(full_response, rag_trace)
 
     # 发送 trace 信息
     if rag_trace:

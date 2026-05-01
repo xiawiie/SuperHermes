@@ -6,29 +6,49 @@ import requests
 from langchain_core.tools import tool
 
 from backend.config import AMAP_WEATHER_API, AMAP_API_KEY
+from backend.chat.rag_execution import RagExecutionPolicy, mark_rag_execution_policy
+from backend.rag.formatting import format_rag_tool_response
+from backend.rag.trace import mark_context_delivery
 
 _LAST_RAG_CONTEXT: ContextVar[dict | None] = ContextVar('_LAST_RAG_CONTEXT', default=None)
-_KNOWLEDGE_TOOL_CALLS_THIS_TURN: ContextVar[int] = ContextVar('_KNOWLEDGE_TOOL_CALLS_THIS_TURN', default=0)
+_KNOWLEDGE_TOOL_CALLS_THIS_TURN: ContextVar[dict | None] = ContextVar('_KNOWLEDGE_TOOL_CALLS_THIS_TURN', default=None)
 _RAG_CONTEXT_FILES_THIS_TURN: ContextVar[list[str]] = ContextVar('_RAG_CONTEXT_FILES_THIS_TURN', default=[])
 _RAG_STEP_QUEUE: ContextVar[object | None] = ContextVar('_RAG_STEP_QUEUE', default=None)
 _RAG_STEP_LOOP: ContextVar[object | None] = ContextVar('_RAG_STEP_LOOP', default=None)
 
 
 def _set_last_rag_context(context: dict):
-    _LAST_RAG_CONTEXT.set(context)
+    _last_rag_context_holder()["value"] = context
+
+
+def _last_rag_context_holder() -> dict:
+    holder = _LAST_RAG_CONTEXT.get()
+    if holder is None or "value" not in holder:
+        holder = {"value": None}
+        _LAST_RAG_CONTEXT.set(holder)
+    return holder
+
+
+def _knowledge_tool_call_holder() -> dict:
+    holder = _KNOWLEDGE_TOOL_CALLS_THIS_TURN.get()
+    if holder is None or "count" not in holder:
+        holder = {"count": 0}
+        _KNOWLEDGE_TOOL_CALLS_THIS_TURN.set(holder)
+    return holder
 
 
 def get_last_rag_context(clear: bool = True) -> Optional[dict]:
     """获取最近一次 RAG 检索上下文，默认读取后清空。"""
-    context = _LAST_RAG_CONTEXT.get()
+    holder = _last_rag_context_holder()
+    context = holder.get("value")
     if clear:
-        _LAST_RAG_CONTEXT.set(None)
+        holder["value"] = None
     return context
 
 
 def reset_tool_call_guards():
     """每轮对话开始时重置工具调用计数。"""
-    _KNOWLEDGE_TOOL_CALLS_THIS_TURN.set(0)
+    _KNOWLEDGE_TOOL_CALLS_THIS_TURN.set({"count": 0})
 
 
 def set_rag_context_files(filenames: Optional[list[str]] = None):
@@ -132,31 +152,35 @@ def get_current_weather(location: str, extensions: Optional[str] = "base") -> st
 @tool("search_knowledge_base")
 def search_knowledge_base(query: str) -> str:
     """Search for information in the knowledge base using hybrid retrieval (dense + sparse vectors)."""
-    calls = _KNOWLEDGE_TOOL_CALLS_THIS_TURN.get()
+    call_holder = _knowledge_tool_call_holder()
+    calls = int(call_holder.get("count", 0) or 0)
     if calls >= 1:
         return (
             "TOOL_CALL_LIMIT_REACHED: search_knowledge_base has already been called once in this turn. "
             "Use the existing retrieval result and provide the final answer directly."
         )
-    _KNOWLEDGE_TOOL_CALLS_THIS_TURN.set(calls + 1)
+    call_holder["count"] = calls + 1
 
     from backend.rag.pipeline import run_rag_graph
 
     rag_result = run_rag_graph(query, context_files=get_rag_context_files())
 
     docs = rag_result.get("docs", []) if isinstance(rag_result, dict) else []
+    context = rag_result.get("context", "") if isinstance(rag_result, dict) else ""
     rag_trace = rag_result.get("rag_trace", {}) if isinstance(rag_result, dict) else {}
     if rag_trace:
-        _set_last_rag_context({"rag_trace": rag_trace})
+        rag_trace = mark_context_delivery(
+            rag_trace,
+            delivery_mode="tool_response",
+            context=context,
+            docs=docs,
+        ) or {}
+        rag_trace = mark_rag_execution_policy(
+            rag_trace,
+            policy=RagExecutionPolicy.OPTIONAL_TOOL,
+            delivery_mode="tool_response",
+            policy_reason="tool_invoked",
+        ) or {}
+        _set_last_rag_context({"rag_trace": rag_trace, "context": context})
 
-    if not docs:
-        return "No relevant documents found in the knowledge base."
-
-    formatted = []
-    for i, result in enumerate(docs, 1):
-        source = result.get("filename", "Unknown")
-        page = result.get("page_number", "N/A")
-        text = result.get("text", "")
-        formatted.append(f"[{i}] {source} (Page {page}):\n{text}")
-
-    return "Retrieved Chunks:\n" + "\n\n---\n\n".join(formatted)
+    return format_rag_tool_response(docs, context=context)
