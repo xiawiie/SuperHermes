@@ -52,6 +52,10 @@ class DeepModeResult:
             "final_answer": self.final_answer,
             "citations": self.citations,
             "evidence": [item.as_dict() for item in self.evidence],
+            "evidence_by_subquery": _evidence_by_subquery(self.evidence),
+            "coverage_by_subquery": _coverage_by_subquery(self.evidence),
+            "retrieval_trace_by_subquery": _retrieval_trace_by_subquery(self.evidence),
+            "answer_mode": self.rag_trace.get("answer_mode"),
             "evidence_coverage": self.evidence_coverage,
             "deep_executed": self.deep_executed,
             "fallback_to_standard": self.fallback_to_standard,
@@ -122,6 +126,18 @@ def _flatten_evidence_docs(evidence: Sequence[SubqueryEvidence]) -> list[dict[st
     return docs
 
 
+def _evidence_by_subquery(evidence: Sequence[SubqueryEvidence]) -> dict[str, list[dict[str, Any]]]:
+    return {item.subquery: item.docs for item in evidence}
+
+
+def _coverage_by_subquery(evidence: Sequence[SubqueryEvidence]) -> dict[str, bool]:
+    return {item.subquery: bool(item.docs) for item in evidence}
+
+
+def _retrieval_trace_by_subquery(evidence: Sequence[SubqueryEvidence]) -> dict[str, dict[str, Any]]:
+    return {item.subquery: item.rag_trace for item in evidence}
+
+
 def _deep_trace(
     *,
     mode: str,
@@ -134,9 +150,12 @@ def _deep_trace(
     return {
         "execution_mode": "DEEP",
         "deep_mode": mode,
+        "answer_mode": mode,
         "deep_executed": True,
         "plan_applied": bool(evidence),
         "subqueries": [item.subquery for item in evidence],
+        "coverage_by_subquery": _coverage_by_subquery(evidence),
+        "retrieval_trace_by_subquery": _retrieval_trace_by_subquery(evidence),
         "evidence_coverage": coverage,
         "fallback_to_standard": fallback_to_standard,
         "fallback_reason": fallback_reason,
@@ -167,6 +186,7 @@ def run_deep_mode(
                 "execution_mode": "STANDARD",
                 "deep_executed": False,
                 "deep_mode": "disabled",
+                "answer_mode": "disabled",
                 "fallback_to_standard": True,
                 "fallback_reason": "deep_mode_disabled",
             },

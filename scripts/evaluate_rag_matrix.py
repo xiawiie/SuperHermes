@@ -34,6 +34,7 @@ from scripts.rag_eval.variants import (  # noqa: E402
     DEFAULT_S3_COLLECTION,
     DEFAULT_VARIANTS,
     EVAL_SCHEMA_VERSION,
+    HISTORICAL_VARIANT_ALIASES,
     PAIR_DEFINITIONS,
     VARIANT_CONFIGS,
 )
@@ -1404,9 +1405,15 @@ def _summarize_trace(meta: dict) -> dict[str, Any]:
         "final_context_chunk_count",
         "fallback_second_pass_mode",
         "expanded_retrieval_skipped_reason",
+        "fallback_mode",
+        "initial_candidate_count",
         "expanded_candidate_count",
+        "merged_candidate_count",
+        "candidate_only_pass_rerank_execution_mode",
         "final_rerank_input_count",
+        "final_rerank_execution_mode",
         "fallback_saved_rerank",
+        "fallback_saved_full_retrievals",
     ]
     summary = {key: meta.get(key) for key in keys if key in meta}
     for trace_key in (
@@ -1987,22 +1994,27 @@ def run_matrix(args: argparse.Namespace) -> int:
 
 def parse_variants(raw: str) -> list[str]:
     canonical_by_upper = {variant.upper(): variant for variant in VARIANT_CONFIGS}
+    historical_by_upper = {alias.upper(): canonical for alias, canonical in HISTORICAL_VARIANT_ALIASES.items()}
     variants: list[str] = []
     for item in raw.split(","):
         stripped = item.strip()
         if not stripped:
             continue
-        direct = canonical_by_upper.get(stripped.upper())
+        direct = canonical_by_upper.get(stripped.upper()) or historical_by_upper.get(stripped.upper())
         if direct:
             try:
-                variants.append(canonical_variant_name(direct))
+                resolved = canonical_variant_name(direct)
             except ValueError:
-                variants.append(direct)
+                resolved = direct
+            if resolved not in variants:
+                variants.append(resolved)
             continue
         try:
-            variants.append(canonical_variant_name(stripped))
+            resolved = canonical_variant_name(stripped)
         except ValueError:
-            variants.append(stripped)
+            resolved = stripped
+        if resolved not in variants:
+            variants.append(resolved)
     unknown = [variant for variant in variants if variant not in VARIANT_CONFIGS]
     if unknown:
         raise ValueError(f"unknown variants: {', '.join(unknown)}")

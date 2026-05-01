@@ -11,6 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.evaluate_rag_matrix import (
     DEFAULT_VARIANTS,
+    HISTORICAL_VARIANT_ALIASES,
     VARIANT_CONFIGS,
     compare_sample_rank,
     compute_retrieval_metrics,
@@ -566,22 +567,34 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
             {
                 "fallback_second_pass_mode": "candidate_only",
                 "expanded_retrieval_skipped_reason": None,
+                "fallback_mode": "candidate_only_merge",
+                "initial_candidate_count": 2,
                 "expanded_candidate_count": 3,
+                "merged_candidate_count": 5,
+                "candidate_only_pass_rerank_execution_mode": "skipped_candidate_only",
                 "final_rerank_input_count": 5,
+                "final_rerank_execution_mode": "executed",
                 "fallback_saved_rerank": True,
+                "fallback_saved_full_retrievals": 1,
                 "candidate_strategy_requested": "layered",
                 "candidate_strategy_effective": "layered",
-                "rerank_execution_mode": "skipped_candidate_only",
+                "rerank_execution_mode": "executed",
             }
         )
 
         self.assertEqual(trace["fallback_second_pass_mode"], "candidate_only")
+        self.assertEqual(trace["fallback_mode"], "candidate_only_merge")
+        self.assertEqual(trace["initial_candidate_count"], 2)
         self.assertEqual(trace["expanded_candidate_count"], 3)
+        self.assertEqual(trace["merged_candidate_count"], 5)
+        self.assertEqual(trace["candidate_only_pass_rerank_execution_mode"], "skipped_candidate_only")
         self.assertEqual(trace["final_rerank_input_count"], 5)
+        self.assertEqual(trace["final_rerank_execution_mode"], "executed")
         self.assertTrue(trace["fallback_saved_rerank"])
+        self.assertEqual(trace["fallback_saved_full_retrievals"], 1)
         self.assertEqual(trace["candidate_strategy_requested"], "layered")
         self.assertEqual(trace["candidate_strategy_effective"], "layered")
-        self.assertEqual(trace["rerank_execution_mode"], "skipped_candidate_only")
+        self.assertEqual(trace["rerank_execution_mode"], "executed")
 
     def test_phase2_sparse_variants_are_available(self):
         self.assertEqual(parse_variants("P1,P2,P3"), ["P1", "P2", "P3"])
@@ -616,6 +629,14 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
         self.assertNotIn("LAYERED_" + "RERANK_ENABLED", env)
         self.assertNotIn("L2_" + "CE_DEFAULT_K", env)
         self.assertNotIn("L" + "3_ROOT_WEIGHT", env)
+
+    def test_historical_layered_experiments_collapse_to_single_variant(self):
+        self.assertEqual(set(HISTORICAL_VARIANT_ALIASES.values()), {"V3Q_LAYERED"})
+        self.assertEqual(parse_variants("EXP_C2,EXP_C25,EXP_C3,EXP_C4,EXP_C5,EXP_C7"), ["V3Q_LAYERED"])
+
+        for alias in HISTORICAL_VARIANT_ALIASES:
+            with self.subTest(alias=alias):
+                self.assertNotIn(alias, VARIANT_CONFIGS)
 
     def test_profile_fallback_variants_are_fair_and_candidate_only_is_explicit(self):
         self.assertEqual(parse_variants("K2F,K2F_CAND,K3F,K3F_CAND"), ["K2F", "K2F_CAND", "K3F", "K3F_CAND"])

@@ -181,6 +181,6 @@ def search_knowledge_base(query: str) -> str:
             delivery_mode="tool_response",
             policy_reason="tool_invoked",
         ) or {}
-        _set_last_rag_context({"rag_trace": rag_trace, "context": context})
+        _set_last_rag_context({"rag_trace": rag_trace, "context": context, "docs": docs, "retrieval_meta": rag_trace})
 
-    return format_rag_tool_response(docs, context=context)
+    return format_rag_tool_response(docs, context=context, retrieval_meta=rag_trace)

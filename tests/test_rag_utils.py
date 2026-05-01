@@ -27,6 +27,12 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             "RAG_DEEP_SHADOW": "true",
             "RAG_DEEP_ACTIVE": "true",
             "RAG_DEEP_MIN_COVERAGE": "0.5",
+            "RAG_FALLBACK_ENABLED": "true",
+            "RAG_FALLBACK_TIMEOUT_SECONDS": "2.5",
+            "RAG_FALLBACK_WORKERS": "3",
+            "RAG_FALLBACK_USE_FAST_MODEL": "false",
+            "RAG_FALLBACK_CANDIDATE_ONLY": "true",
+            "RAG_FALLBACK_EXPANDED_CANDIDATE_K": "17",
             "RAG_MODEL": "not-reserved",
             "RAG_INDEX_PROFILE": "fake-profile",
         }
@@ -48,6 +54,12 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         self.assertTrue(config.deep_shadow_enabled)
         self.assertTrue(config.deep_active_enabled)
         self.assertEqual(config.deep_min_coverage, 0.5)
+        self.assertTrue(config.fallback_enabled)
+        self.assertEqual(config.fallback_timeout_seconds, 2.5)
+        self.assertEqual(config.fallback_workers, 3)
+        self.assertFalse(config.fallback_use_fast_model)
+        self.assertTrue(config.fallback_candidate_only_enabled)
+        self.assertEqual(config.fallback_expanded_candidate_k, 17)
         self.assertEqual(config.reserved_flags["RAG_FAST_ENABLED"], "true")
         self.assertEqual(config.reserved_flags["RAG_DEEP_ENABLED"], "true")
         self.assertEqual(config.reserved_flags["RAG_FAST_EXPERIMENT"], "shadow")
