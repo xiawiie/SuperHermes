@@ -7,8 +7,11 @@ from backend.infra.db.conversation_storage import ConversationStorage
 from backend.chat.rag_execution import (
     RagExecutionPolicy,
     RagTurnRequest,
+    answer_with_rag_context,
+    extract_answer_content,
     mark_rag_execution_policy,
     plan_rag_turn,
+    stream_answer_with_rag_context,
 )
 from backend.rag.citations import maybe_verify_citation_trace
 from backend.rag.trace import mark_context_delivery
@@ -112,48 +115,6 @@ def get_agent_instance():
 storage = ConversationStorage()
 
 
-def _with_context_file_instruction(messages: list, context_files: list[str]) -> list:
-    if not context_files:
-        return messages
-    file_list = "\n".join(f"- {filename}" for filename in context_files)
-    instruction = (
-        "This turn has attached document context files. "
-        "You must call search_knowledge_base before answering, and retrieval is constrained to these filenames:\n"
-        f"{file_list}\n"
-        "Answer using only the attached files when possible. If they do not contain enough evidence, say so."
-    )
-    return messages[:-1] + [SystemMessage(content=instruction), messages[-1]]
-
-
-def _with_retrieved_context_instruction(messages: list, context_files: list[str], retrieved_context: str) -> list:
-    file_list = "\n".join(f"- {filename}" for filename in context_files)
-    file_section = f"Attached files:\n{file_list}\n\n" if context_files else ""
-    if retrieved_context:
-        instruction = (
-            "You are answering the user's current turn with uploaded document context. "
-            "The indexed content below has already been retrieved from the attached files. "
-            "Do not say that no document was provided. Do not ask the user to paste the document. "
-            "Answer in the user's language using the retrieved context. If the context is insufficient, say exactly what is missing.\n\n"
-            f"{file_section}"
-            f"Retrieved document context:\n{retrieved_context}"
-        )
-    else:
-        if context_files:
-            instruction = (
-                "The user attached document files, but no indexed text chunks were retrieved for this turn. "
-                "Do not say that no document was provided; say the document was uploaded but no readable indexed text was found, "
-                "and suggest checking upload processing or file text extraction.\n\n"
-                f"Attached files:\n{file_list}"
-            )
-        else:
-            instruction = (
-                "No relevant indexed knowledge-base chunks were retrieved for this turn. "
-                "Do not fabricate retrieved content; answer from general knowledge only when appropriate, "
-                "or say the indexed knowledge base did not provide enough evidence."
-            )
-    return messages[:-1] + [SystemMessage(content=instruction), messages[-1]]
-
-
 def _retrieve_attached_context(user_text: str, context_files: list[str]) -> dict:
     from backend.rag.pipeline import run_rag_graph
 
@@ -220,40 +181,23 @@ def chat_with_agent(
     user_message = HumanMessage(content=user_text)
     messages.append(user_message)
     attached_rag_trace = None
+    retrieved_context = ""
     if turn_context.policy == RagExecutionPolicy.FORCED_PRELOAD:
         rag_result = _retrieve_attached_context(user_text, context_files)
         retrieved_context, attached_rag_trace = _attached_context_payload(rag_result)
-        agent_messages = _with_retrieved_context_instruction(
-            messages,
-            context_files,
-            retrieved_context,
-        )
-    else:
-        agent_messages = _with_context_file_instruction(messages, context_files)
     try:
-        if turn_context.policy == RagExecutionPolicy.FORCED_PRELOAD:
-            result = model_instance.invoke(agent_messages)
-        else:
-            result = agent_instance.invoke(
-                {"messages": agent_messages},
-                config={"recursion_limit": 8},
-            )
+        answer_result = answer_with_rag_context(
+            messages=messages,
+            turn_context=turn_context,
+            retrieved_context=retrieved_context,
+            agent_instance=agent_instance,
+            model_instance=model_instance,
+        )
+        result = answer_result.raw_result
     finally:
         set_rag_context_files(None)
 
-    response_content = ""
-    if isinstance(result, dict):
-        if "output" in result:
-            response_content = result["output"]
-        elif "messages" in result and result["messages"]:
-            msg = result["messages"][-1]
-            response_content = getattr(msg, "content", str(msg))
-        else:
-            response_content = str(result)
-    elif hasattr(result, "content"):
-        response_content = result.content
-    else:
-        response_content = str(result)
+    response_content = extract_answer_content(result)
     
     ai_message = AIMessage(content=response_content)
     messages.append(ai_message)
@@ -332,16 +276,10 @@ async def chat_with_agent_stream(
         user_message = HumanMessage(content=user_text)
         messages.append(user_message)
     attached_rag_trace = None
+    retrieved_context = ""
     if turn_context.policy == RagExecutionPolicy.FORCED_PRELOAD:
         rag_result = await asyncio.to_thread(_retrieve_attached_context, user_text, context_files)
         retrieved_context, attached_rag_trace = _attached_context_payload(rag_result)
-        agent_messages = _with_retrieved_context_instruction(
-            messages,
-            context_files,
-            retrieved_context,
-        )
-    else:
-        agent_messages = _with_context_file_instruction(messages, context_files)
 
     full_response = ""
 
@@ -349,19 +287,13 @@ async def chat_with_agent_stream(
         """后台任务：运行 agent 并将内容 chunk 推入输出队列。"""
         nonlocal full_response
         try:
-            if turn_context.policy == RagExecutionPolicy.FORCED_PRELOAD:
-                stream = model_instance.astream(agent_messages)
-            else:
-                stream = agent_instance.astream(
-                    {"messages": agent_messages},
-                    stream_mode="messages",
-                    config={"recursion_limit": 8},
-                )
-            async for item in stream:
-                if turn_context.policy == RagExecutionPolicy.FORCED_PRELOAD:
-                    msg = item
-                else:
-                    msg, metadata = item
+            async for msg in stream_answer_with_rag_context(
+                messages=messages,
+                turn_context=turn_context,
+                retrieved_context=retrieved_context,
+                agent_instance=agent_instance,
+                model_instance=model_instance,
+            ):
                 if not isinstance(msg, AIMessageChunk):
                     continue
                 if getattr(msg, "tool_call_chunks", None):

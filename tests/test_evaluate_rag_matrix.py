@@ -27,6 +27,7 @@ from scripts.evaluate_rag_matrix import (
     _file_coverage_details,
     _metadata_coverage_report,
     _qrel_coverage_report,
+    _summarize_trace,
     _stage_metrics,
 )
 from scripts.rag_qrels import attach_canonical_ids, merge_chunk_qrels
@@ -476,6 +477,88 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
 
         self.assertEqual(summary["variants"]["B0_legacy"]["file_page_hit_at_5"], 0.0)
 
+    def test_summarize_results_reports_ce_observability(self):
+        rows = [
+            {
+                "sample_id": "s1",
+                "variant": "K2",
+                "metrics": {
+                    "rerank_enabled": True,
+                    "rerank_applied": True,
+                    "ce_predict_executed": True,
+                    "ce_cache_hit": False,
+                    "ce_input_count": 30,
+                    "ce_latency_ms": 12.5,
+                    "mrr": 1.0,
+                },
+                "latency_ms": 30.0,
+            },
+            {
+                "sample_id": "s2",
+                "variant": "K2",
+                "metrics": {
+                    "rerank_enabled": True,
+                    "rerank_applied": False,
+                    "ce_predict_executed": False,
+                    "ce_cache_hit": True,
+                    "ce_input_count": 0,
+                    "mrr": 0.0,
+                },
+                "latency_ms": 10.0,
+            },
+        ]
+
+        summary = summarize_results(rows, variants=["K2"])
+
+        self.assertEqual(summary["variants"]["K2"]["rerank_enabled_rate"], 1.0)
+        self.assertEqual(summary["variants"]["K2"]["rerank_applied_rate"], 0.5)
+        self.assertEqual(summary["variants"]["K2"]["ce_predict_executed_rate"], 0.5)
+        self.assertEqual(summary["variants"]["K2"]["ce_cache_hit_rate"], 0.5)
+        self.assertEqual(summary["variants"]["K2"]["avg_ce_input_count"], 15.0)
+        self.assertEqual(summary["variants"]["K2"]["p50_ce_latency_ms"], 12.5)
+
+    def test_report_renders_ce_observability_section(self):
+        rendered = render_summary_markdown(
+            {
+                "generated_at": "2026-05-01T00:00:00",
+                "sample_rows": 1,
+                "variants": {
+                    "K2": {
+                        "rows": 1,
+                        "rerank_enabled_rate": 1.0,
+                        "rerank_applied_rate": 1.0,
+                        "ce_predict_executed_rate": 1.0,
+                        "ce_cache_hit_rate": 0.0,
+                        "avg_ce_input_count": 30.0,
+                        "p50_ce_latency_ms": 12.5,
+                        "p95_ce_latency_ms": 12.5,
+                    }
+                },
+                "paired_comparisons": {},
+                "diagnostics": {},
+            }
+        )
+
+        self.assertIn("## Rerank / CE", rendered)
+        self.assertIn("CEInputAvg", rendered)
+        self.assertIn("| K2 | 1.000 | 1.000 | 1.000 | 0.000 | 30.000 | 12.500 | 12.500 |", rendered)
+
+    def test_summarize_trace_keeps_candidate_only_fallback_fields(self):
+        trace = _summarize_trace(
+            {
+                "fallback_second_pass_mode": "candidate_only",
+                "expanded_retrieval_skipped_reason": None,
+                "expanded_candidate_count": 3,
+                "final_rerank_input_count": 5,
+                "fallback_saved_rerank": True,
+            }
+        )
+
+        self.assertEqual(trace["fallback_second_pass_mode"], "candidate_only")
+        self.assertEqual(trace["expanded_candidate_count"], 3)
+        self.assertEqual(trace["final_rerank_input_count"], 5)
+        self.assertTrue(trace["fallback_saved_rerank"])
+
     def test_phase2_sparse_variants_are_available(self):
         self.assertEqual(parse_variants("P1,P2,P3"), ["P1", "P2", "P3"])
         self.assertEqual(VARIANT_CONFIGS["P1"]["env"]["RERANK_TOP_N"], "0")
@@ -492,6 +575,38 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
         self.assertEqual(VARIANT_CONFIGS["F1"]["env"]["STRUCTURE_RERANK_ENABLED"], "false")
         self.assertEqual(VARIANT_CONFIGS["F1"]["env"]["CONFIDENCE_GATE_ENABLED"], "true")
         self.assertEqual(VARIANT_CONFIGS["F1"]["env"]["ENABLE_ANCHOR_GATE"], "true")
+        self.assertEqual(VARIANT_CONFIGS["F1"]["env"]["RAG_FALLBACK_ENABLED"], "true")
+
+    def test_current_quality_profiles_pin_cross_encoder_for_reproducible_eval(self):
+        for variant in ("K2", "K3"):
+            with self.subTest(variant=variant):
+                env = VARIANT_CONFIGS[variant]["env"]
+                self.assertEqual(env["RERANK_MODEL"], "BAAI/bge-reranker-v2-m3")
+                self.assertEqual(env["RERANK_PROVIDER"], "local")
+                self.assertEqual(env["RERANK_TOP_N"], "30")
+
+    def test_profile_fallback_variants_are_fair_and_candidate_only_is_explicit(self):
+        self.assertEqual(parse_variants("K2F,K2F_CAND,K3F,K3F_CAND"), ["K2F", "K2F_CAND", "K3F", "K3F_CAND"])
+
+        for base, fallback, candidate_only in (
+            ("K2", "K2F", "K2F_CAND"),
+            ("K3", "K3F", "K3F_CAND"),
+        ):
+            with self.subTest(base=base):
+                base_env = VARIANT_CONFIGS[base]["env"]
+                fallback_env = VARIANT_CONFIGS[fallback]["env"]
+                candidate_env = VARIANT_CONFIGS[candidate_only]["env"]
+
+                self.assertEqual(fallback_env["MILVUS_COLLECTION"], base_env["MILVUS_COLLECTION"])
+                self.assertEqual(fallback_env["RAG_INDEX_PROFILE"], base_env["RAG_INDEX_PROFILE"])
+                self.assertEqual(fallback_env["RERANK_MODEL"], base_env["RERANK_MODEL"])
+                self.assertEqual(fallback_env["CONFIDENCE_GATE_ENABLED"], "true")
+                self.assertEqual(fallback_env["RAG_FALLBACK_ENABLED"], "true")
+                self.assertNotIn("RAG_FALLBACK_CANDIDATE_ONLY", fallback_env)
+
+                self.assertEqual(candidate_env["MILVUS_COLLECTION"], base_env["MILVUS_COLLECTION"])
+                self.assertEqual(candidate_env["RAG_FALLBACK_ENABLED"], "true")
+                self.assertEqual(candidate_env["RAG_FALLBACK_CANDIDATE_ONLY"], "true")
 
     def test_v4_final_variant_names_are_available(self):
         self.assertEqual(
@@ -544,6 +659,24 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
             fingerprint["variants"]["V3Q"]["profile_config_hash"],
         )
         self.assertEqual(fingerprint["variants"]["K2"]["resolved_config"], fingerprint["variants"]["V3Q"]["resolved_config"])
+
+    def test_profile_fingerprint_includes_reranker_identity(self):
+        args = type(
+            "Args",
+            (),
+            {
+                "dataset": PROJECT_ROOT / "eval" / "datasets" / "rag_doc_gold.jsonl",
+                "documents_dir": PROJECT_ROOT.parent / "doc",
+                "top_k": 5,
+                "mode": "retrieval",
+            },
+        )()
+
+        fingerprint = _build_fingerprint(args, ["K2"], reindex_events=[])
+
+        resolved = fingerprint["variants"]["K2"]["resolved_config"]
+        self.assertEqual(resolved["rerank_model"], "BAAI/bge-reranker-v2-m3")
+        self.assertEqual(resolved["rerank_provider"], "local")
 
     def test_gold_variants_are_isolated_from_legacy_and_v3_profiles(self):
         self.assertEqual(parse_variants("GB0,GS1,GS2,GS2H,GS2HR,GS3"), ["GB0", "GS1", "GS2", "GS2H", "GS2HR", "GS3"])
