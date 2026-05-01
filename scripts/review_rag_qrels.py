@@ -63,7 +63,7 @@ sufficient evidence to support the core claims in the expected answer.
 
 For each chunk candidate, evaluate:
 1. support_level: full_support / partial_support / topical_only / no_support
-2. claim_coverage: 0.0-1.0 鈥?what fraction of the core claims in expected_answer \
+2. claim_coverage: 0.0-1.0 - what fraction of the core claims in expected_answer \
 can be directly supported by this chunk?
 3. llm_verdict: accept / reject / remap
    - accept: this chunk fully supports the answer (full_support, claim_coverage >= 0.80)

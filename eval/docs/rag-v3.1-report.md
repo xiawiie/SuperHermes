@@ -2,6 +2,11 @@
 
 Date: 2026-04-26
 
+Historical note: this report predates the short profile naming standard. Names
+such as `V3Q`, `GS3`, and `V3F` are retained here only to preserve the original
+evaluation record. Current naming is defined solely in
+`docs/rag-profile-naming.md`.
+
 ## Executive Summary
 
 This pass completed the boundary-governance plan before doing cleanup or evaluation. The system now has a more defensible RAG evaluation base: data closure preflight, canonical Chunk/Root qrels, strict/canonical qrel matching, saved-row regression, backend retrieval/rerank/context/confidence modules, and full qrel-aware performance reports.

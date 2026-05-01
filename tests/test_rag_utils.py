@@ -117,7 +117,9 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             patch.object(rag_utils, "RERANK_MODEL", "fake-reranker"),
             patch.object(rag_utils, "RERANK_TOP_N", 0),
             patch.object(rag_utils, "RERANK_INPUT_K_GPU", 7),
+            patch.object(rag_utils, "RERANK_DEVICE", "cuda"),
             patch.object(rag_utils, "RERANK_CACHE_ENABLED", False),
+            patch("backend.rag.utils._resolve_rerank_device", return_value="cuda"),
             patch.object(rag_utils, "_get_local_reranker", return_value=FakeReranker()),
         ):
             reranked, meta = rag_utils._rerank_documents("query", docs, top_k=4)
@@ -159,7 +161,9 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             patch.object(rag_utils, "RERANK_MODEL", "fake-reranker"),
             patch.object(rag_utils, "RERANK_TOP_N", 0),
             patch.object(rag_utils, "RERANK_INPUT_K_GPU", 10),
+            patch.object(rag_utils, "RERANK_DEVICE", "cuda"),
             patch.object(rag_utils, "RERANK_CACHE_ENABLED", True),
+            patch("backend.rag.utils._resolve_rerank_device", return_value="cuda"),
             patch.object(rag_utils, "cache", fake_cache),
             patch.object(rag_utils._embedding_service, "_total_docs", 42),
             patch.object(rag_utils, "_get_local_reranker", return_value=fake_reranker),
@@ -171,6 +175,38 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         self.assertFalse(first_meta["rerank_cache_hit"])
         self.assertTrue(second_meta["rerank_cache_hit"])
         self.assertEqual([doc["chunk_id"] for doc in first], [doc["chunk_id"] for doc in second])
+
+    def test_rerank_auto_device_uses_cpu_cap_when_cuda_unavailable(self):
+        docs = [{"text": f"doc {idx}", "chunk_id": f"c{idx}", "score": 1.0} for idx in range(12)]
+
+        with (
+            patch.object(rag_utils, "RERANK_MODEL", "fake-reranker"),
+            patch.object(rag_utils, "RERANK_INPUT_K_GPU", 10),
+            patch.object(rag_utils, "RERANK_INPUT_K_CPU", 3),
+            patch.object(rag_utils, "RERANK_DEVICE", "auto"),
+            patch("backend.rag.utils._resolve_rerank_device", return_value="cpu"),
+            patch.object(rag_utils, "RERANK_CACHE_ENABLED", False),
+            patch.object(rag_utils, "_get_local_reranker", return_value=None),
+        ):
+            reranked, meta = rag_utils._rerank_documents("query", docs, top_k=5)
+
+        self.assertEqual(meta["rerank_input_device_tier"], "cpu")
+        self.assertEqual(meta["rerank_input_cap"], 3)
+        self.assertEqual(meta["rerank_input_count"], 3)
+        self.assertEqual(len(reranked), 3)
+
+    def test_rerank_gpu_only_raises_when_cuda_missing(self):
+        with (
+            patch.object(rag_utils, "RERANK_DEVICE", "cuda"),
+            patch("torch.cuda.is_available", return_value=False),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "GPU-only"):
+                rag_utils._resolve_rerank_device()
+
+    def test_rerank_dtype_resolves_rag_dtype_names(self):
+        self.assertEqual(rag_utils.resolve_dtype("fp16"), "float16")
+        self.assertEqual(rag_utils.resolve_dtype("bf16"), "bfloat16")
+        self.assertEqual(rag_utils.resolve_dtype("fp32"), "float32")
 
     def test_step_back_expand_uses_single_structured_llm_call(self):
         class FakeResponse:
@@ -239,7 +275,8 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             {"chunk_id": "c1", "root_chunk_id": "root-c", "filename": "manual.pdf", "text": "c1", "rerank_score": 0.3},
         ]
 
-        reranked, meta = rag_utils._apply_structure_rerank(docs, top_k=5)
+        with patch.object(rag_utils, "SAME_ROOT_CAP", 2):
+            reranked, meta = rag_utils._apply_structure_rerank(docs, top_k=5)
 
         self.assertEqual([doc["chunk_id"] for doc in reranked], ["a1", "b1", "a2", "c1"])
         self.assertAlmostEqual(meta["dominant_root_share"], 0.5825, places=3)
@@ -330,7 +367,10 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
             },
         ]
 
-        with patch.object(rag_utils, "CONFIDENCE_GATE_ENABLED", True):
+        with (
+            patch.object(rag_utils, "CONFIDENCE_GATE_ENABLED", True),
+            patch.object(rag_utils, "ENABLE_ANCHOR_GATE", True),
+        ):
             meta = rag_utils._evaluate_retrieval_confidence("《中华人民共和国民法典》第二条主要规定了什么？", docs)
 
         self.assertTrue(meta["fallback_required"])

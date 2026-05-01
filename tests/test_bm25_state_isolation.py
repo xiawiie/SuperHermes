@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 
+import pytest
 
 
 class TestBM25StateIsolation:
@@ -60,3 +61,18 @@ class TestBM25StateIsolation:
                 os.environ["BM25_STATE_PATH"] = old
             else:
                 os.environ.pop("BM25_STATE_PATH", None)
+
+    def test_embedding_auto_device_falls_back_to_cpu(self):
+        from unittest.mock import patch
+        from backend.infra.embedding import _resolve_torch_device
+
+        with patch("torch.cuda.is_available", return_value=False):
+            assert _resolve_torch_device("auto") == "cpu"
+
+    def test_embedding_gpu_only_requires_cuda(self):
+        from unittest.mock import patch
+        from backend.infra.embedding import _resolve_torch_device
+
+        with patch("torch.cuda.is_available", return_value=False):
+            with pytest.raises(RuntimeError, match="GPU-only"):
+                _resolve_torch_device("cuda")

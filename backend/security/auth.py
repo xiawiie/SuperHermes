@@ -18,6 +18,16 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
 ADMIN_INVITE_CODE = os.getenv("ADMIN_INVITE_CODE", "")
 PBKDF2_ROUNDS = int(os.getenv("PASSWORD_PBKDF2_ROUNDS", "310000"))
 
+_APP_ENV = (
+    os.getenv("APP_ENV")
+    or os.getenv("ENVIRONMENT")
+    or os.getenv("ENV")
+    or os.getenv("FASTAPI_ENV")
+    or "development"
+).strip().lower()
+if _APP_ENV in {"prod", "production"} and SECRET_KEY == "change-this-secret":
+    raise RuntimeError("JWT_SECRET_KEY must be set in production")
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 

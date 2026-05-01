@@ -6,6 +6,7 @@ from backend.security.auth import require_admin
 from backend.infra.db.models import User
 from backend.contracts.schemas import DocumentDeleteResponse, DocumentInfo, DocumentListResponse, DocumentUploadResponse
 from backend.services.document_service import DocumentProcessingError, DocumentService
+from backend.shared.filename_normalization import raw_filename_basename
 
 _document_service: DocumentService | None = None
 
@@ -34,7 +35,7 @@ async def list_documents(_: User = Depends(require_admin)):
 async def upload_document(file: UploadFile = File(...), _: User = Depends(require_admin)):
     """Upload a document and index it for retrieval."""
     try:
-        filename = file.filename or ""
+        filename = raw_filename_basename(file.filename)
         file_lower = filename.lower()
         if not filename:
             raise HTTPException(status_code=400, detail="Filename is required")

@@ -169,19 +169,13 @@ Every run validates the dataset schema before retrieval starts and writes datase
 ### Fallback re-enable threshold
 - `helped > hurt` AND P50 increment < 1000ms
 
-## Variant Definitions (v4)
+## Profile Naming
 
-| Variant | Description | Key env |
-| --- | --- | --- |
-| `B0_legacy` | Current production configuration, no evaluation env overrides | none |
-| `B0` | Compatibility baseline from earlier matrices | `RERANK_TOP_N=0` |
-| `S1_linear` | Linear path: gate off + fallback off, QueryPlan/doc-scope off | `RAG_FALLBACK_ENABLED=false`, `QUERY_PLAN_ENABLED=false` |
-| `S2` | + QueryPlan + doc scope 80/20 parallel | `QUERY_PLAN_ENABLED=true`, `DOC_SCOPE_MATCH_FILTER=0.85`, `DOC_SCOPE_GLOBAL_RESERVE_WEIGHT=0.2` |
-| `S2H` | + heading lexical scoring | `HEADING_LEXICAL_ENABLED=true`, `HEADING_LEXICAL_WEIGHT=0.20` |
-| `S2HR` | + metadata-aware rerank pair enrichment | `RERANK_PAIR_ENRICHMENT_ENABLED=true` |
-| `S3` | + retrieval_text reindex + full enrichment | `EVAL_RETRIEVAL_TEXT_MODE=title_context_filename` |
-
-Legacy variants (A0/A1/B1/G0-G3/R1/R2/P1-P3/F1/S0) are retained for backward compatibility.
+Use `docs/rag-profile-naming.md` as the only current naming specification.
+New evaluation entries, docs, and reports should use the short
+`K / I / M / A / dtype` profile names. Historical variant names may remain in
+old raw reports and compatibility scripts, but they are aliases only and should
+not be introduced as new headings or default entry points.
 
 ## Diagnostics (v4 Five-Category Classification)
 
@@ -238,11 +232,13 @@ uv run python scripts\evaluate_rag_matrix.py --dataset-profile frozen --variants
 Gold confirmation after selecting a frozen winner:
 
 ```powershell
-uv run python scripts\evaluate_rag_matrix.py --dataset-profile gold --variants <selected-variant> --skip-reindex --run-id rag-phase2-gold-confirm
+uv run python scripts\evaluate_rag_matrix.py --dataset-profile gold --variants K2,K3 --skip-reindex --run-id rag-profile-gold-confirm
 ```
 
 ## Retrieval Variants
 
+- `K2`: current quality profile, historical alias `V3Q`.
+- `K3`: faster evidence profile, historical alias `V3Q_OPT`.
 - `B0`: current title-context baseline.
 - `R1`: `RERANK_TOP_N=20`.
 - `R2`: `RAG_CANDIDATE_K=80`, `RERANK_TOP_N=30`, `MILVUS_SEARCH_EF=128`.

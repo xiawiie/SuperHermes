@@ -6,6 +6,8 @@ SuperHermes is a FastAPI + RAG document assistant. The backend is organized as a
 
 The backend root now contains only entrypoints, package metadata, data, and real package directories. Former root alias modules have been deleted.
 
+Runtime RAG naming uses the short profile format documented in [rag-profile-naming.md](rag-profile-naming.md), for example `K2 / I2 / M0 / A1 / fp16`.
+
 ## Runtime Flow
 
 ```text
@@ -59,7 +61,7 @@ backend/services/
 backend/shared/
 ```
 
-`backend/__init__.py` is package-only and must not mutate `sys.path` or register `sys.modules` aliases.
+`backend/__init__.py` must not mutate `sys.path` or register `sys.modules` aliases.
 
 ## Application And HTTP
 
@@ -96,11 +98,12 @@ Rules:
 | `backend/rag/context.py` | Context assembly, parent merge, structure/root rerank |
 | `backend/rag/confidence.py` | Retrieval confidence gate and anchor matching |
 | `backend/rag/diagnostics.py` | Retrieval failure classification and diagnostics |
+| `backend/rag/layered_rerank.py` | Experimental layered rerank helpers |
 | `backend/rag/profiles.py` | Index profile normalization and chunk ID prefixing |
 | `backend/rag/rules.py` | Shared heading/title/anchor parsing rules |
 | `backend/rag/trace.py` | Candidate identity, text hashing, golden trace signatures |
 | `backend/rag/types.py` | Shared RAG trace/error types |
-| `backend/rag/runtime/config.py` | Environment parsing helpers |
+| `backend/config.py` | Environment parsing helpers and base runtime values |
 
 ## Data And Infra
 

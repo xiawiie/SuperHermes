@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from backend.rag.profile_naming import K_HISTORICAL_ALIASES
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATASET_DIR = PROJECT_ROOT / "eval" / "datasets"
@@ -703,6 +705,24 @@ def _profiled_env(base_variant: str, *, profile: str, collection: str, state_nam
 
 VARIANT_CONFIGS.update(
     {
+        "K1": {
+            **VARIANT_CONFIGS["S1_linear"],
+            "description": "K1 stable: low-latency structured-index baseline",
+            "profile_key": "K1",
+            "historical_alias": K_HISTORICAL_ALIASES["K1"],
+        },
+        "K2": {
+            **VARIANT_CONFIGS["V3Q"],
+            "description": "K2 quality: strong evidence profile with QueryPlan + CE + fusion",
+            "profile_key": "K2",
+            "historical_alias": K_HISTORICAL_ALIASES["K2"],
+        },
+        "K3": {
+            **VARIANT_CONFIGS["V3Q_OPT"],
+            "description": "K3 fast evidence: reduced candidate and CrossEncoder cost",
+            "profile_key": "K3",
+            "historical_alias": K_HISTORICAL_ALIASES["K3"],
+        },
         "GB0": {
             "description": "gold title_context baseline: B0 without v3 routing/fusion",
             "reindex_mode": "title_context",
