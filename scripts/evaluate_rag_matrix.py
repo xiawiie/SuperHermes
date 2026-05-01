@@ -21,6 +21,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.shared.filename_normalization import normalize_filename_for_match, raw_filename_basename  # noqa: E402
+from backend.rag.profile_naming import (  # noqa: E402
+    canonical_variant_name,
+    profile_config_hash,
+    resolve_variant_profile,
+)
 from scripts.rag_eval.variants import (  # noqa: E402
     DATASET_DIR,
     DEFAULT_CANONICAL_CORPUS,
@@ -1324,6 +1329,11 @@ def _summarize_trace(meta: dict) -> dict[str, Any]:
         "rerank_output_count",
         "rerank_input_cap",
         "rerank_input_device_tier",
+        "ce_dtype",
+        "ce_input_count",
+        "ce_cache_hit",
+        "ce_latency_ms",
+        "model_warmup_state",
         "rerank_cache_enabled",
         "rerank_cache_hit",
         "rerank_error",
@@ -1503,8 +1513,7 @@ def _git_commit() -> str | None:
 
 
 def _config_hash(payload: dict[str, Any]) -> str:
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()[:16]
+    return profile_config_hash(payload)
 
 
 def _variant_fingerprints(args: argparse.Namespace, variants: list[str]) -> dict[str, dict[str, Any]]:
@@ -1512,9 +1521,37 @@ def _variant_fingerprints(args: argparse.Namespace, variants: list[str]) -> dict
     out: dict[str, dict[str, Any]] = {}
     for variant in variants:
         env = _merged_env(variant)
+        try:
+            profile_metadata = resolve_variant_profile(
+                variant,
+                dtype=env.get("RAG_DTYPE") or env.get("RERANK_TORCH_DTYPE"),
+            ).as_metadata()
+        except ValueError:
+            profile_metadata = {
+                "profile_key": variant,
+                "profile_name": variant,
+                "historical_alias": None,
+            }
+        resolved_config = {
+            "index_profile": env.get("RAG_INDEX_PROFILE") or "legacy",
+            "collection": env.get("MILVUS_COLLECTION") or "embeddings_collection",
+            "text_mode": env.get("EVAL_RETRIEVAL_TEXT_MODE"),
+            "bm25_state": env.get("BM25_STATE_PATH"),
+            "rag_candidate_k": env.get("RAG_CANDIDATE_K"),
+            "rerank_input_k_gpu": env.get("RERANK_INPUT_K_GPU"),
+            "rerank_input_k_cpu": env.get("RERANK_INPUT_K_CPU"),
+            "rerank_top_n": env.get("RERANK_TOP_N"),
+            "rerank_torch_dtype": profile_metadata.get("rerank_torch_dtype") or env.get("RERANK_TORCH_DTYPE"),
+            "query_plan_enabled": env.get("QUERY_PLAN_ENABLED"),
+            "heading_lexical_enabled": env.get("HEADING_LEXICAL_ENABLED"),
+            "rerank_pair_enrichment_enabled": env.get("RERANK_PAIR_ENRICHMENT_ENABLED"),
+            "rerank_score_fusion_enabled": env.get("RERANK_SCORE_FUSION_ENABLED"),
+            "milvus_search_ef": env.get("MILVUS_SEARCH_EF"),
+            "milvus_sparse_drop_ratio": env.get("MILVUS_SPARSE_DROP_RATIO"),
+            "milvus_rrf_k": env.get("MILVUS_RRF_K"),
+        }
         payload = {
-            "variant": variant,
-            "variant_config": VARIANT_CONFIGS[variant],
+            "resolved_config": resolved_config,
             "dataset": str(args.dataset),
             "dataset_sha256": dataset_sha,
             "documents_dir": str(args.documents_dir),
@@ -1522,6 +1559,7 @@ def _variant_fingerprints(args: argparse.Namespace, variants: list[str]) -> dict
             "mode": args.mode,
         }
         out[variant] = {
+            **profile_metadata,
             "index_profile": env.get("RAG_INDEX_PROFILE") or "legacy",
             "collection": env.get("MILVUS_COLLECTION") or "embeddings_collection",
             "text_mode": env.get("EVAL_RETRIEVAL_TEXT_MODE"),
@@ -1529,6 +1567,7 @@ def _variant_fingerprints(args: argparse.Namespace, variants: list[str]) -> dict
             "embedding_provider": env.get("EMBEDDING_PROVIDER") or os.getenv("EMBEDDING_PROVIDER", "local"),
             "embedding_model": env.get("EMBEDDING_MODEL") or os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"),
             "reranker_model": env.get("RERANK_MODEL") or os.getenv("RERANK_MODEL"),
+            "resolved_config": resolved_config,
             "profile_config_hash": _config_hash(payload),
         }
     return out
@@ -1906,7 +1945,22 @@ def run_matrix(args: argparse.Namespace) -> int:
 
 def parse_variants(raw: str) -> list[str]:
     canonical_by_upper = {variant.upper(): variant for variant in VARIANT_CONFIGS}
-    variants = [canonical_by_upper.get(item.strip().upper(), item.strip()) for item in raw.split(",") if item.strip()]
+    variants: list[str] = []
+    for item in raw.split(","):
+        stripped = item.strip()
+        if not stripped:
+            continue
+        direct = canonical_by_upper.get(stripped.upper())
+        if direct:
+            try:
+                variants.append(canonical_variant_name(direct))
+            except ValueError:
+                variants.append(direct)
+            continue
+        try:
+            variants.append(canonical_variant_name(stripped))
+        except ValueError:
+            variants.append(stripped)
     unknown = [variant for variant in variants if variant not in VARIANT_CONFIGS]
     if unknown:
         raise ValueError(f"unknown variants: {', '.join(unknown)}")

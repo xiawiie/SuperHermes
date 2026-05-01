@@ -35,6 +35,45 @@ def _jieba_cut(text: str) -> list[str]:
     return list(jieba.cut(text))
 
 
+def _normalize_device_request(value: str | None, *, default: str = "auto") -> str:
+    requested = (value or default).strip().lower()
+    aliases = {
+        "": default,
+        "a1": "auto",
+        "auto": "auto",
+        "gpu_first": "auto",
+        "gpu-first": "auto",
+        "cuda_if_available": "auto",
+        "a2": "cuda",
+        "gpu": "cuda",
+        "cuda": "cuda",
+        "gpu_only": "cuda",
+        "gpu-only": "cuda",
+        "a0": "cpu",
+        "cpu": "cpu",
+        "cpu_only": "cpu",
+        "cpu-only": "cpu",
+    }
+    return aliases.get(requested, requested)
+
+
+def _resolve_torch_device(device_request: str | None, *, env_name: str = "EMBEDDING_DEVICE") -> str:
+    requested = _normalize_device_request(device_request)
+    if requested == "cpu":
+        return "cpu"
+    if requested != "cuda" and requested != "auto":
+        return requested
+
+    import torch
+
+    cuda_available = torch.cuda.is_available()
+    if requested == "cuda":
+        if not cuda_available:
+            raise RuntimeError(f"CUDA is not available but {env_name} is set to GPU-only mode")
+        return "cuda"
+    return "cuda" if cuda_available else "cpu"
+
+
 def _create_dense_embedder() -> Any:
     provider = os.getenv("EMBEDDING_PROVIDER", "local")
 
@@ -46,17 +85,13 @@ def _create_dense_embedder() -> Any:
         return OllamaEmbeddings(model=model_name, base_url=base_url)
 
     model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
-    # GPU-only mode: force CUDA, never fallback to CPU
-    import torch
-
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is not available but EMBEDDING_DEVICE is set to GPU-only mode")
+    device = _resolve_torch_device(os.getenv("EMBEDDING_DEVICE", os.getenv("RAG_A", "auto")))
 
     from langchain_huggingface import HuggingFaceEmbeddings
 
     return HuggingFaceEmbeddings(
         model_name=model_name,
-        model_kwargs={"device": "cuda"},
+        model_kwargs={"device": device},
         encode_kwargs={"normalize_embeddings": True},
     )
 

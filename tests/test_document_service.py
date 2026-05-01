@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from backend.rag.profiles import current_index_profile
 from backend.services.document_service import DocumentProcessingError, DocumentService
 
 
@@ -29,7 +30,7 @@ class FakeMilvus:
     def init_collection(self):
         self.init_calls += 1
 
-    def query(self, output_fields, limit):
+    def query(self, output_fields, limit, filter_expr=""):
         return list(self.query_rows)
 
     def query_all(self, filter_expr, output_fields):
@@ -85,6 +86,10 @@ def make_service(tmp_path, docs):
     return service, milvus, writer, parent, embedding
 
 
+def profile_expr() -> str:
+    return f'index_profile == "{current_index_profile()}"'
+
+
 def test_list_documents_aggregates_chunk_counts(tmp_path):
     service, *_ = make_service(tmp_path, [])
 
@@ -106,7 +111,7 @@ def test_upload_document_replaces_old_index_and_writes_leaf_chunks(tmp_path):
     result = service.upload_document("manual.pdf", b"content")
 
     assert (tmp_path / "manual.pdf").read_bytes() == b"content"
-    assert milvus.delete_calls == ['filename == "manual.pdf"']
+    assert milvus.delete_calls == [f'filename == "manual.pdf" and {profile_expr()}']
     assert parent.deleted == ["manual.pdf"]
     assert parent.upserted == [[source_docs[0]]]
     assert writer.written == [[source_docs[1]]]
@@ -120,6 +125,52 @@ def test_upload_document_requires_leaf_chunks(tmp_path):
 
     with pytest.raises(DocumentProcessingError, match="no leaf chunks generated"):
         service.upload_document("manual.pdf", b"content")
+    assert not (tmp_path / "manual.pdf").exists()
+
+
+def test_upload_document_prepares_new_content_before_cleanup(tmp_path):
+    class FailingLoader(FakeLoader):
+        def load_document(self, path, filename):
+            raise RuntimeError("parse failed")
+
+    service, milvus, writer, parent, embedding = make_service(tmp_path, [])
+    service._loader = FailingLoader([])
+
+    with pytest.raises(DocumentProcessingError, match="Failed to load document"):
+        service.upload_document("manual.pdf", b"bad")
+
+    assert milvus.delete_calls == []
+    assert parent.deleted == []
+    assert embedding.removed == []
+    assert writer.written == []
+    assert not (tmp_path / "manual.pdf").exists()
+
+
+def test_upload_document_normalizes_unsafe_paths_to_basename(tmp_path):
+    source_docs = [{"chunk_level": 3, "chunk_id": "leaf"}]
+    service, milvus, *_ = make_service(tmp_path, source_docs)
+
+    result = service.upload_document("../manual.pdf", b"content")
+
+    assert result["filename"] == "manual.pdf"
+    assert (tmp_path / "manual.pdf").exists()
+    assert milvus.delete_calls == [f'filename == "manual.pdf" and {profile_expr()}']
+
+
+def test_delete_document_escapes_filename_filter(tmp_path):
+    service, milvus, _, parent, _ = make_service(tmp_path, [])
+
+    result = service.delete_document('manual "quoted".pdf')
+
+    assert milvus.query_all_calls == [
+        (
+            f'filename == "manual \\"quoted\\".pdf" and {profile_expr()}',
+            ("text",),
+        )
+    ]
+    assert milvus.delete_calls == [f'filename == "manual \\"quoted\\".pdf" and {profile_expr()}']
+    assert parent.deleted == ['manual "quoted".pdf']
+    assert result["filename"] == 'manual "quoted".pdf'
 
 
 def test_delete_document_removes_index_and_parent_chunks(tmp_path):
@@ -127,7 +178,7 @@ def test_delete_document_removes_index_and_parent_chunks(tmp_path):
 
     result = service.delete_document("manual.pdf")
 
-    assert milvus.delete_calls == ['filename == "manual.pdf"']
+    assert milvus.delete_calls == [f'filename == "manual.pdf" and {profile_expr()}']
     assert parent.deleted == ["manual.pdf"]
     assert embedding.removed == [["old chunk"]]
     assert result == {

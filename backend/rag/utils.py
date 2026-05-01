@@ -57,16 +57,18 @@ from backend.rag.layered_rerank import (
 )
 from backend.rag.trace import candidate_identity, trace_text_hash
 from backend.rag.types import StageError
+from backend.rag.profile_naming import resolve_dtype, resolve_runtime_dtype
 from backend.config import (
     ARK_API_KEY,
     BASE_URL,
     MODEL,
     env_bool as _env_bool,
 )
-RERANK_MODEL = os.getenv("RERANK_MODEL")
+RERANK_MODEL = os.getenv("RERANK_MODEL") or os.getenv("RERANK_AVAILABLE_MODEL")
 RERANK_PROVIDER = os.getenv("RERANK_PROVIDER", "local").lower()
-RERANK_DEVICE = os.getenv("RERANK_DEVICE", "auto")
-RERANK_TORCH_DTYPE = os.getenv("RERANK_TORCH_DTYPE", "float16")
+RERANK_DEVICE = os.getenv("RERANK_DEVICE", os.getenv("RAG_A", "auto"))
+RERANK_TORCH_DTYPE = resolve_runtime_dtype(os.getenv("RAG_DTYPE"), os.getenv("RERANK_TORCH_DTYPE"))
+RERANK_INPUT_K_CPU = int(os.getenv("RERANK_INPUT_K_CPU", "0"))
 AUTO_MERGE_ENABLED = os.getenv("AUTO_MERGE_ENABLED", "true").lower() != "false"
 AUTO_MERGE_THRESHOLD = int(os.getenv("AUTO_MERGE_THRESHOLD", "2"))
 LEAF_RETRIEVE_LEVEL = int(os.getenv("LEAF_RETRIEVE_LEVEL", "3"))
@@ -431,17 +433,57 @@ def _effective_rerank_top_n(top_k: int, candidate_count: int) -> int:
     return min(candidate_count, requested)
 
 
+def _normalize_device_request(value: str | None, *, default: str = "auto") -> str:
+    requested = (value or default).strip().lower()
+    aliases = {
+        "": default,
+        "a1": "auto",
+        "auto": "auto",
+        "gpu_first": "auto",
+        "gpu-first": "auto",
+        "cuda_if_available": "auto",
+        "a2": "cuda",
+        "gpu": "cuda",
+        "cuda": "cuda",
+        "gpu_only": "cuda",
+        "gpu-only": "cuda",
+        "a0": "cpu",
+        "cpu": "cpu",
+        "cpu_only": "cpu",
+        "cpu-only": "cpu",
+    }
+    return aliases.get(requested, requested)
+
+
+def _resolve_rerank_device() -> str:
+    requested = _normalize_device_request(RERANK_DEVICE)
+    if requested == "cpu":
+        return "cpu"
+    if requested != "cuda" and requested != "auto":
+        return requested
+
+    import torch
+
+    cuda_available = torch.cuda.is_available()
+    if requested == "cuda":
+        if not cuda_available:
+            raise RuntimeError("CUDA is not available but RERANK_DEVICE is set to GPU-only mode")
+        return "cuda"
+    return "cuda" if cuda_available else "cpu"
+
+
 def _rerank_device_tier() -> str:
-    return "gpu"
+    return "gpu" if _resolve_rerank_device().startswith("cuda") else "cpu"
 
 
 def _effective_rerank_input_k(rerank_top_n: int, candidate_count: int) -> tuple[int, str, int]:
     if candidate_count <= 0:
-        return 0, "gpu", 0
-    cap = RERANK_INPUT_K_GPU
+        return 0, _rerank_device_tier(), 0
+    device_tier = _rerank_device_tier()
+    cap = RERANK_INPUT_K_GPU if device_tier == "gpu" else RERANK_INPUT_K_CPU
     if cap > 0:
-        return min(candidate_count, cap), "gpu", cap
-    return candidate_count, "gpu", cap
+        return min(candidate_count, cap), device_tier, cap
+    return candidate_count, device_tier, cap
 
 
 def _is_rerank_enabled() -> bool:
@@ -574,7 +616,8 @@ def _get_local_reranker():
         from sentence_transformers import CrossEncoder
         dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
         dtype = dtype_map.get(RERANK_TORCH_DTYPE.lower(), torch.float16)
-        _local_reranker = CrossEncoder(RERANK_MODEL, device="cuda", model_kwargs={"torch_dtype": dtype})
+        device = _resolve_rerank_device()
+        _local_reranker = CrossEncoder(RERANK_MODEL, device=device, model_kwargs={"torch_dtype": dtype})
     return _local_reranker
 
 
@@ -659,7 +702,7 @@ def _rerank_documents(query: str, docs: List[dict], top_k: int) -> Tuple[List[di
     runtime = RerankRuntime(
         provider=RERANK_PROVIDER,
         model=RERANK_MODEL,
-        cpu_top_n_cap=0,
+        cpu_top_n_cap=RERANK_INPUT_K_CPU,
         cache_enabled=RERANK_CACHE_ENABLED,
         pair_enrichment_enabled=bool(RERANK_PAIR_ENRICHMENT_ENABLED),
         score_fusion_enabled=RERANK_SCORE_FUSION_ENABLED,

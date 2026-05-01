@@ -496,12 +496,12 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
     def test_v4_final_variant_names_are_available(self):
         self.assertEqual(
             parse_variants("B0_legacy,S1_linear,S2,S2H,S2HR,S3"),
-            ["B0_legacy", "S1_linear", "S2", "S2H", "S2HR", "S3"],
+            ["B0_legacy", "K1", "S2", "S2H", "S2HR", "S3"],
         )
         self.assertEqual(VARIANT_CONFIGS["B0_legacy"]["env"], {})
-        self.assertEqual(VARIANT_CONFIGS["S1_linear"]["env"]["CONFIDENCE_GATE_ENABLED"], "false")
-        self.assertEqual(VARIANT_CONFIGS["S1_linear"]["env"]["RAG_FALLBACK_ENABLED"], "false")
-        self.assertEqual(VARIANT_CONFIGS["S1_linear"]["env"]["QUERY_PLAN_ENABLED"], "false")
+        self.assertEqual(VARIANT_CONFIGS["K1"]["env"]["CONFIDENCE_GATE_ENABLED"], "false")
+        self.assertEqual(VARIANT_CONFIGS["K1"]["env"]["RAG_FALLBACK_ENABLED"], "false")
+        self.assertEqual(VARIANT_CONFIGS["K1"]["env"]["QUERY_PLAN_ENABLED"], "false")
         self.assertEqual(VARIANT_CONFIGS["S2"]["env"]["QUERY_PLAN_ENABLED"], "true")
         self.assertEqual(VARIANT_CONFIGS["S2"]["env"]["DOC_SCOPE_GLOBAL_RESERVE_WEIGHT"], "0.2")
         self.assertEqual(VARIANT_CONFIGS["S2HR"]["env"]["RERANK_PAIR_ENRICHMENT_ENABLED"], "true")
@@ -509,12 +509,41 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
         self.assertEqual(VARIANT_CONFIGS["S3"]["env"]["EVAL_RETRIEVAL_TEXT_MODE"], "title_context_filename")
 
     def test_v3_variants_are_isolated_profiles(self):
-        self.assertEqual(parse_variants("V3Q,V3F"), ["V3Q", "V3F"])
-        self.assertEqual(VARIANT_CONFIGS["V3Q"]["env"]["RAG_INDEX_PROFILE"], "v3_quality")
-        self.assertEqual(VARIANT_CONFIGS["V3Q"]["env"]["MILVUS_COLLECTION"], "embeddings_collection_v3_quality")
-        self.assertEqual(VARIANT_CONFIGS["V3Q"]["env"]["RERANK_SCORE_FUSION_ENABLED"], "true")
+        self.assertEqual(parse_variants("K2,V3F"), ["K2", "V3F"])
+        self.assertEqual(parse_variants("V3Q,V3Q_OPT"), ["K2", "K3"])
+        self.assertEqual(VARIANT_CONFIGS["K2"]["env"]["RAG_INDEX_PROFILE"], "v3_quality")
+        self.assertEqual(VARIANT_CONFIGS["K2"]["env"]["MILVUS_COLLECTION"], "embeddings_collection_v3_quality")
+        self.assertEqual(VARIANT_CONFIGS["K2"]["env"]["RERANK_SCORE_FUSION_ENABLED"], "true")
         self.assertEqual(VARIANT_CONFIGS["V3F"]["env"]["RAG_INDEX_PROFILE"], "v3_fast")
         self.assertEqual(VARIANT_CONFIGS["V3F"]["env"]["MILVUS_COLLECTION"], "embeddings_collection_v3_fast")
+
+    def test_short_profile_variants_match_historical_configs(self):
+        self.assertEqual(parse_variants("K1,K2,K3"), ["K1", "K2", "K3"])
+        self.assertEqual(VARIANT_CONFIGS["K1"]["env"], VARIANT_CONFIGS["S1_linear"]["env"])
+        self.assertEqual(VARIANT_CONFIGS["K2"]["env"], VARIANT_CONFIGS["V3Q"]["env"])
+        self.assertEqual(VARIANT_CONFIGS["K3"]["env"], VARIANT_CONFIGS["V3Q_OPT"]["env"])
+        self.assertEqual(VARIANT_CONFIGS["K2"]["historical_alias"], "V3Q")
+        self.assertEqual(VARIANT_CONFIGS["K3"]["historical_alias"], "V3Q_OPT")
+
+    def test_short_profile_config_hash_matches_historical_alias(self):
+        args = type(
+            "Args",
+            (),
+            {
+                "dataset": PROJECT_ROOT / "eval" / "datasets" / "rag_doc_gold.jsonl",
+                "documents_dir": PROJECT_ROOT.parent / "doc",
+                "top_k": 5,
+                "mode": "retrieval",
+            },
+        )()
+
+        fingerprint = _build_fingerprint(args, ["K2", "V3Q"], reindex_events=[])
+
+        self.assertEqual(
+            fingerprint["variants"]["K2"]["profile_config_hash"],
+            fingerprint["variants"]["V3Q"]["profile_config_hash"],
+        )
+        self.assertEqual(fingerprint["variants"]["K2"]["resolved_config"], fingerprint["variants"]["V3Q"]["resolved_config"])
 
     def test_gold_variants_are_isolated_from_legacy_and_v3_profiles(self):
         self.assertEqual(parse_variants("GB0,GS1,GS2,GS2H,GS2HR,GS3"), ["GB0", "GS1", "GS2", "GS2H", "GS2HR", "GS3"])
@@ -522,7 +551,7 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
         self.assertEqual(VARIANT_CONFIGS["GB0"]["env"]["MILVUS_COLLECTION"], "embeddings_collection_gold_tc")
         self.assertEqual(VARIANT_CONFIGS["GS3"]["env"]["RAG_INDEX_PROFILE"], "gold_tcf")
         self.assertEqual(VARIANT_CONFIGS["GS3"]["env"]["MILVUS_COLLECTION"], "embeddings_collection_gold_tcf")
-        self.assertNotEqual(VARIANT_CONFIGS["GS3"]["env"]["MILVUS_COLLECTION"], VARIANT_CONFIGS["V3Q"]["env"]["MILVUS_COLLECTION"])
+        self.assertNotEqual(VARIANT_CONFIGS["GS3"]["env"]["MILVUS_COLLECTION"], VARIANT_CONFIGS["K2"]["env"]["MILVUS_COLLECTION"])
 
     def test_chunk_root_metrics_render_na_when_qrel_coverage_is_zero(self):
         rows = [
@@ -581,6 +610,41 @@ class EvaluateRagMatrixMetricTests(unittest.TestCase):
         self.assertIn("## Build Info", rendered)
         self.assertIn("## Coverage Preflight", rendered)
         self.assertEqual(len(fingerprint["variants"]["GS3"]["profile_config_hash"]), 16)
+
+    def test_report_renders_short_profile_name_and_historical_alias(self):
+        args = type(
+            "Args",
+            (),
+            {
+                "dataset": PROJECT_ROOT / "eval" / "datasets" / "rag_doc_gold.jsonl",
+                "documents_dir": PROJECT_ROOT.parent / "doc",
+                "top_k": 5,
+                "mode": "retrieval",
+            },
+        )()
+        fingerprint = _build_fingerprint(args, ["K2"], reindex_events=[])
+        summary = {
+            "generated_at": "2026-04-29T00:00:00",
+            "sample_rows": 1,
+            "variants": {
+                "K2": {
+                    "rows": 1,
+                    "file_hit_at_5": 1.0,
+                    "file_page_hit_at_5": 1.0,
+                    "mrr": 1.0,
+                    "p50_latency_ms": 10.0,
+                    "p95_latency_ms": 10.0,
+                }
+            },
+            "paired_comparisons": {},
+            "diagnostics": {},
+            "build_fingerprint": fingerprint,
+        }
+
+        rendered = render_summary_markdown(summary)
+
+        self.assertIn("K2/I2/M0/A1/fp16", rendered)
+        self.assertIn("historical: V3Q", rendered)
 
     def test_chunk_root_metrics_render_from_qrels(self):
         rows = [

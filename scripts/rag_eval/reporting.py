@@ -19,6 +19,19 @@ def fmt_metric(value: Any) -> str:
     return str(value)
 
 
+def _variant_label(summary: dict[str, Any], variant: str) -> str:
+    fingerprint = summary.get("build_fingerprint") or {}
+    variants = fingerprint.get("variants") or {}
+    if not isinstance(variants, dict):
+        variants = {}
+    metadata = variants.get(variant) or {}
+    label = metadata.get("profile_name") or variant
+    alias = metadata.get("historical_alias")
+    if alias and alias != variant:
+        return f"{label} (historical: {alias})"
+    return str(label)
+
+
 def render_summary_markdown(summary: dict[str, Any]) -> str:
     lines = [
         "# RAG Matrix Evaluation Summary",
@@ -40,6 +53,21 @@ def render_summary_markdown(summary: dict[str, Any]) -> str:
                 "",
             ]
         )
+        variant_fingerprints = fingerprint.get("variants") or {}
+        if isinstance(variant_fingerprints, dict) and variant_fingerprints:
+            lines.extend(["### RAG Profiles", ""])
+            for variant, metadata in variant_fingerprints.items():
+                alias = metadata.get("historical_alias") or "-"
+                lines.append(
+                    "- `{variant}` => `{profile}`; historical=`{alias}`; collection=`{collection}`; hash=`{hash}`".format(
+                        variant=variant,
+                        profile=metadata.get("profile_name") or variant,
+                        alias=alias,
+                        collection=metadata.get("collection"),
+                        hash=metadata.get("profile_config_hash"),
+                    )
+                )
+            lines.append("")
     coverage_reports = summary.get("coverage_preflight") or []
     if coverage_reports:
         lines.extend(["## Coverage Preflight", ""])
@@ -104,7 +132,7 @@ def render_summary_markdown(summary: dict[str, Any]) -> str:
     for variant, metrics in summary.get("variants", {}).items():
         lines.append(
             "| {variant} | {rows} | {file} | {file_page} | {candidate_recall} | {hard_neg} | {anchor} | {mrr} | {chunk} | {root} | {p50} | {p95} | {error} | {fallback} | {fallback_executed} | {fallback_helped} | {fallback_hurt} |".format(
-                variant=variant,
+                variant=_variant_label(summary, variant),
                 rows=metrics.get("rows", 0),
                 file=fmt_metric(metrics.get("file_hit_at_5")),
                 file_page=fmt_metric(metrics.get("file_page_hit_at_5")),
@@ -134,7 +162,7 @@ def render_summary_markdown(summary: dict[str, Any]) -> str:
     for variant, metrics in summary.get("variants", {}).items():
         lines.append(
             "| {variant} | {file_qrel} | {page_qrel} | {chunk_qrel} | {root_qrel} |".format(
-                variant=variant,
+                variant=_variant_label(summary, variant),
                 file_qrel=fmt_metric(metrics.get("file_qrel_coverage")),
                 page_qrel=fmt_metric(metrics.get("page_qrel_coverage")),
                 chunk_qrel=fmt_metric(metrics.get("chunk_qrel_coverage")),
@@ -152,7 +180,7 @@ def render_summary_markdown(summary: dict[str, Any]) -> str:
     for variant, metrics in summary.get("variants", {}).items():
         lines.append(
             "| {variant} | {chunk_rows} | {root_rows} | {chunk_mrr} | {root_mrr} | {answer_support} |".format(
-                variant=variant,
+                variant=_variant_label(summary, variant),
                 chunk_rows=metrics.get("chunk_qrel_rows", 0),
                 root_rows=metrics.get("root_qrel_rows", 0),
                 chunk_mrr=fmt_metric(metrics.get("chunk_mrr")),
@@ -189,7 +217,7 @@ def render_summary_markdown(summary: dict[str, Any]) -> str:
         for variant, metrics in summary.get("variants", {}).items():
             lines.append(
                 "| {variant} | {faithfulness} | {answer_relevance} | {citation_coverage} | {answer_error} |".format(
-                    variant=variant,
+                    variant=_variant_label(summary, variant),
                     faithfulness=fmt_metric(metrics.get("faithfulness_score")),
                     answer_relevance=fmt_metric(metrics.get("answer_relevance_score")),
                     citation_coverage=fmt_metric(metrics.get("citation_coverage")),
