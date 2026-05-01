@@ -1,6 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Callable, Literal, TypedDict, List, Optional
-import os
 import time
 from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, END
@@ -12,8 +11,8 @@ from backend.config import (
     FAST_MODEL,
     GRADE_MODEL,
     MODEL,
-    env_bool,
 )
+from backend.rag.candidate_strategy import RerankExecutionMode
 from backend.rag.utils import (
     elapsed_ms,
     finish_retrieval_pipeline,
@@ -30,34 +29,53 @@ from backend.rag.trace import (
     build_initial_rag_trace,
     merge_expanded_rag_trace,
 )
+from backend.rag.runtime_config import RagRuntimeConfig, load_runtime_config
 from backend.chat.tools import emit_rag_step
-
-RAG_FALLBACK_TIMEOUT_SECONDS = float(os.getenv("RAG_FALLBACK_TIMEOUT_SECONDS", "6"))
-RAG_FALLBACK_WORKERS = int(os.getenv("RAG_FALLBACK_WORKERS", "4"))
-RAG_FALLBACK_ENABLED = env_bool("RAG_FALLBACK_ENABLED", False)
-RAG_FALLBACK_USE_FAST_MODEL = env_bool("RAG_FALLBACK_USE_FAST_MODEL", True)
-RAG_FALLBACK_CANDIDATE_ONLY = env_bool("RAG_FALLBACK_CANDIDATE_ONLY", False)
-RAG_FALLBACK_EXPANDED_CANDIDATE_K = int(os.getenv("RAG_FALLBACK_EXPANDED_CANDIDATE_K", "50"))
-
-FAST_MODEL_ENABLED = RAG_FALLBACK_USE_FAST_MODEL and bool(FAST_MODEL) and FAST_MODEL != MODEL
 
 _grader_model = None
 _router_model = None
 _fast_model = None
-_fallback_executor = ThreadPoolExecutor(max_workers=max(1, RAG_FALLBACK_WORKERS), thread_name_prefix="rag-fallback")
+_fallback_executor: ThreadPoolExecutor | None = None
+_fallback_executor_workers = 0
 
 
-def _get_fallback_model_name() -> str:
+def _runtime_config() -> RagRuntimeConfig:
+    return load_runtime_config()
+
+
+def _fast_model_enabled(config: RagRuntimeConfig | None = None) -> bool:
+    config = config or _runtime_config()
+    return bool(config.fallback_use_fast_model and FAST_MODEL and FAST_MODEL != MODEL)
+
+
+def _fallback_timeout_seconds(config: RagRuntimeConfig | None = None) -> float:
+    config = config or _runtime_config()
+    return max(0.001, float(config.fallback_timeout_seconds))
+
+
+def _get_fallback_executor(config: RagRuntimeConfig | None = None) -> ThreadPoolExecutor:
+    global _fallback_executor, _fallback_executor_workers
+    config = config or _runtime_config()
+    workers = max(1, int(config.fallback_workers or 1))
+    if _fallback_executor is None or _fallback_executor_workers != workers:
+        if _fallback_executor is not None:
+            _fallback_executor.shutdown(wait=False, cancel_futures=True)
+        _fallback_executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="rag-fallback")
+        _fallback_executor_workers = workers
+    return _fallback_executor
+
+
+def _get_fallback_model_name(config: RagRuntimeConfig | None = None) -> str:
     """Return the model name used for fallback LLM calls, for tracing."""
-    if FAST_MODEL_ENABLED:
+    if _fast_model_enabled(config):
         return FAST_MODEL
     return GRADE_MODEL or MODEL or "unknown"
 
 
-def _get_fast_model():
+def _get_fast_model(config: RagRuntimeConfig | None = None):
     """Lazily initialize the FAST_MODEL for fallback LLM calls."""
     global _fast_model
-    if not FAST_MODEL_ENABLED or not API_KEY:
+    if not _fast_model_enabled(config) or not API_KEY:
         return None
     if _fast_model is None:
         _fast_model = init_chat_model(
@@ -97,36 +115,45 @@ def _prefixed_stage_errors(prefix: str, errors: list[dict]) -> list[dict]:
     return prefixed
 
 
-def _fallback_deadline(start: float) -> float:
-    return start + max(0.001, RAG_FALLBACK_TIMEOUT_SECONDS)
+def _fallback_deadline(start: float, config: RagRuntimeConfig | None = None) -> float:
+    return start + _fallback_timeout_seconds(config)
 
 
 def _remaining_fallback_seconds(deadline: float) -> float:
     return max(0.001, deadline - time.perf_counter())
 
 
-def _submit_with_context(fn: Callable[[], object]):
-    return _fallback_executor.submit(fn)
+def _submit_with_context(fn: Callable[[], object], config: RagRuntimeConfig | None = None):
+    return _get_fallback_executor(config).submit(fn)
 
 
-def _await_with_deadline(future, deadline: float, rag_trace: dict, stage: str, fallback_to: str):
+def _await_with_deadline(
+    future,
+    deadline: float,
+    rag_trace: dict,
+    stage: str,
+    fallback_to: str,
+    *,
+    timeout_seconds: float | None = None,
+):
     try:
         return future.result(timeout=_remaining_fallback_seconds(deadline))
     except TimeoutError:
         future.cancel()
         rag_trace["fallback_timed_out"] = True
         rag_trace["fallback_returned_initial"] = True
-        _append_stage_error(rag_trace, stage, f"timed out after {RAG_FALLBACK_TIMEOUT_SECONDS:.3f}s", fallback_to)
+        timeout = _fallback_timeout_seconds() if timeout_seconds is None else timeout_seconds
+        _append_stage_error(rag_trace, stage, f"timed out after {timeout:.3f}s", fallback_to)
         return None
     except Exception as exc:
         _append_stage_error(rag_trace, stage, str(exc), fallback_to)
         return None
 
 
-def _get_grader_model():
+def _get_grader_model(config: RagRuntimeConfig | None = None):
     global _grader_model
-    if FAST_MODEL_ENABLED:
-        return _get_fast_model()
+    if _fast_model_enabled(config):
+        return _get_fast_model(config)
     if not API_KEY or not GRADE_MODEL:
         return None
     if _grader_model is None:
@@ -141,10 +168,10 @@ def _get_grader_model():
     return _grader_model
 
 
-def _get_router_model():
+def _get_router_model(config: RagRuntimeConfig | None = None):
     global _router_model
-    if FAST_MODEL_ENABLED:
-        return _get_fast_model()
+    if _fast_model_enabled(config):
+        return _get_fast_model(config)
     if not API_KEY or not MODEL:
         return None
     if _router_model is None:
@@ -281,11 +308,12 @@ def retrieve_initial(state: RAGState) -> RAGState:
 
 def grade_documents_node(state: RAGState) -> RAGState:
     stage_start = time.perf_counter()
+    config = _runtime_config()
     rag_trace = state.get("rag_trace", {}) or {}
 
     # When fallback is disabled, short-circuit: always go to generate_answer
     fallback_required_raw = rag_trace.get("fallback_required")
-    if not RAG_FALLBACK_ENABLED:
+    if not config.fallback_enabled:
         rag_trace.update({
             "grade_score": "skipped_fallback_disabled",
             "grade_route": "generate_answer",
@@ -294,7 +322,7 @@ def grade_documents_node(state: RAGState) -> RAGState:
             "fallback_executed": False,
             "fallback_disabled": bool(fallback_required_raw),
             "graph_path": "linear_initial_only",
-            "fallback_llm_model": _get_fallback_model_name(),
+            "fallback_llm_model": _get_fallback_model_name(config),
         })
         _trace_timings(rag_trace)["grader_ms"] = elapsed_ms(stage_start)
         return {"route": "generate_answer", "rag_trace": rag_trace}
@@ -307,7 +335,7 @@ def grade_documents_node(state: RAGState) -> RAGState:
             "fallback_required_raw": fallback_required_raw,
             "fallback_executed": False,
             "fallback_disabled": False,
-            "fallback_llm_model": _get_fallback_model_name(),
+            "fallback_llm_model": _get_fallback_model_name(config),
         })
         _trace_timings(rag_trace)["grader_ms"] = elapsed_ms(stage_start)
         return {"route": "generate_answer", "rag_trace": rag_trace}
@@ -319,12 +347,12 @@ def grade_documents_node(state: RAGState) -> RAGState:
             "fallback_required_raw": fallback_required_raw,
             "fallback_executed": True,
             "fallback_disabled": False,
-            "fallback_llm_model": _get_fallback_model_name(),
+            "fallback_llm_model": _get_fallback_model_name(config),
         })
         _trace_timings(rag_trace)["grader_ms"] = elapsed_ms(stage_start)
         return {"route": "rewrite_question", "rag_trace": rag_trace}
 
-    grader = _get_grader_model()
+    grader = _get_grader_model(config)
     emit_rag_step("📊", "正在评估文档相关性...")
     if not grader:
         grade_update = {
@@ -362,7 +390,7 @@ def grade_documents_node(state: RAGState) -> RAGState:
         "fallback_required_raw": fallback_required_raw,
         "fallback_executed": route == "rewrite_question",
         "fallback_disabled": False,
-        "fallback_llm_model": _get_fallback_model_name(),
+        "fallback_llm_model": _get_fallback_model_name(config),
     }
     if grade_error:
         grade_update["grade_error"] = grade_error
@@ -376,13 +404,15 @@ def grade_documents_node(state: RAGState) -> RAGState:
 
 def rewrite_question_node(state: RAGState) -> RAGState:
     rewrite_start = time.perf_counter()
+    config = _runtime_config()
+    timeout_seconds = _fallback_timeout_seconds(config)
     fallback_started_at = float(state.get("fallback_started_at") or rewrite_start)
-    fallback_deadline = float(state.get("fallback_deadline") or _fallback_deadline(fallback_started_at))
+    fallback_deadline = float(state.get("fallback_deadline") or _fallback_deadline(fallback_started_at, config))
     question = state["question"]
     rag_trace = state.get("rag_trace", {}) or {}
-    rag_trace["fallback_timeout_seconds"] = RAG_FALLBACK_TIMEOUT_SECONDS
+    rag_trace["fallback_timeout_seconds"] = timeout_seconds
     emit_rag_step("✏️", "正在重写查询...")
-    router = _get_router_model()
+    router = _get_router_model(config)
     strategy = "step_back"
     router_ms = 0.0
     router_error = None
@@ -403,11 +433,12 @@ def rewrite_question_node(state: RAGState) -> RAGState:
             )
 
         decision = _await_with_deadline(
-            _submit_with_context(_invoke_router),
+            _submit_with_context(_invoke_router, config),
             fallback_deadline,
             rag_trace,
             "rewrite_router",
             "initial_retrieval",
+            timeout_seconds=timeout_seconds,
         )
         router_ms = elapsed_ms(router_start)
         if decision is None:
@@ -430,16 +461,23 @@ def rewrite_question_node(state: RAGState) -> RAGState:
     if strategy in ("step_back", "complex"):
         emit_rag_step("🧠", f"使用策略: {strategy}", "生成退步问题")
         stepback_start = time.perf_counter()
-        futures["step_back"] = (stepback_start, _submit_with_context(lambda: step_back_expand(question)))
+        futures["step_back"] = (stepback_start, _submit_with_context(lambda: step_back_expand(question), config))
 
     if strategy in ("hyde", "complex"):
         emit_rag_step("📝", "HyDE 假设性文档生成中...")
         hyde_start = time.perf_counter()
-        futures["hyde"] = (hyde_start, _submit_with_context(lambda: generate_hypothetical_document(question)))
+        futures["hyde"] = (hyde_start, _submit_with_context(lambda: generate_hypothetical_document(question), config))
 
     if "step_back" in futures:
         start, future = futures["step_back"]
-        step_back = _await_with_deadline(future, fallback_deadline, rag_trace, "stepback_llm", "initial_retrieval")
+        step_back = _await_with_deadline(
+            future,
+            fallback_deadline,
+            rag_trace,
+            "stepback_llm",
+            "initial_retrieval",
+            timeout_seconds=timeout_seconds,
+        )
         stepback_llm_ms = elapsed_ms(start)
         if isinstance(step_back, dict):
             step_back_question = step_back.get("step_back_question", "")
@@ -448,7 +486,14 @@ def rewrite_question_node(state: RAGState) -> RAGState:
 
     if "hyde" in futures:
         start, future = futures["hyde"]
-        hyde_doc = _await_with_deadline(future, fallback_deadline, rag_trace, "hyde_llm", "initial_retrieval")
+        hyde_doc = _await_with_deadline(
+            future,
+            fallback_deadline,
+            rag_trace,
+            "hyde_llm",
+            "initial_retrieval",
+            timeout_seconds=timeout_seconds,
+        )
         hyde_llm_ms = elapsed_ms(start)
         if isinstance(hyde_doc, str):
             hypothetical_doc = hyde_doc
@@ -486,12 +531,12 @@ def _candidate_query_for_strategy(state: RAGState, key: str) -> str:
     return state.get("expanded_query") or state["question"]
 
 
-def _candidate_retrieval_job(query: str, context_files: list[str]) -> dict:
+def _candidate_retrieval_job(query: str, context_files: list[str], candidate_k: int) -> dict:
     return retrieve_candidate_pool(
         query,
         top_k=5,
         context_files=context_files,
-        candidate_k=RAG_FALLBACK_EXPANDED_CANDIDATE_K,
+        candidate_k=candidate_k,
     )
 
 
@@ -502,12 +547,13 @@ def _collect_candidate_only_retrievals(
     context_files: list[str],
     rag_trace: dict,
     fallback_deadline: float,
+    candidate_k: int,
 ) -> tuple[list[dict], dict[str, float], list[dict], list[str]] | None:
     keys = ["hyde", "step_back"] if strategy == "complex" else [strategy]
     jobs = {}
     for key in keys:
         query = _candidate_query_for_strategy(state, key)
-        jobs[key] = _submit_with_context(lambda q=query: _candidate_retrieval_job(q, context_files))
+        jobs[key] = _submit_with_context(lambda q=query: _candidate_retrieval_job(q, context_files, candidate_k))
 
     candidates: list[dict] = []
     timings: dict[str, float] = {}
@@ -538,6 +584,7 @@ def _retrieve_expanded_candidate_only(
     rag_trace: dict,
     fallback_deadline: float,
     expanded_start: float,
+    candidate_k: int,
 ) -> RAGState:
     collected = _collect_candidate_only_retrievals(
         state,
@@ -545,6 +592,7 @@ def _retrieve_expanded_candidate_only(
         context_files=context_files,
         rag_trace=rag_trace,
         fallback_deadline=fallback_deadline,
+        candidate_k=candidate_k,
     )
     if collected is None:
         rag_trace["expanded_retrieval_skipped_reason"] = "candidate_retrieval_failed_or_timed_out"
@@ -571,10 +619,15 @@ def _retrieve_expanded_candidate_only(
         stage_errors=candidate_stage_errors,
         total_start=expanded_start,
         extra_trace={
+            "fallback_mode": "candidate_only_merge",
             "fallback_second_pass_mode": "candidate_only",
+            "initial_candidate_count": len(initial_docs),
             "expanded_candidate_count": len(expanded_candidates),
+            "merged_candidate_count": len(final_candidates),
+            "candidate_only_pass_rerank_execution_mode": RerankExecutionMode.SKIPPED_CANDIDATE_ONLY.value,
             "final_rerank_input_count": len(final_candidates),
             "fallback_saved_rerank": True,
+            "fallback_saved_full_retrievals": 1,
             "expanded_retrieval_skipped_reason": None,
             "expanded_candidate_retrieval_modes": retrieval_modes,
         },
@@ -582,7 +635,8 @@ def _retrieve_expanded_candidate_only(
         retrieval_mode="fallback_candidate_only",
     )
     docs = final_result.get("docs", [])
-    meta = final_result.get("meta", {})
+    meta = dict(final_result.get("meta", {}))
+    meta.setdefault("final_rerank_execution_mode", meta.get("rerank_execution_mode"))
     context = _format_docs(docs)
     merge_expanded_rag_trace(
         rag_trace,
@@ -609,13 +663,14 @@ def _retrieve_expanded_candidate_only(
 
 def retrieve_expanded(state: RAGState) -> RAGState:
     expanded_start = time.perf_counter()
+    config = _runtime_config()
     strategy = state.get("expansion_type") or "step_back"
     context_files = state.get("context_files") or []
     rag_trace = state.get("rag_trace", {}) or {}
-    fallback_deadline = float(state.get("fallback_deadline") or _fallback_deadline(expanded_start))
+    fallback_deadline = float(state.get("fallback_deadline") or _fallback_deadline(expanded_start, config))
     if strategy == "timeout" or rag_trace.get("fallback_timed_out"):
         return _fallback_to_initial_retrieval(state, rag_trace, expanded_start)
-    if RAG_FALLBACK_CANDIDATE_ONLY:
+    if config.fallback_candidate_only_enabled:
         emit_rag_step("🔄", "使用扩展查询召回候选池...", f"策略: {strategy}")
         return _retrieve_expanded_candidate_only(
             state,
@@ -624,6 +679,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
             rag_trace=rag_trace,
             fallback_deadline=fallback_deadline,
             expanded_start=expanded_start,
+            candidate_k=config.fallback_expanded_candidate_k,
         )
     emit_rag_step("🔄", "使用扩展查询重新检索...", f"策略: {strategy}")
     results: List[dict] = []

@@ -16,7 +16,16 @@ def _fake_retrieve(query, context_files=None):
             }
         ],
         "context": f"context for {query}",
-        "rag_trace": {"retrieval_mode": "hybrid", "query": query},
+        "rag_trace": {
+            "retrieval_mode": "hybrid",
+            "query": query,
+            "candidate_strategy_requested": "standard",
+            "candidate_strategy_effective": "standard",
+            "candidate_strategy_detail": "global_hybrid",
+            "rerank_contract_version": "shared-rerank-v2",
+            "postprocess_contract_version": "shared-postprocess-v1",
+            "rerank_execution_mode": "executed",
+        },
     }
 
 
@@ -36,6 +45,24 @@ class DeepModeTests(unittest.TestCase):
         self.assertEqual(result.fallback_reason, "shadow_mode")
         self.assertEqual(result.evidence_coverage, 1.0)
         self.assertEqual(result.rag_trace["subqueries"], ["q1", "q2"])
+
+    def test_shadow_mode_exposes_structured_evidence_and_subquery_traces(self):
+        config = replace(load_runtime_config({}), deep_shadow_enabled=True, deep_min_coverage=1.0)
+
+        result = run_deep_mode(
+            DeepModeRequest(question="q", subqueries=["q1", "q2"]),
+            retrieve=_fake_retrieve,
+            config=config,
+        )
+        payload = result.as_dict()
+
+        self.assertEqual(result.rag_trace["answer_mode"], "shadow")
+        self.assertEqual(payload["evidence_by_subquery"]["q1"][0]["filename"], "manual.pdf")
+        self.assertEqual(payload["coverage_by_subquery"], {"q1": True, "q2": True})
+        self.assertEqual(
+            result.rag_trace["retrieval_trace_by_subquery"]["q1"]["rerank_contract_version"],
+            "shared-rerank-v2",
+        )
 
     def test_active_mode_requires_citation_verifier(self):
         config = replace(

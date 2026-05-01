@@ -33,9 +33,16 @@ class TestFallbackDisabledRouting:
 
     def test_grade_documents_short_circuit_when_disabled(self, monkeypatch):
         """When RAG_FALLBACK_ENABLED=False, grader should short-circuit."""
-        import backend.rag.pipeline as rag_pipeline
+        from dataclasses import replace
 
-        monkeypatch.setattr(rag_pipeline, "RAG_FALLBACK_ENABLED", False)
+        import backend.rag.pipeline as rag_pipeline
+        from backend.rag.runtime_config import load_runtime_config
+
+        monkeypatch.setattr(
+            rag_pipeline,
+            "load_runtime_config",
+            lambda: replace(load_runtime_config({}), fallback_enabled=False),
+        )
         state = {
             "question": "test query",
             "context": "test context",
@@ -50,9 +57,16 @@ class TestFallbackDisabledRouting:
 
     def test_trace_three_part_fields(self, monkeypatch):
         """Verify fallback_required_raw, fallback_executed, fallback_disabled in trace."""
-        import backend.rag.pipeline as rag_pipeline
+        from dataclasses import replace
 
-        monkeypatch.setattr(rag_pipeline, "RAG_FALLBACK_ENABLED", False)
+        import backend.rag.pipeline as rag_pipeline
+        from backend.rag.runtime_config import load_runtime_config
+
+        monkeypatch.setattr(
+            rag_pipeline,
+            "load_runtime_config",
+            lambda: replace(load_runtime_config({}), fallback_enabled=False),
+        )
         state = {
             "question": "test query",
             "context": "test context",
@@ -69,9 +83,16 @@ class TestFallbackDisabledRouting:
 
     def test_graph_path_trace(self, monkeypatch):
         """When fallback disabled, graph_path should be linear_initial_only."""
-        import backend.rag.pipeline as rag_pipeline
+        from dataclasses import replace
 
-        monkeypatch.setattr(rag_pipeline, "RAG_FALLBACK_ENABLED", False)
+        import backend.rag.pipeline as rag_pipeline
+        from backend.rag.runtime_config import load_runtime_config
+
+        monkeypatch.setattr(
+            rag_pipeline,
+            "load_runtime_config",
+            lambda: replace(load_runtime_config({}), fallback_enabled=False),
+        )
         state = {
             "question": "test query",
             "context": "test context",

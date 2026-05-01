@@ -1,5 +1,6 @@
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -8,6 +9,7 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 import backend.rag.pipeline as rag_pipeline  # noqa: E402
+from backend.rag.runtime_config import load_runtime_config  # noqa: E402
 
 
 class FakeStructuredGrader:
@@ -30,6 +32,7 @@ class FakeGrader:
 class RagPipelinePromptTests(unittest.TestCase):
     def test_grade_prompt_keeps_json_example_literal(self):
         grader = FakeGrader()
+        runtime_config = replace(load_runtime_config({}), fallback_enabled=True)
         state = {
             "question": "What is the conclusion?",
             "context": "The document has a conclusion.",
@@ -37,7 +40,7 @@ class RagPipelinePromptTests(unittest.TestCase):
         }
 
         with (
-            patch.object(rag_pipeline, "RAG_FALLBACK_ENABLED", True),
+            patch("backend.rag.pipeline.load_runtime_config", return_value=runtime_config),
             patch("backend.rag.pipeline._get_grader_model", return_value=grader),
         ):
             result = rag_pipeline.grade_documents_node(state)
@@ -110,6 +113,11 @@ class RagPipelinePromptTests(unittest.TestCase):
         self.assertEqual(result["rag_trace"]["retrieval_stage"], "expanded")
 
     def test_retrieve_expanded_candidate_only_skips_full_second_retrieval(self):
+        runtime_config = replace(
+            load_runtime_config({}),
+            fallback_candidate_only_enabled=True,
+            fallback_expanded_candidate_k=17,
+        )
         state = {
             "question": "q",
             "docs": [{"text": "initial", "filename": "a.pdf", "chunk_id": "c1"}],
@@ -126,6 +134,7 @@ class RagPipelinePromptTests(unittest.TestCase):
                 "retrieval_mode": "hybrid",
                 "timings": {"total_retrieve_ms": 12.0},
                 "stage_errors": [],
+                "rerank_execution_mode": "skipped_candidate_only",
             },
         }
 
@@ -134,6 +143,7 @@ class RagPipelinePromptTests(unittest.TestCase):
                 **kwargs["extra_trace"],
                 "retrieval_mode": kwargs["retrieval_mode"],
                 "rerank_applied": True,
+                "rerank_execution_mode": "executed",
                 "rerank_input_count": len(kwargs["retrieved"]),
                 "timings": {"total_retrieve_ms": 20.0},
                 "stage_errors": [],
@@ -141,7 +151,7 @@ class RagPipelinePromptTests(unittest.TestCase):
             return {"docs": kwargs["retrieved"][:1], "meta": meta}
 
         with (
-            patch.object(rag_pipeline, "RAG_FALLBACK_CANDIDATE_ONLY", True),
+            patch("backend.rag.pipeline.load_runtime_config", return_value=runtime_config),
             patch("backend.rag.pipeline.retrieve_candidate_pool", return_value=candidate_result) as pool,
             patch("backend.rag.pipeline.retrieve_documents", side_effect=AssertionError("full retrieval should not run")),
             patch("backend.rag.pipeline.finish_retrieval_pipeline", side_effect=fake_finish) as finish,
@@ -149,13 +159,21 @@ class RagPipelinePromptTests(unittest.TestCase):
             result = rag_pipeline.retrieve_expanded(state)
 
         pool.assert_called_once()
+        self.assertEqual(pool.call_args.kwargs["candidate_k"], 17)
         finish.assert_called_once()
-        self.assertEqual(result["rag_trace"]["fallback_second_pass_mode"], "candidate_only")
-        self.assertTrue(result["rag_trace"]["fallback_saved_rerank"])
-        self.assertEqual(result["rag_trace"]["expanded_candidate_count"], 1)
-        self.assertEqual(result["rag_trace"]["final_rerank_input_count"], 2)
+        trace = result["rag_trace"]
+        self.assertEqual(trace["fallback_second_pass_mode"], "candidate_only")
+        self.assertEqual(trace["fallback_mode"], "candidate_only_merge")
+        self.assertEqual(trace["initial_candidate_count"], 1)
+        self.assertEqual(trace["expanded_candidate_count"], 1)
+        self.assertEqual(trace["merged_candidate_count"], 2)
+        self.assertEqual(trace["candidate_only_pass_rerank_execution_mode"], "skipped_candidate_only")
+        self.assertEqual(trace["final_rerank_execution_mode"], "executed")
+        self.assertEqual(trace["rerank_execution_mode"], "executed")
+        self.assertEqual(trace["fallback_saved_full_retrievals"], 1)
 
     def test_retrieve_expanded_candidate_only_complex_runs_candidate_queries_in_parallel(self):
+        runtime_config = replace(load_runtime_config({}), fallback_candidate_only_enabled=True)
         state = {
             "question": "q",
             "docs": [],
@@ -176,6 +194,7 @@ class RagPipelinePromptTests(unittest.TestCase):
                     "retrieval_mode": "hybrid",
                     "timings": {"total_retrieve_ms": 200.0},
                     "stage_errors": [],
+                    "rerank_execution_mode": "skipped_candidate_only",
                 },
             }
 
@@ -185,6 +204,7 @@ class RagPipelinePromptTests(unittest.TestCase):
                 "meta": {
                     **kwargs["extra_trace"],
                     "retrieval_mode": kwargs["retrieval_mode"],
+                    "rerank_execution_mode": "executed",
                     "timings": {"total_retrieve_ms": 210.0},
                     "stage_errors": [],
                 },
@@ -192,7 +212,7 @@ class RagPipelinePromptTests(unittest.TestCase):
 
         started = time.perf_counter()
         with (
-            patch.object(rag_pipeline, "RAG_FALLBACK_CANDIDATE_ONLY", True),
+            patch("backend.rag.pipeline.load_runtime_config", return_value=runtime_config),
             patch("backend.rag.pipeline.retrieve_candidate_pool", side_effect=slow_candidate_pool),
             patch("backend.rag.pipeline.finish_retrieval_pipeline", side_effect=fake_finish),
         ):
@@ -202,6 +222,8 @@ class RagPipelinePromptTests(unittest.TestCase):
         self.assertLess(elapsed, 0.35)
         self.assertEqual(len(result["docs"]), 2)
         self.assertEqual(result["rag_trace"]["fallback_second_pass_mode"], "candidate_only")
+        self.assertEqual(result["rag_trace"]["candidate_only_pass_rerank_execution_mode"], "skipped_candidate_only")
+        self.assertEqual(result["rag_trace"]["final_rerank_execution_mode"], "executed")
 
 
 if __name__ == "__main__":

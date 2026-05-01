@@ -95,6 +95,12 @@ class RagRuntimeConfig:
     rerank_fusion_metadata_weight: float = 0.05
     citation_verify_enabled: bool = False
     unified_execution_enabled: bool = False
+    fallback_enabled: bool = False
+    fallback_timeout_seconds: float = 6.0
+    fallback_workers: int = 4
+    fallback_use_fast_model: bool = True
+    fallback_candidate_only_enabled: bool = False
+    fallback_expanded_candidate_k: int = 50
     deep_shadow_enabled: bool = False
     deep_active_enabled: bool = False
     deep_min_coverage: float = 0.75
@@ -163,6 +169,12 @@ def load_runtime_config(env: EnvMapping | None = None) -> RagRuntimeConfig:
         rerank_fusion_metadata_weight=_float(env, "RERANK_FUSION_METADATA_WEIGHT", 0.05),
         citation_verify_enabled=_bool(env, "RAG_CITATION_VERIFY_ENABLED", False),
         unified_execution_enabled=_bool(env, "RAG_UNIFIED_EXECUTION_ENABLED", False),
+        fallback_enabled=_bool(env, "RAG_FALLBACK_ENABLED", False),
+        fallback_timeout_seconds=_float(env, "RAG_FALLBACK_TIMEOUT_SECONDS", 6.0),
+        fallback_workers=_int(env, "RAG_FALLBACK_WORKERS", 4),
+        fallback_use_fast_model=_bool(env, "RAG_FALLBACK_USE_FAST_MODEL", True),
+        fallback_candidate_only_enabled=_bool(env, "RAG_FALLBACK_CANDIDATE_ONLY", False),
+        fallback_expanded_candidate_k=_int(env, "RAG_FALLBACK_EXPANDED_CANDIDATE_K", 50),
         deep_shadow_enabled=_bool(env, "RAG_DEEP_SHADOW", False),
         deep_active_enabled=_bool(env, "RAG_DEEP_ACTIVE", False),
         deep_min_coverage=_bounded_float(env, "RAG_DEEP_MIN_COVERAGE", 0.75, low=0.0, high=1.0),
