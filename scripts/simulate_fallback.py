@@ -54,7 +54,7 @@ def _metric(row: dict[str, Any], key: str) -> float:
     return 0.0
 
 
-def simulate(rows: list[dict[str, Any]], gs3_variant: str, v3q_variant: str) -> dict[str, Any]:
+def simulate(rows: list[dict[str, Any]], gs3_variant: str, k2_variant: str) -> dict[str, Any]:
     by_sample: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     for r in rows:
         by_sample[str(r.get("sample_id"))][str(r.get("variant"))] = r
@@ -62,7 +62,7 @@ def simulate(rows: list[dict[str, Any]], gs3_variant: str, v3q_variant: str) -> 
     pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for variants in by_sample.values():
         g = variants.get(gs3_variant)
-        q = variants.get(v3q_variant)
+        q = variants.get(k2_variant)
         if g and q:
             pairs.append((g, q))
 
@@ -75,9 +75,9 @@ def simulate(rows: list[dict[str, Any]], gs3_variant: str, v3q_variant: str) -> 
         conservative_lat: list[float] = []
         fallback_count = 0
 
-        for gs3, v3q in pairs:
+        for gs3, k2 in pairs:
             use_fallback = _trigger(strategy, gs3)
-            chosen = v3q if use_fallback else gs3
+            chosen = k2 if use_fallback else gs3
             if use_fallback:
                 fallback_count += 1
 
@@ -86,9 +86,9 @@ def simulate(rows: list[dict[str, Any]], gs3_variant: str, v3q_variant: str) -> 
             blended_chunk.append(_metric(chosen, "chunk_hit_at_5"))
 
             gs3_lat = float(gs3.get("latency_ms") or 0.0)
-            v3q_lat = float(v3q.get("latency_ms") or 0.0)
-            optimistic_lat.append(v3q_lat if use_fallback else gs3_lat)
-            conservative_lat.append((gs3_lat + v3q_lat) if use_fallback else gs3_lat)
+            k2_lat = float(k2.get("latency_ms") or 0.0)
+            optimistic_lat.append(k2_lat if use_fallback else gs3_lat)
+            conservative_lat.append((gs3_lat + k2_lat) if use_fallback else gs3_lat)
 
         n = max(1, len(pairs))
         fallback_rate = fallback_count / n
@@ -138,15 +138,15 @@ def render_md(report: dict[str, Any]) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Simulate GS3 + V3Q fallback strategies.")
+    parser = argparse.ArgumentParser(description="Simulate GS3 + K2 fallback strategies.")
     parser.add_argument("--results", type=Path, required=True)
     parser.add_argument("--gs3-variant", default="GS3")
-    parser.add_argument("--v3q-variant", default="V3Q")
+    parser.add_argument("--k2-variant", "--v3q-variant", dest="k2_variant", default="K2")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
 
     rows = load_jsonl(args.results)
-    report = simulate(rows, args.gs3_variant, args.v3q_variant)
+    report = simulate(rows, args.gs3_variant, args.k2_variant)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "fallback_simulation.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2),

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from backend.rag.profile_naming import K_HISTORICAL_ALIASES
+from backend.rag.profile_naming import resolve_variant_profile
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -17,7 +17,7 @@ GOLD_TC_COLLECTION = "embeddings_collection_gold_tc"
 GOLD_TCF_COLLECTION = "embeddings_collection_gold_tcf"
 V3_QUALITY_COLLECTION = "embeddings_collection_v3_quality"
 V3_FAST_COLLECTION = "embeddings_collection_v3_fast"
-DEFAULT_VARIANTS = "A0,A1,B1,G0,G1,G2,G3"
+DEFAULT_VARIANTS = "K2,K3"
 
 VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
     "A0": {
@@ -220,21 +220,8 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "RERANK_TOP_N": "20",
         },
     },
-    "S1_linear": {
-        "description": "linear path: gate off + fallback off",
-        "reindex_mode": "title_context",
-        "requires_reindex": False,
-        "env": {
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "ENABLE_ANCHOR_GATE": "false",
-            "RAG_FALLBACK_ENABLED": "false",
-            "QUERY_PLAN_ENABLED": "false",
-        },
-    },
-    "S1": {
-        "description": "compatibility alias for S1_linear",
+    "K1": {
+        "description": "K1 stable: gate off + fallback off",
         "reindex_mode": "title_context",
         "requires_reindex": False,
         "env": {
@@ -319,8 +306,8 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "RERANK_PAIR_ENRICHMENT_ENABLED": "true",
         },
     },
-    "V3Q": {
-        "description": "v3 quality: isolated full-corpus scoped hybrid + metadata rerank fusion",
+    "K2": {
+        "description": "K2 quality: isolated full-corpus scoped hybrid + metadata rerank fusion",
         "reindex_mode": "title_context_filename",
         "requires_reindex": True,
         "env": {
@@ -354,8 +341,8 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "MILVUS_RRF_K": "80",
         },
     },
-    "V3Q_OPT": {
-        "description": "v3 quality optimized: reduced rerank input + lower EF + smaller candidate set",
+    "K3": {
+        "description": "K3 fast evidence: reduced rerank input + lower EF + smaller candidate set",
         "reindex_mode": "title_context_filename",
         "requires_reindex": False,
         "env": {
@@ -389,8 +376,8 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "MILVUS_RRF_K": "80",
         },
     },
-    "V3Q_LAYERED": {
-        "description": "v3 quality layered: dual-path retrieval + file-aware L1 + adaptive CE K + weak structure",
+    "K2_LAYERED": {
+        "description": "K2 layered experiment: dual-path retrieval + file-aware L1 + adaptive CE K + weak structure",
         "reindex_mode": "title_context_filename",
         "requires_reindex": False,
         "env": {
@@ -420,235 +407,6 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
             "L1_MIN_CANDIDATES": "30",
             "L2_CE_DEFAULT_K": "32",
             "L2_CE_TOP_N": "15",
-            "L3_ROOT_WEIGHT": "0.15",
-            "L3_SAME_ROOT_CAP_DEFAULT": "3",
-        },
-    },
-    # --- Experiment Matrix C2-C7 ---
-    "EXP_C2": {
-        "description": "C2: split 80/80, no hybrid guarantee, simple L1 top40, CE K=40, current structure",
-        "reindex_mode": "title_context_filename",
-        "requires_reindex": False,
-        "env": {
-            "RAG_INDEX_PROFILE": "v3_quality",
-            "MILVUS_COLLECTION": V3_QUALITY_COLLECTION,
-            "BM25_STATE_PATH": str(PROJECT_ROOT / "data" / "bm25_state_v3_quality.json"),
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context_filename",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "RERANK_SCORE_FUSION_ENABLED": "true",
-            "RERANK_PAIR_ENRICHMENT_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "QUERY_PLAN_ENABLED": "true",
-            "HEADING_LEXICAL_ENABLED": "true",
-            "HEADING_LEXICAL_WEIGHT": "0.20",
-            "MILVUS_RRF_K": "80",
-            "MILVUS_SPARSE_DROP_RATIO": "0.1",
-            "MILVUS_SEARCH_EF": "160",
-            "RAG_CANDIDATE_K": "80",
-            "RERANK_TOP_N": "30",
-            "LAYERED_RERANK_ENABLED": "true",
-            "L0_DENSE_TOP_K": "80",
-            "L0_SPARSE_TOP_K": "80",
-            "L0_HYBRID_GUARANTEE_K": "0",
-            "L0_FALLBACK_HYBRID_WHEN_POOL_LT": "60",
-            "L1_TOP_FILES": "20",
-            "L1_MAX_CANDIDATES": "40",
-            "L1_MIN_CANDIDATES": "30",
-            "L2_CE_HIGH_CONF_K": "40",
-            "L2_CE_DEFAULT_K": "40",
-            "L2_CE_LOW_CONF_K": "40",
-            "L2_CE_TOP_N": "30",
-            "L2_CE_TOP_N_LOW_CONF": "30",
-            "L3_ROOT_WEIGHT": "0.30",
-            "L3_SAME_ROOT_CAP_DEFAULT": "2",
-        },
-    },
-    "EXP_C25": {
-        "description": "C2.5: split 80/80 + hybrid guarantee top20, simple L1 top40, CE K=40, current structure",
-        "reindex_mode": "title_context_filename",
-        "requires_reindex": False,
-        "env": {
-            "RAG_INDEX_PROFILE": "v3_quality",
-            "MILVUS_COLLECTION": V3_QUALITY_COLLECTION,
-            "BM25_STATE_PATH": str(PROJECT_ROOT / "data" / "bm25_state_v3_quality.json"),
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context_filename",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "RERANK_SCORE_FUSION_ENABLED": "true",
-            "RERANK_PAIR_ENRICHMENT_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "QUERY_PLAN_ENABLED": "true",
-            "HEADING_LEXICAL_ENABLED": "true",
-            "HEADING_LEXICAL_WEIGHT": "0.20",
-            "MILVUS_RRF_K": "80",
-            "MILVUS_SPARSE_DROP_RATIO": "0.1",
-            "MILVUS_SEARCH_EF": "160",
-            "RAG_CANDIDATE_K": "80",
-            "RERANK_TOP_N": "30",
-            "LAYERED_RERANK_ENABLED": "true",
-            "L0_DENSE_TOP_K": "80",
-            "L0_SPARSE_TOP_K": "80",
-            "L0_HYBRID_GUARANTEE_K": "20",
-            "L0_FALLBACK_HYBRID_WHEN_POOL_LT": "60",
-            "L1_TOP_FILES": "20",
-            "L1_MAX_CANDIDATES": "40",
-            "L1_MIN_CANDIDATES": "30",
-            "L2_CE_HIGH_CONF_K": "40",
-            "L2_CE_DEFAULT_K": "40",
-            "L2_CE_LOW_CONF_K": "40",
-            "L2_CE_TOP_N": "30",
-            "L2_CE_TOP_N_LOW_CONF": "30",
-            "L3_ROOT_WEIGHT": "0.30",
-            "L3_SAME_ROOT_CAP_DEFAULT": "2",
-        },
-    },
-    "EXP_C3": {
-        "description": "C3: split 80/80, file-aware L1, CE K=40, current structure",
-        "reindex_mode": "title_context_filename",
-        "requires_reindex": False,
-        "env": {
-            "RAG_INDEX_PROFILE": "v3_quality",
-            "MILVUS_COLLECTION": V3_QUALITY_COLLECTION,
-            "BM25_STATE_PATH": str(PROJECT_ROOT / "data" / "bm25_state_v3_quality.json"),
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context_filename",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "RERANK_SCORE_FUSION_ENABLED": "true",
-            "RERANK_PAIR_ENRICHMENT_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "QUERY_PLAN_ENABLED": "true",
-            "HEADING_LEXICAL_ENABLED": "true",
-            "HEADING_LEXICAL_WEIGHT": "0.20",
-            "MILVUS_RRF_K": "80",
-            "MILVUS_SPARSE_DROP_RATIO": "0.1",
-            "MILVUS_SEARCH_EF": "160",
-            "RAG_CANDIDATE_K": "80",
-            "RERANK_TOP_N": "30",
-            "LAYERED_RERANK_ENABLED": "true",
-            "L0_DENSE_TOP_K": "80",
-            "L0_SPARSE_TOP_K": "80",
-            "L0_HYBRID_GUARANTEE_K": "20",
-            "L0_FALLBACK_HYBRID_WHEN_POOL_LT": "60",
-            "L1_TOP_FILES": "12",
-            "L1_MAX_CANDIDATES": "40",
-            "L1_MIN_CANDIDATES": "30",
-            "L2_CE_HIGH_CONF_K": "40",
-            "L2_CE_DEFAULT_K": "40",
-            "L2_CE_LOW_CONF_K": "40",
-            "L2_CE_TOP_N": "30",
-            "L2_CE_TOP_N_LOW_CONF": "30",
-            "L3_ROOT_WEIGHT": "0.30",
-            "L3_SAME_ROOT_CAP_DEFAULT": "2",
-        },
-    },
-    "EXP_C4": {
-        "description": "C4: split 80/80, file-aware L1, CE K=32, current structure",
-        "reindex_mode": "title_context_filename",
-        "requires_reindex": False,
-        "env": {
-            "RAG_INDEX_PROFILE": "v3_quality",
-            "MILVUS_COLLECTION": V3_QUALITY_COLLECTION,
-            "BM25_STATE_PATH": str(PROJECT_ROOT / "data" / "bm25_state_v3_quality.json"),
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context_filename",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "RERANK_SCORE_FUSION_ENABLED": "true",
-            "RERANK_PAIR_ENRICHMENT_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "QUERY_PLAN_ENABLED": "true",
-            "HEADING_LEXICAL_ENABLED": "true",
-            "HEADING_LEXICAL_WEIGHT": "0.20",
-            "MILVUS_RRF_K": "80",
-            "MILVUS_SPARSE_DROP_RATIO": "0.1",
-            "MILVUS_SEARCH_EF": "160",
-            "RAG_CANDIDATE_K": "80",
-            "RERANK_TOP_N": "30",
-            "LAYERED_RERANK_ENABLED": "true",
-            "L0_DENSE_TOP_K": "80",
-            "L0_SPARSE_TOP_K": "80",
-            "L0_HYBRID_GUARANTEE_K": "20",
-            "L0_FALLBACK_HYBRID_WHEN_POOL_LT": "60",
-            "L1_TOP_FILES": "12",
-            "L1_MAX_CANDIDATES": "40",
-            "L1_MIN_CANDIDATES": "30",
-            "L2_CE_HIGH_CONF_K": "32",
-            "L2_CE_DEFAULT_K": "32",
-            "L2_CE_LOW_CONF_K": "32",
-            "L2_CE_TOP_N": "15",
-            "L2_CE_TOP_N_LOW_CONF": "15",
-            "L3_ROOT_WEIGHT": "0.30",
-            "L3_SAME_ROOT_CAP_DEFAULT": "2",
-        },
-    },
-    "EXP_C5": {
-        "description": "C5: split 80/80, file-aware L1, adaptive CE K 25-40, current structure",
-        "reindex_mode": "title_context_filename",
-        "requires_reindex": False,
-        "env": {
-            "RAG_INDEX_PROFILE": "v3_quality",
-            "MILVUS_COLLECTION": V3_QUALITY_COLLECTION,
-            "BM25_STATE_PATH": str(PROJECT_ROOT / "data" / "bm25_state_v3_quality.json"),
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context_filename",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "RERANK_SCORE_FUSION_ENABLED": "true",
-            "RERANK_PAIR_ENRICHMENT_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "QUERY_PLAN_ENABLED": "true",
-            "HEADING_LEXICAL_ENABLED": "true",
-            "HEADING_LEXICAL_WEIGHT": "0.20",
-            "MILVUS_RRF_K": "80",
-            "MILVUS_SPARSE_DROP_RATIO": "0.1",
-            "MILVUS_SEARCH_EF": "160",
-            "RAG_CANDIDATE_K": "80",
-            "RERANK_TOP_N": "30",
-            "LAYERED_RERANK_ENABLED": "true",
-            "L0_DENSE_TOP_K": "80",
-            "L0_SPARSE_TOP_K": "80",
-            "L0_HYBRID_GUARANTEE_K": "20",
-            "L0_FALLBACK_HYBRID_WHEN_POOL_LT": "60",
-            "L1_TOP_FILES": "12",
-            "L1_MAX_CANDIDATES": "40",
-            "L1_MIN_CANDIDATES": "30",
-            "L2_CE_HIGH_CONF_K": "25",
-            "L2_CE_DEFAULT_K": "32",
-            "L2_CE_LOW_CONF_K": "40",
-            "L2_CE_TOP_N": "15",
-            "L2_CE_TOP_N_LOW_CONF": "20",
-            "L3_ROOT_WEIGHT": "0.30",
-            "L3_SAME_ROOT_CAP_DEFAULT": "2",
-        },
-    },
-    "EXP_C7": {
-        "description": "C7: split 60/60, file-aware L1, adaptive CE K, weak structure",
-        "reindex_mode": "title_context_filename",
-        "requires_reindex": False,
-        "env": {
-            "RAG_INDEX_PROFILE": "v3_quality",
-            "MILVUS_COLLECTION": V3_QUALITY_COLLECTION,
-            "BM25_STATE_PATH": str(PROJECT_ROOT / "data" / "bm25_state_v3_quality.json"),
-            "EVAL_RETRIEVAL_TEXT_MODE": "title_context_filename",
-            "STRUCTURE_RERANK_ENABLED": "true",
-            "RERANK_SCORE_FUSION_ENABLED": "true",
-            "RERANK_PAIR_ENRICHMENT_ENABLED": "true",
-            "CONFIDENCE_GATE_ENABLED": "false",
-            "QUERY_PLAN_ENABLED": "true",
-            "HEADING_LEXICAL_ENABLED": "true",
-            "HEADING_LEXICAL_WEIGHT": "0.20",
-            "MILVUS_RRF_K": "80",
-            "MILVUS_SPARSE_DROP_RATIO": "0.1",
-            "MILVUS_SEARCH_EF": "160",
-            "RAG_CANDIDATE_K": "80",
-            "RERANK_TOP_N": "30",
-            "LAYERED_RERANK_ENABLED": "true",
-            "L0_DENSE_TOP_K": "60",
-            "L0_SPARSE_TOP_K": "60",
-            "L0_HYBRID_GUARANTEE_K": "20",
-            "L0_FALLBACK_HYBRID_WHEN_POOL_LT": "40",
-            "L1_TOP_FILES": "12",
-            "L1_MAX_CANDIDATES": "40",
-            "L1_MIN_CANDIDATES": "30",
-            "L2_CE_HIGH_CONF_K": "25",
-            "L2_CE_DEFAULT_K": "32",
-            "L2_CE_LOW_CONF_K": "40",
-            "L2_CE_TOP_N": "15",
-            "L2_CE_TOP_N_LOW_CONF": "20",
             "L3_ROOT_WEIGHT": "0.15",
             "L3_SAME_ROOT_CAP_DEFAULT": "3",
         },
@@ -703,25 +461,53 @@ def _profiled_env(base_variant: str, *, profile: str, collection: str, state_nam
     return env
 
 
+def _profile_metadata(
+    profile_key: str,
+    *,
+    legacy_variant: str | None = None,
+    display_profile_key: str | None = None,
+) -> dict[str, str | None]:
+    metadata = resolve_variant_profile(profile_key).as_metadata()
+    if display_profile_key is not None:
+        metadata["rag_profile"] = metadata["profile_name"] = "{}/{}/{}/{}/{}".format(
+            display_profile_key,
+            metadata["rag_i"],
+            metadata["rag_m"],
+            metadata["rag_a"],
+            metadata["rag_dtype"],
+        )
+    if legacy_variant is not None:
+        metadata["legacy_variant"] = legacy_variant
+        metadata["historical_alias"] = legacy_variant
+    return metadata
+
+
 VARIANT_CONFIGS.update(
     {
         "K1": {
-            **VARIANT_CONFIGS["S1_linear"],
+            **VARIANT_CONFIGS["K1"],
             "description": "K1 stable: low-latency structured-index baseline",
-            "profile_key": "K1",
-            "historical_alias": K_HISTORICAL_ALIASES["K1"],
+            **_profile_metadata("K1"),
         },
         "K2": {
-            **VARIANT_CONFIGS["V3Q"],
+            **VARIANT_CONFIGS["K2"],
             "description": "K2 quality: strong evidence profile with QueryPlan + CE + fusion",
-            "profile_key": "K2",
-            "historical_alias": K_HISTORICAL_ALIASES["K2"],
+            **_profile_metadata("K2"),
         },
         "K3": {
-            **VARIANT_CONFIGS["V3Q_OPT"],
+            **VARIANT_CONFIGS["K3"],
             "description": "K3 fast evidence: reduced candidate and CrossEncoder cost",
-            "profile_key": "K3",
-            "historical_alias": K_HISTORICAL_ALIASES["K3"],
+            **_profile_metadata("K3"),
+        },
+        "K2_LAYERED": {
+            **VARIANT_CONFIGS["K2_LAYERED"],
+            "description": "K2 layered experiment: compatibility target for historical layered variants",
+            "experiment_key": "layered",
+            **_profile_metadata(
+                "K2",
+                legacy_variant="V3Q_LAYERED",
+                display_profile_key="K2_LAYERED",
+            ),
         },
         "GB0": {
             "description": "gold title_context baseline: B0 without v3 routing/fusion",
@@ -739,7 +525,7 @@ VARIANT_CONFIGS.update(
             "reindex_mode": "title_context",
             "requires_reindex": False,
             "env": _profiled_env(
-                "S1_linear",
+                "K1",
                 profile="gold_tc",
                 collection=GOLD_TC_COLLECTION,
                 state_name="bm25_state_gold_tc.json",
@@ -792,6 +578,23 @@ VARIANT_CONFIGS.update(
     }
 )
 
+LEGACY_VARIANT_ALIASES: dict[str, str] = {
+    "S1": "K1",
+    "S1_linear": "K1",
+    "V3Q": "K2",
+    "V3Q_OPT": "K3",
+    "V3Q_LAYERED": "K2_LAYERED",
+    "EXP_C2": "K2_LAYERED",
+    "EXP_C25": "K2_LAYERED",
+    "EXP_C3": "K2_LAYERED",
+    "EXP_C4": "K2_LAYERED",
+    "EXP_C5": "K2_LAYERED",
+    "EXP_C7": "K2_LAYERED",
+}
+
+for _legacy_variant in LEGACY_VARIANT_ALIASES:
+    VARIANT_CONFIGS.pop(_legacy_variant, None)
+
 PAIR_DEFINITIONS = (
     ("A1_vs_A0", "A0", "A1"),
     ("B1_vs_A1", "A1", "B1"),
@@ -805,8 +608,8 @@ PAIR_DEFINITIONS = (
     ("P3_vs_B0", "B0", "P3"),
     ("F1_vs_B0", "B0", "F1"),
     ("S0_vs_R1", "R1", "S0"),
-    ("S1_linear_vs_B0_legacy", "B0_legacy", "S1_linear"),
-    ("S2_vs_S1_linear", "S1_linear", "S2"),
+    ("K1_vs_B0_legacy", "B0_legacy", "K1"),
+    ("S2_vs_K1", "K1", "S2"),
     ("S2H_vs_S2", "S2", "S2H"),
     ("S2HR_vs_S2H", "S2H", "S2HR"),
     ("S3_vs_S2HR", "S2HR", "S3"),
@@ -815,10 +618,10 @@ PAIR_DEFINITIONS = (
     ("GS2H_vs_GS2", "GS2", "GS2H"),
     ("GS2HR_vs_GS2H", "GS2H", "GS2HR"),
     ("GS3_vs_GS2HR", "GS2HR", "GS3"),
-    ("V3Q_vs_GS3", "GS3", "V3Q"),
-    ("V3Q_vs_S3", "S3", "V3Q"),
-    ("V3F_vs_V3Q", "V3Q", "V3F"),
-    ("V3Q_OPT_vs_V3Q", "V3Q", "V3Q_OPT"),
+    ("K2_vs_GS3", "GS3", "K2"),
+    ("K2_vs_S3", "S3", "K2"),
+    ("V3F_vs_K2", "K2", "V3F"),
+    ("K3_vs_K2", "K2", "K3"),
 )
 
 
