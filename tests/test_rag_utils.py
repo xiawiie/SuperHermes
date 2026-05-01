@@ -6,9 +6,62 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 import backend.rag.utils as rag_utils  # noqa: E402
+from backend.rag.runtime_config import load_layered_rerank_config, load_runtime_config  # noqa: E402
 
 
 class RagUtilsDiagnosticsTests(unittest.TestCase):
+    def test_runtime_config_loads_fake_env_without_reloading_modules(self):
+        env = {
+            "RAG_CANDIDATE_K": "77",
+            "RERANK_TOP_N": "9",
+            "MILVUS_SEARCH_EF": "111",
+            "MILVUS_RRF_K": "44",
+            "LAYERED_RERANK_ENABLED": "true",
+            "L0_DENSE_TOP_K": "21",
+            "L1_CHUNKS_PER_SCOPE_FILE": "8",
+            "L2_CE_DEFAULT_K": "13",
+            "L3_ROOT_WEIGHT": "0.27",
+            "RAG_FAST_ENABLED": "true",
+            "RAG_DEEP_ENABLED": "true",
+            "RAG_FAST_EXPERIMENT": "shadow",
+            "RAG_DEEP_TRACE": "shadow",
+            "RAG_CITATION_VERIFY_ENABLED": "true",
+            "RAG_UNIFIED_EXECUTION_ENABLED": "true",
+            "RAG_DEEP_SHADOW": "true",
+            "RAG_DEEP_ACTIVE": "true",
+            "RAG_DEEP_MIN_COVERAGE": "0.5",
+            "RAG_MODEL": "not-reserved",
+            "RAG_INDEX_PROFILE": "fake-profile",
+        }
+
+        config = load_runtime_config(env)
+        layered = load_layered_rerank_config(env)
+
+        self.assertEqual(config.rag_candidate_k, 77)
+        self.assertEqual(config.rerank_top_n, 9)
+        self.assertEqual(config.milvus_search_ef, 111)
+        self.assertEqual(config.milvus_rrf_k, 44)
+        self.assertEqual(config.rag_index_profile, "fake-profile")
+        self.assertEqual(config.execution_mode, "STANDARD")
+        self.assertFalse(config.deep_executed)
+        self.assertFalse(config.plan_applied)
+        self.assertTrue(config.layered_candidate_enabled)
+        self.assertTrue(config.citation_verify_enabled)
+        self.assertTrue(config.unified_execution_enabled)
+        self.assertTrue(config.deep_shadow_enabled)
+        self.assertTrue(config.deep_active_enabled)
+        self.assertEqual(config.deep_min_coverage, 0.5)
+        self.assertEqual(config.reserved_flags["RAG_FAST_ENABLED"], "true")
+        self.assertEqual(config.reserved_flags["RAG_DEEP_ENABLED"], "true")
+        self.assertEqual(config.reserved_flags["RAG_FAST_EXPERIMENT"], "shadow")
+        self.assertEqual(config.reserved_flags["RAG_DEEP_TRACE"], "shadow")
+        self.assertNotIn("RAG_MODEL", config.reserved_flags)
+        self.assertTrue(layered.enabled)
+        self.assertEqual(layered.l0_dense_top_k, 21)
+        self.assertEqual(layered.l1_chunks_per_scope_file, 8)
+        self.assertEqual(layered.l2_ce_default_k, 13)
+        self.assertEqual(layered.l3_root_weight, 0.27)
+
     def test_candidate_trace_includes_stable_signature_fields(self):
         traced = rag_utils._candidate_trace(
             [
@@ -27,7 +80,14 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
     def test_stage_error_uses_shared_type_shape(self):
         self.assertEqual(
             rag_utils._stage_error("rerank", "failed", "fallback"),
-            {"stage": "rerank", "error": "failed", "fallback_to": "fallback"},
+            {
+                "stage": "rerank",
+                "error": "failed",
+                "fallback_to": "fallback",
+                "severity": "warning",
+                "recoverable": True,
+                "user_visible": False,
+            },
         )
 
     def test_dense_fallback_keeps_hybrid_error_in_meta(self):
@@ -53,6 +113,122 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result["meta"]["retrieval_mode"], "dense_fallback")
         self.assertIn("hybrid channel closed", result["meta"]["hybrid_error"])
         self.assertEqual(result["meta"]["candidate_count_after_rerank"], 1)
+
+    def test_layered_failure_preserves_scoped_fallback_mode(self):
+        trace_patch = {"scope_filter_applied": True}
+        embeddings = rag_utils.QueryEmbeddings(dense=[0.1, 0.2], sparse={1: 0.5})
+        docs = [{"text": "fallback", "filename": "manual.pdf", "chunk_id": "c1", "score": 0.5}]
+
+        with (
+            patch.object(rag_utils._milvus_manager, "split_retrieve", side_effect=RuntimeError("split down")),
+            patch.object(rag_utils._milvus_manager, "hybrid_retrieve", return_value=docs),
+        ):
+            result = rag_utils.retrieve_layered_candidates(
+                embeddings,
+                candidate_k=5,
+                filter_expr='chunk_level == 3 and filename in ["manual.pdf"]',
+                query_plan=rag_utils.QueryPlan(
+                    raw_query="q",
+                    semantic_query="q",
+                    clean_query="q",
+                    doc_hints=[],
+                    matched_files=[("manual.pdf", 1.0)],
+                    scope_mode="filter",
+                    heading_hint=None,
+                    anchors=[],
+                    model_numbers=[],
+                    intent_type=None,
+                    route="scoped_hybrid",
+                ),
+                scope_matched_files=[("manual.pdf", 1.0)],
+                timings={},
+                trace_patch=trace_patch,
+                retrieval_mode="hybrid_scoped",
+            )
+
+        self.assertEqual(result.retrieval_mode, "hybrid_scoped")
+        self.assertEqual(result.candidates, docs)
+        self.assertEqual(result.stage_errors[0]["stage"], "layered_retrieve")
+        self.assertEqual(result.stage_errors[0]["fallback_to"], "standard_hybrid")
+
+    def test_layered_sparse_failure_preserves_scoped_dense_mode(self):
+        trace_patch = {"scope_filter_applied": True}
+        embeddings = rag_utils.QueryEmbeddings(dense=[0.1, 0.2], sparse=None, sparse_error="sparse down")
+        docs = [{"text": "fallback", "filename": "manual.pdf", "chunk_id": "c1", "score": 0.5}]
+
+        with patch.object(rag_utils._milvus_manager, "dense_retrieve", return_value=docs):
+            result = rag_utils.retrieve_layered_candidates(
+                embeddings,
+                candidate_k=5,
+                filter_expr='chunk_level == 3 and filename in ["manual.pdf"]',
+                query_plan=rag_utils.QueryPlan(
+                    raw_query="q",
+                    semantic_query="q",
+                    clean_query="q",
+                    doc_hints=[],
+                    matched_files=[("manual.pdf", 1.0)],
+                    scope_mode="filter",
+                    heading_hint=None,
+                    anchors=[],
+                    model_numbers=[],
+                    intent_type=None,
+                    route="scoped_hybrid",
+                ),
+                scope_matched_files=[("manual.pdf", 1.0)],
+                timings={},
+                trace_patch=trace_patch,
+                retrieval_mode="hybrid_scoped",
+            )
+
+        self.assertEqual(result.retrieval_mode, "dense_fallback_scoped")
+        self.assertEqual(result.candidates, docs)
+
+    def test_layered_success_marks_candidate_strategy_not_rerank_strategy(self):
+        trace_patch = {"query_plan_enabled": True}
+        embeddings = rag_utils.QueryEmbeddings(dense=[0.1, 0.2], sparse={1: 0.5})
+        docs = [
+            {
+                "text": "candidate",
+                "retrieval_text": "candidate",
+                "filename": "manual.pdf",
+                "chunk_id": "c1",
+                "score": 0.5,
+                "dense_rank": 1,
+                "sparse_rank": 1,
+                "in_dense": True,
+                "in_sparse": True,
+            }
+        ]
+
+        with (
+            patch.object(rag_utils._milvus_manager, "split_retrieve", return_value=docs),
+            patch.object(rag_utils._milvus_manager, "hybrid_retrieve", return_value=[]),
+        ):
+            result = rag_utils.retrieve_layered_candidates(
+                embeddings,
+                candidate_k=5,
+                filter_expr='chunk_level == 3',
+                query_plan=rag_utils.QueryPlan(
+                    raw_query="q",
+                    semantic_query="q",
+                    clean_query="q",
+                    doc_hints=[],
+                    matched_files=[],
+                    scope_mode="none",
+                    heading_hint=None,
+                    anchors=[],
+                    model_numbers=[],
+                    intent_type=None,
+                    route="global_hybrid",
+                ),
+                scope_matched_files=[],
+                timings={},
+                trace_patch=trace_patch,
+                retrieval_mode="hybrid",
+            )
+
+        self.assertEqual(result.trace_patch["candidate_strategy"], "layered_split")
+        self.assertEqual(result.trace_patch["rerank_strategy"], "shared_pipeline")
 
     def test_retrieval_knobs_are_passed_to_milvus_and_trace(self):
         docs = [
@@ -84,6 +260,25 @@ class RagUtilsDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result["meta"]["rerank_top_n"], 2)
         self.assertEqual(result["meta"]["candidate_count_before_rerank"], 2)
         self.assertEqual(result["meta"]["milvus_search_ef"], 128)
+
+    def test_candidate_pool_retrieval_skips_rerank_pipeline(self):
+        docs = [
+            {"text": "d1", "filename": "manual.pdf", "chunk_id": "c1", "score": 0.9},
+            {"text": "d2", "filename": "manual.pdf", "chunk_id": "c2", "score": 0.8},
+        ]
+
+        with (
+            patch.object(rag_utils._embedding_service, "get_embeddings", return_value=[[0.1, 0.2]]),
+            patch.object(rag_utils._embedding_service, "get_sparse_embedding", return_value={1: 0.5}),
+            patch.object(rag_utils._milvus_manager, "hybrid_retrieve", return_value=docs),
+            patch("backend.rag.utils._rerank_documents", side_effect=AssertionError("rerank should not run")),
+        ):
+            result = rag_utils.retrieve_candidate_pool("query", top_k=1, candidate_k=3)
+
+        self.assertEqual([doc["chunk_id"] for doc in result["candidates"]], ["c1", "c2"])
+        self.assertTrue(result["meta"]["candidate_only"])
+        self.assertFalse(result["meta"]["rerank_applied"])
+        self.assertEqual(result["meta"]["candidate_k"], 3)
 
     def test_query_plan_disabled_does_not_load_filename_registry_or_change_query(self):
         docs = [{"text": "d1", "filename": "manual.pdf", "chunk_id": "c1", "score": 0.9}]

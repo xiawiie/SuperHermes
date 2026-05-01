@@ -14,14 +14,30 @@ from backend.config import (
     MODEL,
     env_bool,
 )
-from backend.rag.utils import retrieve_context_documents, retrieve_documents, step_back_expand, generate_hypothetical_document, elapsed_ms
+from backend.rag.utils import (
+    elapsed_ms,
+    finish_retrieval_pipeline,
+    generate_hypothetical_document,
+    retrieve_candidate_pool,
+    retrieve_context_documents,
+    retrieve_documents,
+    step_back_expand,
+)
 from backend.rag.retrieval import dedupe_docs
+from backend.rag.formatting import format_rag_documents
+from backend.rag.trace import (
+    append_stage_error as _trace_append_stage_error,
+    build_initial_rag_trace,
+    merge_expanded_rag_trace,
+)
 from backend.chat.tools import emit_rag_step
 
 RAG_FALLBACK_TIMEOUT_SECONDS = float(os.getenv("RAG_FALLBACK_TIMEOUT_SECONDS", "6"))
 RAG_FALLBACK_WORKERS = int(os.getenv("RAG_FALLBACK_WORKERS", "4"))
 RAG_FALLBACK_ENABLED = env_bool("RAG_FALLBACK_ENABLED", False)
 RAG_FALLBACK_USE_FAST_MODEL = env_bool("RAG_FALLBACK_USE_FAST_MODEL", True)
+RAG_FALLBACK_CANDIDATE_ONLY = env_bool("RAG_FALLBACK_CANDIDATE_ONLY", False)
+RAG_FALLBACK_EXPANDED_CANDIDATE_K = int(os.getenv("RAG_FALLBACK_EXPANDED_CANDIDATE_K", "50"))
 
 FAST_MODEL_ENABLED = RAG_FALLBACK_USE_FAST_MODEL and bool(FAST_MODEL) and FAST_MODEL != MODEL
 
@@ -69,10 +85,7 @@ def _trace_stage_errors(rag_trace: dict) -> list:
 
 
 def _append_stage_error(rag_trace: dict, stage: str, error: str, fallback_to: str | None = None):
-    item = {"stage": stage, "error": error}
-    if fallback_to:
-        item["fallback_to"] = fallback_to
-    _trace_stage_errors(rag_trace).append(item)
+    _trace_append_stage_error(rag_trace, stage, error, fallback_to)
 
 
 def _prefixed_stage_errors(prefix: str, errors: list[dict]) -> list[dict]:
@@ -188,15 +201,7 @@ class RAGState(TypedDict):
 
 
 def _format_docs(docs: List[dict]) -> str:
-    if not docs:
-        return ""
-    chunks = []
-    for i, doc in enumerate(docs, 1):
-        source = doc.get("filename", "Unknown")
-        page = doc.get("page_number", "N/A")
-        text = doc.get("text", "")
-        chunks.append(f"[{i}] {source} (Page {page}):\n{text}")
-    return "\n\n---\n\n".join(chunks)
+    return format_rag_documents(docs)
 
 
 def _fallback_to_initial_retrieval(state: RAGState, rag_trace: dict, expanded_start: float) -> RAGState:
@@ -252,58 +257,20 @@ def retrieve_initial(state: RAGState) -> RAGState:
         ),
     )
     emit_rag_step("✅", f"检索完成，找到 {len(results)} 个片段", f"模式: {retrieve_meta.get('retrieval_mode', 'hybrid')}")
-    rag_trace = {
-        "tool_used": True,
-        "tool_name": "search_knowledge_base",
-        "query": query,
-        "expanded_query": query,
-        "retrieved_chunks": results,
-        "initial_retrieved_chunks": results,
-        "attached_context_chunks": attached_docs,
-        "context_files": context_files,
-        "retrieval_stage": "initial",
-        "rerank_enabled": retrieve_meta.get("rerank_enabled"),
-        "rerank_applied": retrieve_meta.get("rerank_applied"),
-        "rerank_model": retrieve_meta.get("rerank_model"),
-        "rerank_error": retrieve_meta.get("rerank_error"),
-        "rerank_input_count": retrieve_meta.get("rerank_input_count"),
-        "rerank_output_count": retrieve_meta.get("rerank_output_count"),
-        "rerank_input_cap": retrieve_meta.get("rerank_input_cap"),
-        "rerank_input_device_tier": retrieve_meta.get("rerank_input_device_tier"),
-        "rerank_cache_enabled": retrieve_meta.get("rerank_cache_enabled"),
-        "rerank_cache_hit": retrieve_meta.get("rerank_cache_hit"),
-        "retrieval_mode": retrieve_meta.get("retrieval_mode"),
-        "candidate_k": retrieve_meta.get("candidate_k"),
-        "leaf_retrieve_level": retrieve_meta.get("leaf_retrieve_level"),
-        "auto_merge_enabled": retrieve_meta.get("auto_merge_enabled"),
-        "auto_merge_applied": retrieve_meta.get("auto_merge_applied"),
-        "auto_merge_threshold": retrieve_meta.get("auto_merge_threshold"),
-        "auto_merge_replaced_chunks": retrieve_meta.get("auto_merge_replaced_chunks"),
-        "auto_merge_steps": retrieve_meta.get("auto_merge_steps"),
-        "structure_rerank_enabled": retrieve_meta.get("structure_rerank_enabled"),
-        "structure_rerank_applied": retrieve_meta.get("structure_rerank_applied"),
-        "structure_rerank_root_weight": retrieve_meta.get("structure_rerank_root_weight"),
-        "same_root_cap": retrieve_meta.get("same_root_cap"),
-        "dominant_root_id": retrieve_meta.get("dominant_root_id"),
-        "dominant_root_share": retrieve_meta.get("dominant_root_share"),
-        "dominant_root_support": retrieve_meta.get("dominant_root_support"),
-        "confidence_gate_enabled": retrieve_meta.get("confidence_gate_enabled"),
-        "fallback_required": retrieve_meta.get("fallback_required"),
-        "confidence_reasons": retrieve_meta.get("confidence_reasons"),
-        "top_margin": retrieve_meta.get("top_margin"),
-        "top_score": retrieve_meta.get("top_score"),
-        "anchor_match": retrieve_meta.get("anchor_match"),
-        "query_anchors": retrieve_meta.get("query_anchors"),
-        "candidates_before_rerank": retrieve_meta.get("candidates_before_rerank"),
-        "candidates_after_rerank": retrieve_meta.get("candidates_after_rerank"),
-        "candidates_after_structure_rerank": retrieve_meta.get("candidates_after_structure_rerank"),
-        "attached_context_count": attached_meta.get("attached_context_count", 0),
+    retrieve_meta = {
+        **retrieve_meta,
         "timings": retrieve_timings,
         "stage_errors": retrieve_stage_errors,
-        "context_chars": len(context),
-        "retrieved_chunk_count": len(results),
-        "final_context_chunk_count": len(results),
     }
+    rag_trace = build_initial_rag_trace(
+        query=query,
+        docs=results,
+        context=context,
+        retrieve_meta=retrieve_meta,
+        context_files=context_files,
+        attached_docs=attached_docs,
+        attached_meta=attached_meta,
+    )
     return {
         "query": query,
         "docs": results,
@@ -513,6 +480,133 @@ def rewrite_question_node(state: RAGState) -> RAGState:
     }
 
 
+def _candidate_query_for_strategy(state: RAGState, key: str) -> str:
+    if key == "hyde":
+        return state.get("hypothetical_doc") or generate_hypothetical_document(state["question"])
+    return state.get("expanded_query") or state["question"]
+
+
+def _candidate_retrieval_job(query: str, context_files: list[str]) -> dict:
+    return retrieve_candidate_pool(
+        query,
+        top_k=5,
+        context_files=context_files,
+        candidate_k=RAG_FALLBACK_EXPANDED_CANDIDATE_K,
+    )
+
+
+def _collect_candidate_only_retrievals(
+    state: RAGState,
+    *,
+    strategy: str,
+    context_files: list[str],
+    rag_trace: dict,
+    fallback_deadline: float,
+) -> tuple[list[dict], dict[str, float], list[dict], list[str]] | None:
+    keys = ["hyde", "step_back"] if strategy == "complex" else [strategy]
+    jobs = {}
+    for key in keys:
+        query = _candidate_query_for_strategy(state, key)
+        jobs[key] = _submit_with_context(lambda q=query: _candidate_retrieval_job(q, context_files))
+
+    candidates: list[dict] = []
+    timings: dict[str, float] = {}
+    stage_errors: list[dict] = []
+    modes: list[str] = []
+    for key, future in jobs.items():
+        result = _await_with_deadline(future, fallback_deadline, rag_trace, f"{key}_candidate_retrieve", "initial_retrieval")
+        if result is None:
+            return None
+        meta = result.get("meta", {}) if isinstance(result, dict) else {}
+        modes.append(str(meta.get("retrieval_mode") or "unknown"))
+        timings[f"expanded_{key}_candidate_retrieve_ms"] = float(
+            (meta.get("timings") or {}).get("total_retrieve_ms") or 0.0
+        )
+        stage_errors.extend(_prefixed_stage_errors(key, meta.get("stage_errors") or []))
+        for doc in result.get("candidates", []) if isinstance(result, dict) else []:
+            item = dict(doc)
+            item["fallback_candidate_origin"] = key
+            candidates.append(item)
+    return candidates, timings, stage_errors, modes
+
+
+def _retrieve_expanded_candidate_only(
+    state: RAGState,
+    *,
+    strategy: str,
+    context_files: list[str],
+    rag_trace: dict,
+    fallback_deadline: float,
+    expanded_start: float,
+) -> RAGState:
+    collected = _collect_candidate_only_retrievals(
+        state,
+        strategy=strategy,
+        context_files=context_files,
+        rag_trace=rag_trace,
+        fallback_deadline=fallback_deadline,
+    )
+    if collected is None:
+        rag_trace["expanded_retrieval_skipped_reason"] = "candidate_retrieval_failed_or_timed_out"
+        return _fallback_to_initial_retrieval(state, rag_trace, expanded_start)
+
+    expanded_candidates, candidate_timings, candidate_stage_errors, retrieval_modes = collected
+    if time.perf_counter() >= fallback_deadline:
+        rag_trace["expanded_retrieval_skipped_reason"] = "deadline_exhausted_before_final_rerank"
+        return _fallback_to_initial_retrieval(state, rag_trace, expanded_start)
+
+    initial_docs = [dict(doc, fallback_candidate_origin="initial") for doc in (state.get("docs") or [])]
+    final_candidates = dedupe_docs(initial_docs + expanded_candidates)
+    if not final_candidates:
+        rag_trace["expanded_retrieval_skipped_reason"] = "empty_candidate_pool"
+        return _fallback_to_initial_retrieval(state, rag_trace, expanded_start)
+
+    final_result = finish_retrieval_pipeline(
+        query=state["question"],
+        search_query=state.get("expanded_query") or state["question"],
+        retrieved=final_candidates,
+        top_k=5,
+        candidate_k=len(final_candidates),
+        timings=candidate_timings,
+        stage_errors=candidate_stage_errors,
+        total_start=expanded_start,
+        extra_trace={
+            "fallback_second_pass_mode": "candidate_only",
+            "expanded_candidate_count": len(expanded_candidates),
+            "final_rerank_input_count": len(final_candidates),
+            "fallback_saved_rerank": True,
+            "expanded_retrieval_skipped_reason": None,
+            "expanded_candidate_retrieval_modes": retrieval_modes,
+        },
+        context_files=context_files,
+        retrieval_mode="fallback_candidate_only",
+    )
+    docs = final_result.get("docs", [])
+    meta = final_result.get("meta", {})
+    context = _format_docs(docs)
+    merge_expanded_rag_trace(
+        rag_trace,
+        {
+            **meta,
+            "expanded_query": state.get("expanded_query") or state["question"],
+            "step_back_question": state.get("step_back_question", ""),
+            "step_back_answer": state.get("step_back_answer", ""),
+            "hypothetical_doc": state.get("hypothetical_doc", ""),
+            "expansion_type": strategy,
+            "retrieved_chunks": docs,
+            "expanded_retrieved_chunks": docs,
+            "context_files": context_files,
+            "retrieval_stage": "expanded",
+            "context_chars": len(context),
+            "retrieved_chunk_count": len(docs),
+            "final_context_chunk_count": len(docs),
+        },
+        timings=meta.get("timings") or {},
+    )
+    emit_rag_step("✅", f"候选池扩展检索完成，共 {len(docs)} 个片段")
+    return {"docs": docs, "context": context, "rag_trace": rag_trace}
+
+
 def retrieve_expanded(state: RAGState) -> RAGState:
     expanded_start = time.perf_counter()
     strategy = state.get("expansion_type") or "step_back"
@@ -521,6 +615,16 @@ def retrieve_expanded(state: RAGState) -> RAGState:
     fallback_deadline = float(state.get("fallback_deadline") or _fallback_deadline(expanded_start))
     if strategy == "timeout" or rag_trace.get("fallback_timed_out"):
         return _fallback_to_initial_retrieval(state, rag_trace, expanded_start)
+    if RAG_FALLBACK_CANDIDATE_ONLY:
+        emit_rag_step("🔄", "使用扩展查询召回候选池...", f"策略: {strategy}")
+        return _retrieve_expanded_candidate_only(
+            state,
+            strategy=strategy,
+            context_files=context_files,
+            rag_trace=rag_trace,
+            fallback_deadline=fallback_deadline,
+            expanded_start=expanded_start,
+        )
     emit_rag_step("🔄", "使用扩展查询重新检索...", f"策略: {strategy}")
     results: List[dict] = []
     rerank_applied_any = False
@@ -661,11 +765,13 @@ def retrieve_expanded(state: RAGState) -> RAGState:
     context = _format_docs(deduped)
     emit_rag_step("✅", f"扩展检索完成，共 {len(deduped)} 个片段")
     rag_trace = state.get("rag_trace", {}) or {}
-    timings = _trace_timings(rag_trace)
-    timings.update(expanded_timings)
-    timings["expanded_retrieve_ms"] = elapsed_ms(expanded_start)
-    _trace_stage_errors(rag_trace).extend(expanded_stage_errors)
-    rag_trace.update({
+    expanded_timings = {
+        **expanded_timings,
+        "expanded_retrieve_ms": elapsed_ms(expanded_start),
+    }
+    merge_expanded_rag_trace(
+        rag_trace,
+        {
         "expanded_query": state.get("expanded_query") or state["question"],
         "step_back_question": state.get("step_back_question", ""),
         "step_back_answer": state.get("step_back_answer", ""),
@@ -713,7 +819,10 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         "context_chars": len(context),
         "retrieved_chunk_count": len(deduped),
         "final_context_chunk_count": len(deduped),
-    })
+        },
+        timings=expanded_timings,
+        stage_errors=expanded_stage_errors,
+    )
     return {"docs": deduped, "context": context, "rag_trace": rag_trace}
 
 

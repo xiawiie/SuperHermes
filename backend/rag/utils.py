@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Any
-import os
 import json
 import hashlib
 import re
@@ -17,7 +17,6 @@ from backend.rag.query_plan import (
     get_filename_registry,
     _normalize_filename as _qp_normalize_filename,
 )
-from backend.rag.profiles import current_index_profile
 from backend.rag.confidence import (
     doc_matches_anchor as _confidence_doc_matches_anchor,
     evaluate_retrieval_confidence as _confidence_evaluate_retrieval_confidence,
@@ -46,60 +45,57 @@ from backend.rag.retrieval import (
 )
 from backend.rag.layered_rerank import (
     build_l1_candidates as _build_l1_candidates,
-    select_ce_k as _select_ce_k,
-    select_root_cap as _select_root_cap,
-    LAYERED_RERANK_ENABLED as _LAYERED_RERANK_ENABLED,
-    L0_DENSE_TOP_K as _L0_DENSE_TOP_K,
-    L0_SPARSE_TOP_K as _L0_SPARSE_TOP_K,
-    L0_HYBRID_GUARANTEE_K as _L0_HYBRID_GUARANTEE_K,
-    L0_FALLBACK_POOL_MIN as _L0_FALLBACK_POOL_MIN,
-    L3_ROOT_WEIGHT as _L3_ROOT_WEIGHT,
 )
-from backend.rag.trace import candidate_identity, trace_text_hash
-from backend.rag.types import StageError
-from backend.rag.profile_naming import resolve_dtype, resolve_runtime_dtype
+from backend.rag.runtime_config import LayeredRerankConfig, RagRuntimeConfig, load_runtime_config
+from backend.rag.trace import build_retrieval_meta, candidate_identity, trace_text_hash
+from backend.rag.types import StageError, StageErrorDict
+from backend.rag.profile_naming import resolve_dtype as resolve_dtype
 from backend.config import (
     ARK_API_KEY,
     BASE_URL,
     MODEL,
-    env_bool as _env_bool,
 )
-RERANK_MODEL = os.getenv("RERANK_MODEL") or os.getenv("RERANK_AVAILABLE_MODEL")
-RERANK_PROVIDER = os.getenv("RERANK_PROVIDER", "local").lower()
-RERANK_DEVICE = os.getenv("RERANK_DEVICE", os.getenv("RAG_A", "auto"))
-RERANK_TORCH_DTYPE = resolve_runtime_dtype(os.getenv("RAG_DTYPE"), os.getenv("RERANK_TORCH_DTYPE"))
-RERANK_INPUT_K_CPU = int(os.getenv("RERANK_INPUT_K_CPU", "0"))
-AUTO_MERGE_ENABLED = os.getenv("AUTO_MERGE_ENABLED", "true").lower() != "false"
-AUTO_MERGE_THRESHOLD = int(os.getenv("AUTO_MERGE_THRESHOLD", "2"))
-LEAF_RETRIEVE_LEVEL = int(os.getenv("LEAF_RETRIEVE_LEVEL", "3"))
-STRUCTURE_RERANK_ROOT_WEIGHT = float(os.getenv("STRUCTURE_RERANK_ROOT_WEIGHT", "0.3"))
-SAME_ROOT_CAP = int(os.getenv("SAME_ROOT_CAP", "2"))
-STRUCTURE_RERANK_ENABLED = os.getenv("STRUCTURE_RERANK_ENABLED", "true").lower() != "false"
-CONFIDENCE_GATE_ENABLED = _env_bool("CONFIDENCE_GATE_ENABLED", False)
-LOW_CONF_TOP_MARGIN = float(os.getenv("LOW_CONF_TOP_MARGIN", "0.05"))
-LOW_CONF_ROOT_SHARE = float(os.getenv("LOW_CONF_ROOT_SHARE", "0.45"))
-LOW_CONF_TOP_SCORE = float(os.getenv("LOW_CONF_TOP_SCORE", "0.20"))
-ENABLE_ANCHOR_GATE = os.getenv("ENABLE_ANCHOR_GATE", "true").lower() != "false"
-QUERY_PLAN_ENABLED = _env_bool("QUERY_PLAN_ENABLED", False)
-RAG_CANDIDATE_K = int(os.getenv("RAG_CANDIDATE_K", "0"))
-RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "0"))
-RERANK_INPUT_K_GPU = int(os.getenv("RERANK_INPUT_K_GPU", "0"))
-RERANK_CACHE_ENABLED = _env_bool("RERANK_CACHE_ENABLED", True)
-RERANK_CACHE_TTL_SECONDS = int(os.getenv("RERANK_CACHE_TTL_SECONDS", "300"))
-MILVUS_SEARCH_EF = int(os.getenv("MILVUS_SEARCH_EF", "64"))
-MILVUS_SPARSE_DROP_RATIO = float(os.getenv("MILVUS_SPARSE_DROP_RATIO", "0.2"))
-MILVUS_RRF_K = int(os.getenv("MILVUS_RRF_K", "60"))
-DOC_SCOPE_GLOBAL_RESERVE_WEIGHT = min(1.0, max(0.0, float(os.getenv("DOC_SCOPE_GLOBAL_RESERVE_WEIGHT", "0.2"))))
-DOC_SCOPE_FILENAME_BOOST_WEIGHT = float(os.getenv("DOC_SCOPE_FILENAME_BOOST_WEIGHT", "0.15"))
-RERANK_PAIR_ENRICHMENT_ENABLED = _env_bool("RERANK_PAIR_ENRICHMENT_ENABLED", False)
-HEADING_LEXICAL_ENABLED = _env_bool("HEADING_LEXICAL_ENABLED", False)
-HEADING_LEXICAL_WEIGHT = min(1.0, max(0.0, float(os.getenv("HEADING_LEXICAL_WEIGHT", "0.20"))))
-RAG_INDEX_PROFILE = current_index_profile()
-RERANK_SCORE_FUSION_ENABLED = _env_bool("RERANK_SCORE_FUSION_ENABLED", False)
-RERANK_FUSION_RERANK_WEIGHT = float(os.getenv("RERANK_FUSION_RERANK_WEIGHT", "0.65"))
-RERANK_FUSION_RRF_WEIGHT = float(os.getenv("RERANK_FUSION_RRF_WEIGHT", "0.20"))
-RERANK_FUSION_SCOPE_WEIGHT = float(os.getenv("RERANK_FUSION_SCOPE_WEIGHT", "0.10"))
-RERANK_FUSION_METADATA_WEIGHT = float(os.getenv("RERANK_FUSION_METADATA_WEIGHT", "0.05"))
+
+
+_RUNTIME_CONFIG = load_runtime_config()
+_LAYERED_CONFIG = _RUNTIME_CONFIG.layered
+
+RERANK_MODEL = _RUNTIME_CONFIG.rerank_model
+RERANK_PROVIDER = _RUNTIME_CONFIG.rerank_provider
+RERANK_DEVICE = _RUNTIME_CONFIG.rerank_device
+RERANK_TORCH_DTYPE = _RUNTIME_CONFIG.rerank_torch_dtype
+RERANK_INPUT_K_CPU = _RUNTIME_CONFIG.rerank_input_k_cpu
+AUTO_MERGE_ENABLED = _RUNTIME_CONFIG.auto_merge_enabled
+AUTO_MERGE_THRESHOLD = _RUNTIME_CONFIG.auto_merge_threshold
+LEAF_RETRIEVE_LEVEL = _RUNTIME_CONFIG.leaf_retrieve_level
+STRUCTURE_RERANK_ROOT_WEIGHT = _RUNTIME_CONFIG.structure_rerank_root_weight
+SAME_ROOT_CAP = _RUNTIME_CONFIG.same_root_cap
+STRUCTURE_RERANK_ENABLED = _RUNTIME_CONFIG.structure_rerank_enabled
+CONFIDENCE_GATE_ENABLED = _RUNTIME_CONFIG.confidence_gate_enabled
+LOW_CONF_TOP_MARGIN = _RUNTIME_CONFIG.low_conf_top_margin
+LOW_CONF_ROOT_SHARE = _RUNTIME_CONFIG.low_conf_root_share
+LOW_CONF_TOP_SCORE = _RUNTIME_CONFIG.low_conf_top_score
+ENABLE_ANCHOR_GATE = _RUNTIME_CONFIG.enable_anchor_gate
+QUERY_PLAN_ENABLED = _RUNTIME_CONFIG.query_plan_enabled
+RAG_CANDIDATE_K = _RUNTIME_CONFIG.rag_candidate_k
+RERANK_TOP_N = _RUNTIME_CONFIG.rerank_top_n
+RERANK_INPUT_K_GPU = _RUNTIME_CONFIG.rerank_input_k_gpu
+RERANK_CACHE_ENABLED = _RUNTIME_CONFIG.rerank_cache_enabled
+RERANK_CACHE_TTL_SECONDS = _RUNTIME_CONFIG.rerank_cache_ttl_seconds
+MILVUS_SEARCH_EF = _RUNTIME_CONFIG.milvus_search_ef
+MILVUS_SPARSE_DROP_RATIO = _RUNTIME_CONFIG.milvus_sparse_drop_ratio
+MILVUS_RRF_K = _RUNTIME_CONFIG.milvus_rrf_k
+DOC_SCOPE_GLOBAL_RESERVE_WEIGHT = _RUNTIME_CONFIG.doc_scope_global_reserve_weight
+DOC_SCOPE_FILENAME_BOOST_WEIGHT = _RUNTIME_CONFIG.doc_scope_filename_boost_weight
+RERANK_PAIR_ENRICHMENT_ENABLED = _RUNTIME_CONFIG.rerank_pair_enrichment_enabled
+HEADING_LEXICAL_ENABLED = _RUNTIME_CONFIG.heading_lexical_enabled
+HEADING_LEXICAL_WEIGHT = _RUNTIME_CONFIG.heading_lexical_weight
+RAG_INDEX_PROFILE = _RUNTIME_CONFIG.rag_index_profile
+RERANK_SCORE_FUSION_ENABLED = _RUNTIME_CONFIG.rerank_score_fusion_enabled
+RERANK_FUSION_RERANK_WEIGHT = _RUNTIME_CONFIG.rerank_fusion_rerank_weight
+RERANK_FUSION_RRF_WEIGHT = _RUNTIME_CONFIG.rerank_fusion_rrf_weight
+RERANK_FUSION_SCOPE_WEIGHT = _RUNTIME_CONFIG.rerank_fusion_scope_weight
+RERANK_FUSION_METADATA_WEIGHT = _RUNTIME_CONFIG.rerank_fusion_metadata_weight
 
 # 全局初始化检索依赖（与 api 共用 embedding_service，保证 BM25 状态一致）
 _milvus_manager = MilvusManager()
@@ -115,6 +111,76 @@ _ANCHOR_PATTERN = re.compile(
     r"附录[A-Za-z0-9一二三四五六七八九十]+|"
     r"附件[0-9一二三四五六七八九十]+)"
 )
+
+
+@dataclass(frozen=True)
+class RetrievalRequest:
+    query: str
+    top_k: int = 5
+    context_files: list[str] = field(default_factory=list)
+    config: RagRuntimeConfig = field(default_factory=lambda: _RUNTIME_CONFIG)
+
+    @property
+    def layered_config(self) -> LayeredRerankConfig:
+        return self.config.layered
+
+
+@dataclass(frozen=True)
+class RetrievalFilters:
+    base_filter: str
+    filename_filter: str
+    effective_filter: str
+    scoped_filter: str | None = None
+    matched_files: list[tuple[str, float]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class QueryEmbeddings:
+    dense: list[float] | None
+    sparse: Any | None
+    dense_error: str | None = None
+    sparse_error: str | None = None
+
+    @property
+    def has_dense(self) -> bool:
+        return self.dense is not None
+
+    @property
+    def has_sparse(self) -> bool:
+        return self.sparse is not None
+
+
+@dataclass
+class CandidateRetrievalResult:
+    candidates: list[dict]
+    retrieval_mode: str
+    trace_patch: dict[str, Any] = field(default_factory=dict)
+    stage_errors: list[StageErrorDict] = field(default_factory=list)
+    timings: dict[str, float] = field(default_factory=dict)
+    hybrid_error: str | None = None
+
+
+@dataclass
+class PreparedRetrieval:
+    query: str
+    search_query: str
+    top_k: int
+    candidate_k: int
+    context_files: list[str]
+    query_plan: QueryPlan
+    filters: RetrievalFilters
+    candidates: list[dict]
+    retrieval_mode: str
+    trace_patch: dict[str, Any]
+    timings: Dict[str, float]
+    stage_errors: list[StageErrorDict]
+    total_start: float
+    hybrid_error: str | None = None
+    dense_error: str | None = None
+
+    @property
+    def failed(self) -> bool:
+        return self.retrieval_mode == "failed"
 
 
 def _get_parent_chunk_store():
@@ -184,7 +250,7 @@ def _finish_retrieval_pipeline(
     top_k: int,
     candidate_k: int,
     timings: Dict[str, float],
-    stage_errors: list[Dict[str, str]],
+    stage_errors: list[StageErrorDict],
     total_start: float,
     extra_trace: dict | None = None,
     query_plan: QueryPlan | None = None,
@@ -196,107 +262,22 @@ def _finish_retrieval_pipeline(
     """Complete the retrieval pipeline: rerank -> structure_rerank -> confidence_gate."""
     current_stage = "rerank"
     try:
-        if _LAYERED_RERANK_ENABLED:
-            # --- Layered Rerank Pipeline ---
-            stage_start = time.perf_counter()
+        stage_start = time.perf_counter()
+        reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=top_k)
+        timings["rerank_ms"] = elapsed_ms(stage_start)
+        if rerank_meta.get("rerank_error"):
+            stage_errors.append(_stage_error("rerank", str(rerank_meta.get("rerank_error")), "ranked_candidates"))
 
-            # L1: Prefilter
-            anchor_chunk_ids = [
-                doc.get("chunk_id", "")
-                for doc in retrieved
-                if doc.get("anchor_id")
-            ]
-            scope_matched_files = list({
-                fn for fn, score in (query_plan.matched_files if query_plan else [])
-            }) if query_plan else []
+        rerank_meta["ce_dtype"] = RERANK_TORCH_DTYPE
+        rerank_meta["ce_input_count"] = rerank_meta.get("rerank_input_count", 0)
+        rerank_meta["ce_cache_hit"] = rerank_meta.get("rerank_cache_hit", False)
+        rerank_meta["ce_latency_ms"] = rerank_meta.get("ce_predict_ms", timings.get("rerank_ms", 0.0))
+        rerank_meta["model_warmup_state"] = "warm" if _local_reranker is not None else "cold"
 
-            l1_candidates = _build_l1_candidates(
-                retrieved,
-                scope_matched_files=scope_matched_files,
-                anchor_chunk_ids=anchor_chunk_ids,
-            )
-            timings["l1_prefilter_ms"] = elapsed_ms(stage_start)
-
-            # L1 drop analysis for observability
-            _scope_file_set = set(scope_matched_files)
-            _l0_scope_fns = {d.get("filename", "") for d in retrieved if d.get("filename", "") in _scope_file_set}
-            _l1_scope_fns = {d.get("filename", "") for d in l1_candidates if d.get("filename", "") in _scope_file_set}
-            _l1_correct_file_dropped = sorted(_l0_scope_fns - _l1_scope_fns)
-            _l0_scope_pages = {
-                (d.get("filename", ""), d.get("page_number"))
-                for d in retrieved
-                if d.get("filename", "") in _scope_file_set and d.get("page_number") is not None
-            }
-            _l1_scope_pages = {
-                (d.get("filename", ""), d.get("page_number"))
-                for d in l1_candidates
-                if d.get("filename", "") in _scope_file_set and d.get("page_number") is not None
-            }
-            _l1_correct_page_dropped = [
-                {"filename": fn, "page": pg} for fn, pg in sorted(_l0_scope_pages - _l1_scope_pages)
-            ]
-
-            # L2: Adaptive K
-            scope_mode = query_plan.scope_mode if query_plan else "none"
-            exact_file_match = len(scope_matched_files) == 1 if scope_mode == "filter" else False
-            ce_input_k, ce_top_n = _select_ce_k(
-                l1_candidates,
-                scope_mode=scope_mode,
-                exact_file_match=exact_file_match,
-                is_ambiguous=False,
-                dense_sparse_disagree=False,
-            )
-            ce_candidates = l1_candidates[:ce_input_k]
-
-            stage_start = time.perf_counter()
-            reranked, rerank_meta = _rerank_documents(query=query, docs=ce_candidates, top_k=ce_top_n)
-            timings["rerank_ms"] = elapsed_ms(stage_start)
-            rerank_meta["rerank_input_k"] = ce_input_k
-            rerank_meta["rerank_top_n"] = ce_top_n
-            rerank_meta["l1_candidate_count"] = len(l1_candidates)
-
-            # CE trace metrics
-            rerank_meta["ce_dtype"] = RERANK_TORCH_DTYPE
-            rerank_meta["ce_input_count"] = rerank_meta.get("rerank_input_count", len(ce_candidates))
-            rerank_meta["ce_cache_hit"] = rerank_meta.get("rerank_cache_hit", False)
-            rerank_meta["ce_latency_ms"] = rerank_meta.get("ce_predict_ms", timings.get("rerank_ms", 0.0))
-            rerank_meta["model_warmup_state"] = "warm" if _local_reranker is not None else "cold"
-            rerank_meta["l1_selected_count"] = len(l1_candidates)
-            rerank_meta["l1_correct_file_dropped"] = _l1_correct_file_dropped
-            rerank_meta["l1_correct_page_dropped"] = _l1_correct_page_dropped
-
-            # L3: Weak structure rerank
-            current_stage = "structure_rerank"
-            stage_start = time.perf_counter()
-            root_cap = _select_root_cap(
-                scope_mode=scope_mode,
-                exact_file_match=exact_file_match,
-                dominant_root_share=0.0,
-                query_is_broad=False,
-            )
-            reranked_docs, structure_meta = _apply_structure_rerank(
-                docs=reranked, top_k=top_k, root_weight=_L3_ROOT_WEIGHT, same_root_cap=root_cap,
-            )
-            timings["structure_rerank_ms"] = elapsed_ms(stage_start)
-        else:
-            # --- Original Pipeline ---
-            stage_start = time.perf_counter()
-            reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=top_k)
-            timings["rerank_ms"] = elapsed_ms(stage_start)
-            if rerank_meta.get("rerank_error"):
-                stage_errors.append(_stage_error("rerank", str(rerank_meta.get("rerank_error")), "ranked_candidates"))
-
-            # CE trace metrics (original pipeline)
-            rerank_meta["ce_dtype"] = RERANK_TORCH_DTYPE
-            rerank_meta["ce_input_count"] = rerank_meta.get("rerank_input_count", 0)
-            rerank_meta["ce_cache_hit"] = rerank_meta.get("rerank_cache_hit", False)
-            rerank_meta["ce_latency_ms"] = rerank_meta.get("ce_predict_ms", timings.get("rerank_ms", 0.0))
-            rerank_meta["model_warmup_state"] = "warm" if _local_reranker is not None else "cold"
-
-            current_stage = "structure_rerank"
-            stage_start = time.perf_counter()
-            reranked_docs, structure_meta = _apply_structure_rerank(docs=reranked, top_k=top_k)
-            timings["structure_rerank_ms"] = elapsed_ms(stage_start)
+        current_stage = "structure_rerank"
+        stage_start = time.perf_counter()
+        reranked_docs, structure_meta = _apply_structure_rerank(docs=reranked, top_k=top_k)
+        timings["structure_rerank_ms"] = elapsed_ms(stage_start)
 
         current_stage = "confidence_gate"
         stage_start = time.perf_counter()
@@ -329,14 +310,14 @@ def _finish_retrieval_pipeline(
         if extra_trace:
             rerank_meta.update(extra_trace)
 
-        return {"docs": reranked_docs, "meta": rerank_meta}
+        return {"docs": reranked_docs, "meta": build_retrieval_meta(rerank_meta)}
 
     except Exception as exc:
         stage_errors.append(_stage_error(current_stage, str(exc)))
         timings["total_retrieve_ms"] = elapsed_ms(total_start)
         return {
             "docs": [],
-            "meta": {
+            "meta": build_retrieval_meta({
                 "rerank_enabled": _is_rerank_enabled(),
                 "rerank_applied": False,
                 "rerank_model": RERANK_MODEL,
@@ -374,7 +355,7 @@ def _finish_retrieval_pipeline(
                 "timings": dict(_ensure_retrieve_timing_defaults(timings)),
                 "stage_errors": stage_errors,
                 **(extra_trace or {}),
-            },
+            }),
         }
 
 
@@ -640,8 +621,25 @@ def _ensure_retrieve_timing_defaults(timings: Dict[str, float]) -> Dict[str, flo
     return timings
 
 
-def _stage_error(stage: str, error: str, fallback_to: str | None = None) -> Dict[str, str]:
-    return StageError(stage=stage, error=error, fallback_to=fallback_to).as_dict()
+def _stage_error(
+    stage: str,
+    error: str,
+    fallback_to: str | None = None,
+    *,
+    error_code: str | None = None,
+    severity: str = "warning",
+    recoverable: bool = True,
+    user_visible: bool = False,
+) -> dict[str, Any]:
+    return StageError(
+        stage=stage,
+        error=error,
+        fallback_to=fallback_to,
+        error_code=error_code,
+        severity=severity,
+        recoverable=recoverable,
+        user_visible=user_visible,
+    ).as_dict()
 
 
 def _merge_to_parent_level(docs: List[dict], threshold: int = 2) -> Tuple[List[dict], int]:
@@ -806,6 +804,676 @@ def _build_filename_filter(filenames: list[str] | None) -> str:
     return _retrieval_build_filename_filter(filenames, escape_string=_escape_milvus_string)
 
 
+def build_query_plan(
+    request: RetrievalRequest,
+    timings: Dict[str, float] | None = None,
+    stage_errors: list[StageErrorDict] | None = None,
+) -> QueryPlan:
+    stage_start = time.perf_counter()
+    try:
+        if QUERY_PLAN_ENABLED:
+            filename_registry = get_filename_registry(_milvus_manager, cache)
+            return parse_query_plan(
+                raw_query=request.query,
+                filename_registry=filename_registry,
+                context_files=request.context_files,
+            )
+    except Exception as exc:
+        if stage_errors is not None:
+            stage_errors.append(_stage_error("query_plan", str(exc), "raw_query"))
+    finally:
+        if timings is not None:
+            timings["query_plan_ms"] = elapsed_ms(stage_start)
+
+    return QueryPlan(
+        raw_query=request.query,
+        semantic_query=request.query,
+        clean_query=request.query,
+        doc_hints=[],
+        matched_files=[],
+        scope_mode="none",
+        heading_hint=None,
+        anchors=[],
+        model_numbers=[],
+        intent_type=None,
+        route="global_hybrid",
+    )
+
+
+def build_retrieval_filters(query_plan: QueryPlan, context_files: list[str] | None = None) -> RetrievalFilters:
+    base_filter = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
+    filename_filter = _build_filename_filter(context_files)
+    effective_filter = f"{base_filter} and {filename_filter}" if filename_filter else base_filter
+    matched_files = [
+        (filename, score)
+        for filename, score in query_plan.matched_files
+        if score >= DOC_SCOPE_MATCH_BOOST
+    ]
+    scoped_filter = None
+    if matched_files and not filename_filter:
+        scoped_filename_filter = _build_filename_filter([filename for filename, _ in matched_files])
+        if scoped_filename_filter:
+            scoped_filter = f"{base_filter} and {scoped_filename_filter}"
+    return RetrievalFilters(
+        base_filter=base_filter,
+        filename_filter=filename_filter,
+        effective_filter=effective_filter,
+        scoped_filter=scoped_filter,
+        matched_files=matched_files,
+    )
+
+
+def embed_search_query(
+    search_query: str,
+    timings: Dict[str, float],
+    stage_errors: list[StageErrorDict],
+) -> QueryEmbeddings:
+    stage_start = time.perf_counter()
+    dense_embedding = None
+    sparse_embedding = None
+    dense_error = None
+    sparse_error = None
+    with ThreadPoolExecutor(max_workers=2) as embed_pool:
+        dense_future = embed_pool.submit(_embedding_service.get_embeddings, [search_query])
+        sparse_future = embed_pool.submit(_embedding_service.get_sparse_embedding, search_query)
+        try:
+            dense_embedding = dense_future.result()[0]
+        except Exception as exc:
+            dense_error = str(exc)
+            stage_errors.append(_stage_error("embed_dense", dense_error, "failed"))
+        try:
+            sparse_embedding = sparse_future.result()
+        except Exception as exc:
+            sparse_error = str(exc)
+            stage_errors.append(_stage_error("embed_sparse", sparse_error, "dense_retrieve"))
+    timings["embed_dense_ms"] = elapsed_ms(stage_start)
+    timings["embed_sparse_ms"] = 0.0
+    return QueryEmbeddings(
+        dense=dense_embedding,
+        sparse=sparse_embedding,
+        dense_error=dense_error,
+        sparse_error=sparse_error,
+    )
+
+
+def _query_plan_trace(
+    query_plan: QueryPlan,
+    *,
+    semantic_query: str,
+    v3_layers: list[str],
+    scope_filter_applied: bool = False,
+) -> dict[str, Any]:
+    return {
+        "query_plan": query_plan.to_dict(),
+        "query_plan_enabled": QUERY_PLAN_ENABLED,
+        "semantic_query": semantic_query,
+        "index_profile": RAG_INDEX_PROFILE,
+        "v3_layers": v3_layers,
+        "scope_mode": query_plan.scope_mode,
+        "query_route": query_plan.route,
+        "scope_filter_applied": scope_filter_applied,
+        "filename_boost_applied": False,
+        "filename_boosted_candidate_count": 0,
+        "matched_files_top3": [(f, round(s, 3)) for f, s in query_plan.matched_files[:3]],
+        "doc_scope_match_ratios": [round(s, 3) for _, s in query_plan.matched_files[:3]],
+    }
+
+
+def _append_hybrid_guarantee(candidates: list[dict], hybrid: list[dict]) -> None:
+    existing_ids = {candidate.get("chunk_id") for candidate in candidates}
+    for item in hybrid:
+        if item.get("chunk_id") in existing_ids:
+            continue
+        item["dense_rank"] = None
+        item["sparse_rank"] = None
+        item["dense_score"] = 0.0
+        item["sparse_score"] = 0.0
+        item["in_dense"] = False
+        item["in_sparse"] = False
+        candidates.append(item)
+        existing_ids.add(item.get("chunk_id"))
+
+
+def _dense_candidate_result(
+    embeddings: QueryEmbeddings,
+    *,
+    candidate_k: int,
+    filter_expr: str,
+    timings: Dict[str, float],
+    retrieval_mode: str = "dense_fallback",
+    trace_patch: dict[str, Any] | None = None,
+    hybrid_error: str | None = None,
+) -> CandidateRetrievalResult:
+    if embeddings.dense is None:
+        dense_error = embeddings.dense_error or "dense embedding unavailable"
+        return CandidateRetrievalResult(
+            candidates=[],
+            retrieval_mode="failed",
+            trace_patch=trace_patch or {},
+            stage_errors=[_stage_error("embed_dense", dense_error)],
+            hybrid_error=hybrid_error,
+        )
+    stage_start = time.perf_counter()
+    try:
+        candidates = _milvus_manager.dense_retrieve(
+            dense_embedding=embeddings.dense,
+            top_k=candidate_k,
+            search_ef=MILVUS_SEARCH_EF,
+            filter_expr=filter_expr,
+        )
+    except Exception as exc:
+        timings["milvus_dense_fallback_ms"] = elapsed_ms(stage_start)
+        return CandidateRetrievalResult(
+            candidates=[],
+            retrieval_mode="failed",
+            trace_patch=trace_patch or {},
+            stage_errors=[_stage_error("dense_retrieve", str(exc))],
+            hybrid_error=hybrid_error,
+        )
+    timings["milvus_dense_fallback_ms"] = elapsed_ms(stage_start)
+    return CandidateRetrievalResult(
+        candidates=candidates,
+        retrieval_mode=retrieval_mode,
+        trace_patch=trace_patch or {},
+        hybrid_error=hybrid_error,
+    )
+
+
+def retrieve_global_candidates(
+    embeddings: QueryEmbeddings,
+    *,
+    candidate_k: int,
+    filter_expr: str,
+    timings: Dict[str, float],
+    trace_patch: dict[str, Any],
+) -> CandidateRetrievalResult:
+    if embeddings.dense is None:
+        return CandidateRetrievalResult(
+            candidates=[],
+            retrieval_mode="failed",
+            trace_patch=trace_patch,
+            stage_errors=[_stage_error("embed_dense", embeddings.dense_error or "dense embedding unavailable")],
+        )
+    if embeddings.sparse is None:
+        return _dense_candidate_result(
+            embeddings,
+            candidate_k=candidate_k,
+            filter_expr=filter_expr,
+            timings=timings,
+            retrieval_mode="dense_fallback",
+            trace_patch=trace_patch,
+        )
+
+    stage_start = time.perf_counter()
+    try:
+        candidates = _milvus_manager.hybrid_retrieve(
+            dense_embedding=embeddings.dense,
+            sparse_embedding=embeddings.sparse,
+            top_k=candidate_k,
+            rrf_k=MILVUS_RRF_K,
+            search_ef=MILVUS_SEARCH_EF,
+            sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
+            filter_expr=filter_expr,
+        )
+        timings["milvus_hybrid_ms"] = elapsed_ms(stage_start)
+        return CandidateRetrievalResult(candidates=candidates, retrieval_mode="hybrid", trace_patch=trace_patch)
+    except Exception as exc:
+        hybrid_error = str(exc)
+        timings["milvus_hybrid_ms"] = elapsed_ms(stage_start)
+        try:
+            result = _dense_candidate_result(
+                embeddings,
+                candidate_k=candidate_k,
+                filter_expr=filter_expr,
+                timings=timings,
+                trace_patch=trace_patch,
+                hybrid_error=hybrid_error,
+            )
+            result.stage_errors = [_stage_error("hybrid_retrieve", hybrid_error, "dense_retrieve")] + result.stage_errors
+            return result
+        except Exception as dense_exc:
+            return CandidateRetrievalResult(
+                candidates=[],
+                retrieval_mode="failed",
+                trace_patch=trace_patch,
+                stage_errors=[
+                    _stage_error("hybrid_retrieve", hybrid_error, "dense_retrieve"),
+                    _stage_error("dense_retrieve", str(dense_exc)),
+                ],
+                hybrid_error=hybrid_error,
+            )
+
+
+def retrieve_scoped_candidates(
+    embeddings: QueryEmbeddings,
+    *,
+    candidate_k: int,
+    filters: RetrievalFilters,
+    timings: Dict[str, float],
+    trace_patch: dict[str, Any],
+) -> CandidateRetrievalResult:
+    if embeddings.dense is None:
+        return CandidateRetrievalResult(
+            candidates=[],
+            retrieval_mode="failed",
+            trace_patch=trace_patch,
+            stage_errors=[_stage_error("embed_dense", embeddings.dense_error or "dense embedding unavailable")],
+        )
+    if embeddings.sparse is None:
+        return _dense_candidate_result(
+            embeddings,
+            candidate_k=candidate_k,
+            filter_expr=filters.scoped_filter or filters.effective_filter,
+            timings=timings,
+            retrieval_mode="dense_fallback_scoped",
+            trace_patch=trace_patch,
+        )
+
+    stage_start = time.perf_counter()
+
+    def _scoped_retrieve():
+        return _milvus_manager.hybrid_retrieve(
+            dense_embedding=embeddings.dense,
+            sparse_embedding=embeddings.sparse,
+            top_k=candidate_k,
+            rrf_k=MILVUS_RRF_K,
+            search_ef=MILVUS_SEARCH_EF,
+            sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
+            filter_expr=filters.scoped_filter,
+        )
+
+    def _global_retrieve():
+        return _milvus_manager.hybrid_retrieve(
+            dense_embedding=embeddings.dense,
+            sparse_embedding=embeddings.sparse,
+            top_k=candidate_k,
+            rrf_k=MILVUS_RRF_K,
+            search_ef=MILVUS_SEARCH_EF,
+            sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
+            filter_expr=filters.base_filter,
+        )
+
+    stage_errors: list[StageErrorDict] = []
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        scoped_future = pool.submit(_scoped_retrieve)
+        global_future = pool.submit(_global_retrieve)
+        try:
+            scoped = scoped_future.result()
+        except Exception as exc:
+            stage_errors.append(_stage_error("scoped_retrieve", str(exc), "global_only"))
+            scoped = []
+        try:
+            global_ = global_future.result()
+        except Exception as exc:
+            stage_errors.append(_stage_error("global_retrieve", str(exc), "scoped_only"))
+            global_ = []
+
+    timings["milvus_hybrid_ms"] = elapsed_ms(stage_start)
+    if not scoped and not global_:
+        try:
+            dense = _dense_candidate_result(
+                embeddings,
+                candidate_k=candidate_k,
+                filter_expr=filters.scoped_filter or filters.effective_filter,
+                timings=timings,
+                retrieval_mode="dense_fallback_scoped",
+                trace_patch=trace_patch,
+            )
+            dense.stage_errors.extend(stage_errors)
+            return dense
+        except Exception as exc:
+            stage_errors.append(_stage_error("dense_retrieve", str(exc)))
+            return CandidateRetrievalResult([], "failed", trace_patch, stage_errors)
+
+    scoped = _retrieval_annotate_scope_scores(scoped, filters.matched_files)
+    global_ = _retrieval_annotate_scope_scores(global_, filters.matched_files)
+    merged = _retrieval_weighted_rrf_merge(
+        [(scoped, 1.0 - DOC_SCOPE_GLOBAL_RESERVE_WEIGHT), (global_, DOC_SCOPE_GLOBAL_RESERVE_WEIGHT)],
+        rrf_k=MILVUS_RRF_K,
+    )
+    patch = dict(trace_patch)
+    patch["scoped_candidate_count"] = len(scoped)
+    patch["global_candidate_count"] = len(global_)
+    return CandidateRetrievalResult(merged, "hybrid_scoped", patch, stage_errors)
+
+
+def retrieve_layered_candidates(
+    embeddings: QueryEmbeddings,
+    *,
+    candidate_k: int,
+    filter_expr: str,
+    query_plan: QueryPlan,
+    scope_matched_files: list[tuple[str, float]],
+    timings: Dict[str, float],
+    trace_patch: dict[str, Any],
+    retrieval_mode: str,
+) -> CandidateRetrievalResult:
+    if embeddings.dense is None:
+        return CandidateRetrievalResult(
+            candidates=[],
+            retrieval_mode="failed",
+            trace_patch=trace_patch,
+            stage_errors=[_stage_error("embed_dense", embeddings.dense_error or "dense embedding unavailable")],
+        )
+    if embeddings.sparse is None:
+        return _dense_candidate_result(
+            embeddings,
+            candidate_k=candidate_k,
+            filter_expr=filter_expr,
+            timings=timings,
+            retrieval_mode="dense_fallback_scoped" if retrieval_mode == "hybrid_scoped" else "dense_fallback",
+            trace_patch=trace_patch,
+        )
+
+    stage_errors: list[StageErrorDict] = []
+    stage_start = time.perf_counter()
+    try:
+        candidates = _milvus_manager.split_retrieve(
+            embeddings.dense,
+            embeddings.sparse,
+            dense_top_k=_LAYERED_CONFIG.l0_dense_top_k,
+            sparse_top_k=_LAYERED_CONFIG.l0_sparse_top_k,
+            search_ef=MILVUS_SEARCH_EF,
+            sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
+            filter_expr=filter_expr,
+        )
+        if _LAYERED_CONFIG.l0_hybrid_guarantee_k > 0:
+            hybrid = _milvus_manager.hybrid_retrieve(
+                embeddings.dense,
+                embeddings.sparse,
+                top_k=_LAYERED_CONFIG.l0_hybrid_guarantee_k,
+                rrf_k=MILVUS_RRF_K,
+                search_ef=MILVUS_SEARCH_EF,
+                sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
+                filter_expr=filter_expr,
+            )
+            _append_hybrid_guarantee(candidates, hybrid)
+        if len(candidates) < _LAYERED_CONFIG.l0_fallback_pool_min:
+            hybrid = _milvus_manager.hybrid_retrieve(
+                embeddings.dense,
+                embeddings.sparse,
+                top_k=_LAYERED_CONFIG.l0_dense_top_k,
+                rrf_k=MILVUS_RRF_K,
+                search_ef=MILVUS_SEARCH_EF,
+                sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
+                filter_expr=filter_expr,
+            )
+            _append_hybrid_guarantee(candidates, hybrid)
+        timings["milvus_hybrid_ms"] = elapsed_ms(stage_start)
+    except Exception as exc:
+        stage_errors.append(_stage_error("layered_retrieve", str(exc), "standard_hybrid"))
+        fallback = retrieve_global_candidates(
+            embeddings,
+            candidate_k=candidate_k,
+            filter_expr=filter_expr,
+            timings=timings,
+            trace_patch=trace_patch,
+        )
+        if fallback.retrieval_mode == "hybrid" and retrieval_mode == "hybrid_scoped":
+            fallback.retrieval_mode = "hybrid_scoped"
+        elif fallback.retrieval_mode == "dense_fallback" and retrieval_mode == "hybrid_scoped":
+            fallback.retrieval_mode = "dense_fallback_scoped"
+        fallback.stage_errors = stage_errors + fallback.stage_errors
+        return fallback
+
+    if scope_matched_files:
+        candidates = _retrieval_annotate_scope_scores(candidates, scope_matched_files)
+    l1_start = time.perf_counter()
+    l0_candidate_count = len(candidates)
+    candidates = _build_l1_candidates(
+        candidates,
+        scope_matched_files=[filename for filename, _ in scope_matched_files],
+        anchor_chunk_ids=[doc.get("chunk_id", "") for doc in candidates if doc.get("anchor_id")],
+        config=_LAYERED_CONFIG,
+    )
+    timings["l1_prefilter_ms"] = elapsed_ms(l1_start)
+    patch = dict(trace_patch)
+    patch.update({
+        "v3_layers": ["query_plan", "layered_split", "l1_prefilter", "rerank", "structure_rerank"],
+        "candidate_strategy": "layered_split",
+        "rerank_strategy": "shared_pipeline",
+        "layered_l0_candidate_count": l0_candidate_count,
+        "layered_candidate_count": len(candidates),
+        "l1_candidate_count": len(candidates),
+    })
+    return CandidateRetrievalResult(candidates, retrieval_mode, patch, stage_errors)
+
+
+def apply_candidate_adjustments(
+    query_plan: QueryPlan,
+    candidates: list[dict],
+    trace_patch: dict[str, Any],
+) -> tuple[list[dict], dict[str, Any]]:
+    patch = dict(trace_patch)
+    adjusted = candidates
+    if QUERY_PLAN_ENABLED and query_plan.scope_mode == "boost":
+        adjusted = _apply_filename_boost(query_plan, adjusted)
+        boosted_count = sum(1 for doc in adjusted if doc.get("filename_boost_applied"))
+        patch["filename_boost_applied"] = boosted_count > 0
+        patch["filename_boosted_candidate_count"] = boosted_count
+    if QUERY_PLAN_ENABLED and HEADING_LEXICAL_ENABLED and query_plan.scope_mode in {"filter", "boost"} and query_plan.heading_hint:
+        adjusted = _apply_heading_lexical_scoring(query_plan=query_plan, candidates=adjusted)
+    return adjusted, patch
+
+
+def finish_retrieval_pipeline(*args, **kwargs) -> Dict[str, Any]:
+    return _finish_retrieval_pipeline(*args, **kwargs)
+
+
+def _failed_retrieval_response(
+    *,
+    top_k: int,
+    candidate_k: int,
+    timings: Dict[str, float],
+    stage_errors: list[StageErrorDict],
+    total_start: float,
+    context_files: list[str] | None,
+    trace_patch: dict[str, Any],
+    hybrid_error: str | None = None,
+    dense_error: str | None = None,
+) -> Dict[str, Any]:
+    timings["total_retrieve_ms"] = elapsed_ms(total_start)
+    return {
+        "docs": [],
+        "meta": build_retrieval_meta({
+            "rerank_enabled": _is_rerank_enabled(),
+            "rerank_applied": False,
+            "rerank_model": RERANK_MODEL,
+            "rerank_error": "retrieve_failed",
+            "hybrid_error": hybrid_error,
+            "dense_error": dense_error,
+            "retrieval_mode": "failed",
+            "candidate_k": candidate_k,
+            "candidate_count_before_rerank": 0,
+            "candidate_count_after_rerank": 0,
+            "candidate_count_after_structure_rerank": 0,
+            "rerank_top_n": _effective_rerank_top_n(top_k, 0),
+            "milvus_search_ef": MILVUS_SEARCH_EF,
+            "milvus_sparse_drop_ratio": MILVUS_SPARSE_DROP_RATIO,
+            "milvus_rrf_k": MILVUS_RRF_K,
+            "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
+            "index_profile": RAG_INDEX_PROFILE,
+            "context_files": context_files or [],
+            "structure_rerank_applied": False,
+            "structure_rerank_enabled": STRUCTURE_RERANK_ENABLED,
+            "structure_rerank_root_weight": STRUCTURE_RERANK_ROOT_WEIGHT,
+            "same_root_cap": SAME_ROOT_CAP,
+            "auto_merge_enabled": AUTO_MERGE_ENABLED,
+            "auto_merge_applied": False,
+            "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
+            "auto_merge_replaced_chunks": 0,
+            "auto_merge_steps": 0,
+            "candidate_count": 0,
+            "confidence_gate_enabled": CONFIDENCE_GATE_ENABLED,
+            "fallback_required": CONFIDENCE_GATE_ENABLED,
+            "confidence_reasons": ["retrieve_failed"] if CONFIDENCE_GATE_ENABLED else [],
+            "candidates_before_rerank": [],
+            "candidates_after_rerank": [],
+            "candidates_after_structure_rerank": [],
+            "timings": dict(_ensure_retrieve_timing_defaults(timings)),
+            "stage_errors": stage_errors,
+            **trace_patch,
+        }),
+    }
+
+
+def prepare_candidate_retrieval(
+    query: str,
+    top_k: int = 5,
+    context_files: list[str] | None = None,
+    *,
+    candidate_k_override: int | None = None,
+) -> PreparedRetrieval:
+    total_start = time.perf_counter()
+    timings: Dict[str, float] = {}
+    stage_errors: list[StageErrorDict] = []
+    request = RetrievalRequest(query=query, top_k=top_k, context_files=list(context_files or []))
+    candidate_k = candidate_k_override if candidate_k_override is not None else _effective_candidate_k(top_k)
+
+    query_plan = build_query_plan(request, timings, stage_errors)
+    search_query = query_plan.semantic_query
+    filters = build_retrieval_filters(query_plan, request.context_files)
+    embeddings = embed_search_query(search_query, timings, stage_errors)
+
+    use_scoped = (
+        QUERY_PLAN_ENABLED
+        and query_plan.scope_mode == "filter"
+        and bool(filters.matched_files)
+        and not filters.filename_filter
+        and bool(filters.scoped_filter)
+    )
+    if use_scoped:
+        trace_patch = _query_plan_trace(
+            query_plan,
+            semantic_query=search_query,
+            v3_layers=["query_plan", "doc_resolver", "scoped_hybrid", "weighted_rrf", "rerank", "structure_rerank"],
+            scope_filter_applied=True,
+        )
+        if _LAYERED_CONFIG.enabled:
+            result = retrieve_layered_candidates(
+                embeddings,
+                candidate_k=candidate_k,
+                filter_expr=filters.scoped_filter or filters.effective_filter,
+                query_plan=query_plan,
+                scope_matched_files=filters.matched_files,
+                timings=timings,
+                trace_patch=trace_patch,
+                retrieval_mode="hybrid_scoped",
+            )
+        else:
+            result = retrieve_scoped_candidates(
+                embeddings,
+                candidate_k=candidate_k,
+                filters=filters,
+                timings=timings,
+                trace_patch=trace_patch,
+            )
+    else:
+        trace_patch = _query_plan_trace(
+            query_plan,
+            semantic_query=search_query,
+            v3_layers=["query_plan", "global_hybrid", "rerank", "structure_rerank"],
+            scope_filter_applied=False,
+        )
+        if _LAYERED_CONFIG.enabled:
+            result = retrieve_layered_candidates(
+                embeddings,
+                candidate_k=candidate_k,
+                filter_expr=filters.effective_filter,
+                query_plan=query_plan,
+                scope_matched_files=filters.matched_files,
+                timings=timings,
+                trace_patch=trace_patch,
+                retrieval_mode="hybrid",
+            )
+        else:
+            result = retrieve_global_candidates(
+                embeddings,
+                candidate_k=candidate_k,
+                filter_expr=filters.effective_filter,
+                timings=timings,
+                trace_patch=trace_patch,
+            )
+
+    stage_errors.extend(result.stage_errors)
+    retrieved, trace_patch = apply_candidate_adjustments(query_plan, result.candidates, result.trace_patch)
+    retrieval_mode = result.retrieval_mode
+    if trace_patch.get("filename_boost_applied") and retrieval_mode == "hybrid":
+        retrieval_mode = "hybrid_boosted"
+    elif trace_patch.get("filename_boost_applied") and retrieval_mode == "dense_fallback":
+        retrieval_mode = "dense_fallback_boosted"
+
+    dense_error = None
+    if retrieval_mode == "failed":
+        for item in stage_errors:
+            if item.get("stage") in {"dense_retrieve", "embed_dense"}:
+                dense_error = item.get("error")
+
+    return PreparedRetrieval(
+        query=query,
+        search_query=search_query,
+        top_k=top_k,
+        candidate_k=candidate_k,
+        context_files=request.context_files,
+        query_plan=query_plan,
+        filters=filters,
+        candidates=retrieved,
+        retrieval_mode=retrieval_mode,
+        trace_patch=trace_patch,
+        timings=timings,
+        stage_errors=stage_errors,
+        total_start=total_start,
+        hybrid_error=result.hybrid_error,
+        dense_error=dense_error,
+    )
+
+
+def retrieve_candidate_pool(
+    query: str,
+    top_k: int = 5,
+    context_files: list[str] | None = None,
+    *,
+    candidate_k: int | None = None,
+) -> Dict[str, Any]:
+    prepared = prepare_candidate_retrieval(
+        query,
+        top_k=top_k,
+        context_files=context_files,
+        candidate_k_override=candidate_k,
+    )
+    prepared.timings["total_retrieve_ms"] = elapsed_ms(prepared.total_start)
+    meta = build_retrieval_meta(
+        {
+            "retrieval_mode": prepared.retrieval_mode,
+            "candidate_k": prepared.candidate_k,
+            "candidate_only": True,
+            "candidate_count": len(prepared.candidates),
+            "candidate_count_before_rerank": len(prepared.candidates),
+            "candidate_count_after_rerank": 0,
+            "candidate_count_after_structure_rerank": 0,
+            "rerank_enabled": _is_rerank_enabled(),
+            "rerank_applied": False,
+            "rerank_model": RERANK_MODEL,
+            "rerank_error": None,
+            "hybrid_error": prepared.hybrid_error,
+            "dense_error": prepared.dense_error,
+            "milvus_search_ef": MILVUS_SEARCH_EF,
+            "milvus_sparse_drop_ratio": MILVUS_SPARSE_DROP_RATIO,
+            "milvus_rrf_k": MILVUS_RRF_K,
+            "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
+            "index_profile": RAG_INDEX_PROFILE,
+            "context_files": prepared.context_files,
+            "candidates_before_rerank": _candidate_trace(prepared.candidates),
+            "candidates_after_rerank": [],
+            "candidates_after_structure_rerank": [],
+            "timings": dict(_ensure_retrieve_timing_defaults(prepared.timings)),
+            "stage_errors": prepared.stage_errors,
+            **prepared.trace_patch,
+        }
+    )
+    return {"candidates": prepared.candidates, "meta": meta}
+
+
 def retrieve_context_documents(filenames: list[str] | None, limit_per_file: int = 8) -> Dict[str, Any]:
     """Fetch representative indexed chunks directly from attached filenames."""
     clean_files = []
@@ -862,445 +1530,34 @@ def retrieve_context_documents(filenames: list[str] | None, limit_per_file: int 
 
 
 def retrieve_documents(query: str, top_k: int = 5, context_files: list[str] | None = None) -> Dict[str, Any]:
-    total_start = time.perf_counter()
-    timings: Dict[str, float] = {}
-    stage_errors: list[Dict[str, str]] = []
-    current_stage = "query_plan"
-    candidate_k = _effective_candidate_k(top_k)
+    prepared = prepare_candidate_retrieval(query, top_k=top_k, context_files=context_files)
 
-    # --- QueryPlan parsing ---
-    stage_start = time.perf_counter()
-    if QUERY_PLAN_ENABLED:
-        filename_registry = get_filename_registry(_milvus_manager, cache)
-        query_plan = parse_query_plan(
-            raw_query=query,
-            filename_registry=filename_registry,
-            context_files=context_files,
-        )
-    else:
-        query_plan = QueryPlan(
-            raw_query=query,
-            semantic_query=query,
-            clean_query=query,
-            doc_hints=[],
-            matched_files=[],
-            scope_mode="none",
-            heading_hint=None,
-            anchors=[],
-            model_numbers=[],
-            intent_type=None,
-            route="global_hybrid",
-        )
-    timings["query_plan_ms"] = elapsed_ms(stage_start)
-
-    # Determine the search query (semantic_query, not raw_query)
-    search_query = query_plan.semantic_query
-
-    # Build base filter
-    base_filter = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
-
-    # Context files override (highest priority)
-    filename_filter = _build_filename_filter(context_files)
-    if filename_filter:
-        base_filter = f"{base_filter} and {filename_filter}"
-
-    # --- Scoped + Global parallel retrieval ---
-    routable_matched_files = [
-        (filename, score)
-        for filename, score in query_plan.matched_files
-        if score >= DOC_SCOPE_MATCH_BOOST
-    ]
-
-    if QUERY_PLAN_ENABLED and query_plan.scope_mode == "filter" and routable_matched_files and not filename_filter:
-        # Build scoped filter
-        matched_filenames = [f for f, _ in routable_matched_files]
-        scoped_filename_filter = _build_filename_filter(matched_filenames)
-        scoped_filter = f"{base_filter} and {scoped_filename_filter}"
-
-        # Compute embeddings in parallel: dense (GPU) and sparse (CPU) run concurrently
-        current_stage = "embed_dense"
-        try:
-            embed_start = time.perf_counter()
-            with ThreadPoolExecutor(max_workers=2) as embed_pool:
-                dense_future = embed_pool.submit(_embedding_service.get_embeddings, [search_query])
-                sparse_future = embed_pool.submit(_embedding_service.get_sparse_embedding, search_query)
-                dense_embedding = dense_future.result()[0]
-                sparse_embedding = sparse_future.result()
-            timings["embed_dense_ms"] = elapsed_ms(embed_start)
-            timings["embed_sparse_ms"] = 0.0
-        except Exception as exc:
-            stage_errors.append(_stage_error(current_stage, str(exc), "dense_retrieve"))
-            # Fall through to error handling below
-            dense_embedding = None
-            sparse_embedding = None
-
-        if dense_embedding is not None and sparse_embedding is not None:
-            if _LAYERED_RERANK_ENABLED:
-                # --- Layered L0: split retrieval ---
-                current_stage = "layered_retrieve"
-                stage_start = time.perf_counter()
-
-                candidates = _milvus_manager.split_retrieve(
-                    dense_embedding, sparse_embedding,
-                    dense_top_k=_L0_DENSE_TOP_K,
-                    sparse_top_k=_L0_SPARSE_TOP_K,
-                    search_ef=MILVUS_SEARCH_EF,
-                    sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
-                    filter_expr=scoped_filter,
-                )
-                # Hybrid guarantee
-                if _L0_HYBRID_GUARANTEE_K > 0:
-                    hybrid = _milvus_manager.hybrid_retrieve(
-                        dense_embedding, sparse_embedding,
-                        top_k=_L0_HYBRID_GUARANTEE_K,
-                        rrf_k=MILVUS_RRF_K,
-                        search_ef=MILVUS_SEARCH_EF,
-                        sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
-                        filter_expr=scoped_filter,
-                    )
-                    existing_ids = {c.get("chunk_id") for c in candidates}
-                    for h in hybrid:
-                        if h.get("chunk_id") not in existing_ids:
-                            h["dense_rank"] = None
-                            h["sparse_rank"] = None
-                            h["dense_score"] = 0.0
-                            h["sparse_score"] = 0.0
-                            h["in_dense"] = False
-                            h["in_sparse"] = False
-                            candidates.append(h)
-                # Fallback check
-                if len(candidates) < _L0_FALLBACK_POOL_MIN:
-                    extra = _milvus_manager.hybrid_retrieve(
-                        dense_embedding, sparse_embedding,
-                        top_k=_L0_DENSE_TOP_K,
-                        rrf_k=MILVUS_RRF_K,
-                        search_ef=MILVUS_SEARCH_EF,
-                        sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
-                        filter_expr=scoped_filter,
-                    )
-                    existing_ids = {c.get("chunk_id") for c in candidates}
-                    for h in extra:
-                        if h.get("chunk_id") not in existing_ids:
-                            h["dense_rank"] = None
-                            h["sparse_rank"] = None
-                            h["dense_score"] = 0.0
-                            h["sparse_score"] = 0.0
-                            h["in_dense"] = False
-                            h["in_sparse"] = False
-                            candidates.append(h)
-
-                timings["milvus_hybrid_ms"] = elapsed_ms(stage_start)
-                retrieved = _retrieval_annotate_scope_scores(candidates, routable_matched_files)
-
-                scope_trace = {
-                    "query_plan": query_plan.to_dict(),
-                    "query_plan_enabled": QUERY_PLAN_ENABLED,
-                    "semantic_query": query_plan.semantic_query,
-                    "index_profile": RAG_INDEX_PROFILE,
-                    "v3_layers": ["query_plan", "doc_resolver", "layered_split", "l1_prefilter", "adaptive_ce", "weak_structure"],
-                    "scope_mode": query_plan.scope_mode,
-                    "query_route": query_plan.route,
-                    "layered_candidate_count": len(retrieved),
-                    "scope_filter_applied": True,
-                    "filename_boost_applied": False,
-                    "matched_files_top3": [(f, round(s, 3)) for f, s in query_plan.matched_files[:3]],
-                    "doc_scope_match_ratios": [round(s, 3) for _, s in query_plan.matched_files[:3]],
-                }
-            else:
-                # Parallel scoped + global retrieval via ThreadPoolExecutor
-                current_stage = "scoped_global_retrieve"
-                stage_start = time.perf_counter()
-
-                def _scoped_retrieve():
-                    return _milvus_manager.hybrid_retrieve(
-                        dense_embedding=dense_embedding,
-                        sparse_embedding=sparse_embedding,
-                        top_k=candidate_k,
-                        rrf_k=MILVUS_RRF_K,
-                        search_ef=MILVUS_SEARCH_EF,
-                        sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
-                        filter_expr=scoped_filter,
-                    )
-
-                def _global_retrieve():
-                    return _milvus_manager.hybrid_retrieve(
-                        dense_embedding=dense_embedding,
-                        sparse_embedding=sparse_embedding,
-                        top_k=candidate_k,
-                        rrf_k=MILVUS_RRF_K,
-                        search_ef=MILVUS_SEARCH_EF,
-                        sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
-                        filter_expr=base_filter,
-                    )
-
-                with ThreadPoolExecutor(max_workers=2) as pool:
-                    scoped_future = pool.submit(_scoped_retrieve)
-                    global_future = pool.submit(_global_retrieve)
-                    try:
-                        scoped = scoped_future.result()
-                    except Exception as exc:
-                        stage_errors.append(_stage_error("scoped_retrieve", str(exc), "global_only"))
-                        scoped = []
-                    try:
-                        global_ = global_future.result()
-                    except Exception as exc:
-                        stage_errors.append(_stage_error("global_retrieve", str(exc), "scoped_only"))
-                        global_ = []
-
-                timings["milvus_hybrid_ms"] = elapsed_ms(stage_start)
-                scoped = _retrieval_annotate_scope_scores(scoped, routable_matched_files)
-                global_ = _retrieval_annotate_scope_scores(global_, routable_matched_files)
-
-                # Weighted RRF merge: scoped 80%, global 20%
-                retrieved = _retrieval_weighted_rrf_merge(
-                    [(scoped, 1.0 - DOC_SCOPE_GLOBAL_RESERVE_WEIGHT), (global_, DOC_SCOPE_GLOBAL_RESERVE_WEIGHT)],
-                    rrf_k=MILVUS_RRF_K,
-                )
-
-                scope_trace = {
-                    "query_plan": query_plan.to_dict(),
-                    "query_plan_enabled": QUERY_PLAN_ENABLED,
-                    "semantic_query": query_plan.semantic_query,
-                    "index_profile": RAG_INDEX_PROFILE,
-                    "v3_layers": ["query_plan", "doc_resolver", "scoped_hybrid", "weighted_rrf", "rerank", "structure_rerank"],
-                    "scope_mode": query_plan.scope_mode,
-                    "query_route": query_plan.route,
-                    "scoped_candidate_count": len(scoped),
-                    "global_candidate_count": len(global_),
-                    "scope_filter_applied": True,
-                    "filename_boost_applied": False,
-                    "matched_files_top3": [(f, round(s, 3)) for f, s in query_plan.matched_files[:3]],
-                    "doc_scope_match_ratios": [round(s, 3) for _, s in query_plan.matched_files[:3]],
-                }
-        else:
-            # Embedding failed, fall through to error handling
-            retrieved = []
-            scope_trace = {
-                "query_plan": query_plan.to_dict(),
-                "query_plan_enabled": QUERY_PLAN_ENABLED,
-                "semantic_query": query_plan.semantic_query,
-                "index_profile": RAG_INDEX_PROFILE,
-                "v3_layers": ["query_plan", "doc_resolver", "scoped_hybrid", "embedding_failed"],
-                "scope_mode": query_plan.scope_mode,
-                "query_route": query_plan.route,
-                "scope_filter_applied": False,
-                "filename_boost_applied": False,
-                "embedding_failed": True,
-            }
-
-        # Apply heading lexical scoring if enabled
-        if QUERY_PLAN_ENABLED and HEADING_LEXICAL_ENABLED and query_plan.scope_mode in {"filter", "boost"} and query_plan.heading_hint:
-            retrieved = _apply_heading_lexical_scoring(
-                query_plan=query_plan,
-                candidates=retrieved,
-            )
-
-        # Continue with rerank + structure_rerank + confidence
-        scope_mode = "hybrid_scoped" if scope_trace.get("scope_filter_applied") else "hybrid"
-        return _finish_retrieval_pipeline(
-            query=query,
-            search_query=search_query,
-            retrieved=retrieved,
+    if prepared.failed:
+        return _failed_retrieval_response(
             top_k=top_k,
-            candidate_k=candidate_k,
-            timings=timings,
-            stage_errors=stage_errors,
-            total_start=total_start,
-            extra_trace=scope_trace,
-            query_plan=query_plan,
-            context_files=context_files,
-            base_filter=base_filter,
-            retrieval_mode=scope_mode,
+            candidate_k=prepared.candidate_k,
+            timings=prepared.timings,
+            stage_errors=prepared.stage_errors,
+            total_start=prepared.total_start,
+            context_files=prepared.context_files,
+            trace_patch=prepared.trace_patch,
+            hybrid_error=prepared.hybrid_error,
+            dense_error=prepared.dense_error,
         )
 
-    # --- Standard (non-scoped) retrieval path ---
-    filter_expr = base_filter
-    if filename_filter:
-        filter_expr = f"{filter_expr} and {filename_filter}"
-    hybrid_error = None
-    global_trace = {
-        "query_plan": query_plan.to_dict(),
-        "query_plan_enabled": QUERY_PLAN_ENABLED,
-        "semantic_query": query_plan.semantic_query,
-        "index_profile": RAG_INDEX_PROFILE,
-        "v3_layers": ["query_plan", "global_hybrid", "rerank", "structure_rerank"],
-        "scope_mode": query_plan.scope_mode,
-        "query_route": query_plan.route,
-        "scope_filter_applied": False,
-        "filename_boost_applied": False,
-        "filename_boosted_candidate_count": 0,
-        "matched_files_top3": [(f, round(s, 3)) for f, s in query_plan.matched_files[:3]],
-        "doc_scope_match_ratios": [round(s, 3) for _, s in query_plan.matched_files[:3]],
-    }
-    try:
-        embed_start = time.perf_counter()
-        with ThreadPoolExecutor(max_workers=2) as embed_pool:
-            dense_future = embed_pool.submit(_embedding_service.get_embeddings, [search_query])
-            sparse_future = embed_pool.submit(_embedding_service.get_sparse_embedding, search_query)
-            dense_embedding = dense_future.result()[0]
-            sparse_embedding = sparse_future.result()
-        timings["embed_dense_ms"] = elapsed_ms(embed_start)
-        timings["embed_sparse_ms"] = 0.0
-
-        current_stage = "hybrid_retrieve"
-        stage_start = time.perf_counter()
-        if _LAYERED_RERANK_ENABLED:
-            # --- Layered L0: split retrieval ---
-            retrieved = _milvus_manager.split_retrieve(
-                dense_embedding, sparse_embedding,
-                dense_top_k=_L0_DENSE_TOP_K,
-                sparse_top_k=_L0_SPARSE_TOP_K,
-                search_ef=MILVUS_SEARCH_EF,
-                sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
-                filter_expr=filter_expr,
-            )
-            if _L0_HYBRID_GUARANTEE_K > 0:
-                hybrid = _milvus_manager.hybrid_retrieve(
-                    dense_embedding, sparse_embedding,
-                    top_k=_L0_HYBRID_GUARANTEE_K,
-                    rrf_k=MILVUS_RRF_K,
-                    search_ef=MILVUS_SEARCH_EF,
-                    sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
-                    filter_expr=filter_expr,
-                )
-                existing_ids = {c.get("chunk_id") for c in retrieved}
-                for h in hybrid:
-                    if h.get("chunk_id") not in existing_ids:
-                        h["dense_rank"] = None
-                        h["sparse_rank"] = None
-                        h["dense_score"] = 0.0
-                        h["sparse_score"] = 0.0
-                        h["in_dense"] = False
-                        h["in_sparse"] = False
-                        retrieved.append(h)
-            if len(retrieved) < _L0_FALLBACK_POOL_MIN:
-                extra = _milvus_manager.hybrid_retrieve(
-                    dense_embedding, sparse_embedding,
-                    top_k=_L0_DENSE_TOP_K,
-                    rrf_k=MILVUS_RRF_K,
-                    search_ef=MILVUS_SEARCH_EF,
-                    sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
-                    filter_expr=filter_expr,
-                )
-                existing_ids = {c.get("chunk_id") for c in retrieved}
-                for h in extra:
-                    if h.get("chunk_id") not in existing_ids:
-                        h["dense_rank"] = None
-                        h["sparse_rank"] = None
-                        h["dense_score"] = 0.0
-                        h["sparse_score"] = 0.0
-                        h["in_dense"] = False
-                        h["in_sparse"] = False
-                        retrieved.append(h)
-            global_trace["v3_layers"] = ["query_plan", "layered_split", "l1_prefilter", "adaptive_ce", "weak_structure"]
-        else:
-            retrieved = _milvus_manager.hybrid_retrieve(
-                dense_embedding=dense_embedding,
-                sparse_embedding=sparse_embedding,
-                top_k=candidate_k,
-                rrf_k=MILVUS_RRF_K,
-                search_ef=MILVUS_SEARCH_EF,
-                sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
-                filter_expr=filter_expr,
-            )
-        timings["milvus_hybrid_ms"] = elapsed_ms(stage_start)
-
-        if QUERY_PLAN_ENABLED and query_plan.scope_mode == "boost":
-            retrieved = _apply_filename_boost(query_plan, retrieved)
-            boosted_count = sum(1 for doc in retrieved if doc.get("filename_boost_applied"))
-            global_trace["filename_boost_applied"] = boosted_count > 0
-            global_trace["filename_boosted_candidate_count"] = boosted_count
-
-        retrieval_mode = "hybrid_boosted" if global_trace.get("filename_boost_applied") else "hybrid"
-        return _finish_retrieval_pipeline(
-            query, search_query, retrieved, top_k,
-            candidate_k, timings, stage_errors, total_start,
-            extra_trace=global_trace,
-            context_files=context_files,
-            retrieval_mode=retrieval_mode,
-        )
-    except Exception as exc:
-        hybrid_error = str(exc)
-        stage_errors.append(_stage_error(current_stage, hybrid_error, "dense_retrieve"))
-        try:
-            current_stage = "embed_dense_fallback"
-            stage_start = time.perf_counter()
-            dense_embeddings = _embedding_service.get_embeddings([search_query])
-            dense_embedding = dense_embeddings[0]
-            fallback_dense_ms = elapsed_ms(stage_start)
-            if "embed_dense_ms" in timings:
-                timings["embed_dense_fallback_ms"] = fallback_dense_ms
-            else:
-                timings["embed_dense_ms"] = fallback_dense_ms
-
-            current_stage = "dense_retrieve"
-            stage_start = time.perf_counter()
-            retrieved = _milvus_manager.dense_retrieve(
-                dense_embedding=dense_embedding,
-                top_k=candidate_k,
-                search_ef=MILVUS_SEARCH_EF,
-                filter_expr=filter_expr,
-            )
-            timings["milvus_dense_fallback_ms"] = elapsed_ms(stage_start)
-
-            if QUERY_PLAN_ENABLED and query_plan.scope_mode == "boost":
-                retrieved = _apply_filename_boost(query_plan, retrieved)
-                boosted_count = sum(1 for doc in retrieved if doc.get("filename_boost_applied"))
-                global_trace["filename_boost_applied"] = boosted_count > 0
-                global_trace["filename_boosted_candidate_count"] = boosted_count
-
-            retrieval_mode = "dense_fallback_boosted" if global_trace.get("filename_boost_applied") else "dense_fallback"
-            return _finish_retrieval_pipeline(
-                query, search_query, retrieved, top_k,
-                candidate_k, timings, stage_errors, total_start,
-                extra_trace=global_trace,
-                context_files=context_files,
-                retrieval_mode=retrieval_mode,
-                hybrid_error=hybrid_error,
-            )
-        except Exception as dense_exc:
-            dense_error = str(dense_exc)
-            stage_errors.append(_stage_error(current_stage, dense_error))
-            timings["total_retrieve_ms"] = elapsed_ms(total_start)
-            return {
-                "docs": [],
-                "meta": {
-                    "rerank_enabled": _is_rerank_enabled(),
-                    "rerank_applied": False,
-                    "rerank_model": RERANK_MODEL,
-                    "rerank_error": "retrieve_failed",
-                    "hybrid_error": hybrid_error,
-                    "dense_error": dense_error,
-                    "retrieval_mode": "failed",
-                    "candidate_k": candidate_k,
-                    "candidate_count_before_rerank": 0,
-                    "candidate_count_after_rerank": 0,
-                    "candidate_count_after_structure_rerank": 0,
-                    "rerank_top_n": _effective_rerank_top_n(top_k, 0),
-                    "milvus_search_ef": MILVUS_SEARCH_EF,
-                    "milvus_sparse_drop_ratio": MILVUS_SPARSE_DROP_RATIO,
-                    "milvus_rrf_k": MILVUS_RRF_K,
-                    "leaf_retrieve_level": LEAF_RETRIEVE_LEVEL,
-                    "index_profile": RAG_INDEX_PROFILE,
-                    "context_files": context_files or [],
-                    "structure_rerank_applied": False,
-                    "structure_rerank_enabled": STRUCTURE_RERANK_ENABLED,
-                    "structure_rerank_root_weight": STRUCTURE_RERANK_ROOT_WEIGHT,
-                    "same_root_cap": SAME_ROOT_CAP,
-                    "auto_merge_enabled": AUTO_MERGE_ENABLED,
-                    "auto_merge_applied": False,
-                    "auto_merge_threshold": AUTO_MERGE_THRESHOLD,
-                    "auto_merge_replaced_chunks": 0,
-                    "auto_merge_steps": 0,
-                    "candidate_count": 0,
-                    "confidence_gate_enabled": CONFIDENCE_GATE_ENABLED,
-                    "fallback_required": CONFIDENCE_GATE_ENABLED,
-                    "confidence_reasons": ["retrieve_failed"] if CONFIDENCE_GATE_ENABLED else [],
-                    "candidates_before_rerank": [],
-                    "candidates_after_rerank": [],
-                    "candidates_after_structure_rerank": [],
-                    "timings": dict(_ensure_retrieve_timing_defaults(timings)),
-                    "stage_errors": stage_errors,
-                    **global_trace,
-                },
-            }
+    return finish_retrieval_pipeline(
+        query=query,
+        search_query=prepared.search_query,
+        retrieved=prepared.candidates,
+        top_k=top_k,
+        candidate_k=prepared.candidate_k,
+        timings=prepared.timings,
+        stage_errors=prepared.stage_errors,
+        total_start=prepared.total_start,
+        extra_trace=prepared.trace_patch,
+        query_plan=prepared.query_plan,
+        context_files=prepared.context_files,
+        base_filter=prepared.filters.base_filter,
+        retrieval_mode=prepared.retrieval_mode,
+        hybrid_error=prepared.hybrid_error,
+    )
