@@ -35,6 +35,11 @@ from backend.rag.rerank import (
     rerank_pair_text as _rerank_pair_text_impl,
     rerank_rrf_score as _rerank_rrf_score_impl,
 )
+from backend.rag.candidate_strategy import (
+    CandidateStrategy,
+    CandidateStrategyFamily,
+    candidate_strategy_trace,
+)
 from backend.rag.retrieval import (
     annotate_scope_scores as _retrieval_annotate_scope_scores,
     apply_filename_boost as _retrieval_apply_filename_boost,
@@ -919,6 +924,18 @@ def _query_plan_trace(
     }
 
 
+def _with_candidate_strategy(
+    trace_patch: dict[str, Any] | None,
+    strategy: CandidateStrategy,
+    family: CandidateStrategyFamily,
+    *,
+    fallback_from: CandidateStrategy | None = None,
+) -> dict[str, Any]:
+    patch = dict(trace_patch or {})
+    patch.update(candidate_strategy_trace(strategy, family, fallback_from=fallback_from))
+    return patch
+
+
 def _append_hybrid_guarantee(candidates: list[dict], hybrid: list[dict]) -> None:
     existing_ids = {candidate.get("chunk_id") for candidate in candidates}
     for item in hybrid:
@@ -943,13 +960,22 @@ def _dense_candidate_result(
     retrieval_mode: str = "dense_fallback",
     trace_patch: dict[str, Any] | None = None,
     hybrid_error: str | None = None,
+    candidate_strategy: CandidateStrategy = CandidateStrategy.DENSE_FALLBACK,
+    candidate_strategy_family: CandidateStrategyFamily = CandidateStrategyFamily.STANDARD,
+    candidate_strategy_fallback_from: CandidateStrategy | None = None,
 ) -> CandidateRetrievalResult:
+    strategy_trace = _with_candidate_strategy(
+        trace_patch,
+        candidate_strategy,
+        candidate_strategy_family,
+        fallback_from=candidate_strategy_fallback_from,
+    )
     if embeddings.dense is None:
         dense_error = embeddings.dense_error or "dense embedding unavailable"
         return CandidateRetrievalResult(
             candidates=[],
             retrieval_mode="failed",
-            trace_patch=trace_patch or {},
+            trace_patch=strategy_trace,
             stage_errors=[_stage_error("embed_dense", dense_error)],
             hybrid_error=hybrid_error,
         )
@@ -966,7 +992,7 @@ def _dense_candidate_result(
         return CandidateRetrievalResult(
             candidates=[],
             retrieval_mode="failed",
-            trace_patch=trace_patch or {},
+            trace_patch=strategy_trace,
             stage_errors=[_stage_error("dense_retrieve", str(exc))],
             hybrid_error=hybrid_error,
         )
@@ -974,7 +1000,7 @@ def _dense_candidate_result(
     return CandidateRetrievalResult(
         candidates=candidates,
         retrieval_mode=retrieval_mode,
-        trace_patch=trace_patch or {},
+        trace_patch=strategy_trace,
         hybrid_error=hybrid_error,
     )
 
@@ -986,12 +1012,18 @@ def retrieve_global_candidates(
     filter_expr: str,
     timings: Dict[str, float],
     trace_patch: dict[str, Any],
+    candidate_strategy: CandidateStrategy = CandidateStrategy.GLOBAL_HYBRID,
 ) -> CandidateRetrievalResult:
+    strategy_trace = _with_candidate_strategy(
+        trace_patch,
+        candidate_strategy,
+        CandidateStrategyFamily.STANDARD,
+    )
     if embeddings.dense is None:
         return CandidateRetrievalResult(
             candidates=[],
             retrieval_mode="failed",
-            trace_patch=trace_patch,
+            trace_patch=strategy_trace,
             stage_errors=[_stage_error("embed_dense", embeddings.dense_error or "dense embedding unavailable")],
         )
     if embeddings.sparse is None:
@@ -1002,6 +1034,7 @@ def retrieve_global_candidates(
             timings=timings,
             retrieval_mode="dense_fallback",
             trace_patch=trace_patch,
+            candidate_strategy_fallback_from=candidate_strategy,
         )
 
     stage_start = time.perf_counter()
@@ -1016,7 +1049,7 @@ def retrieve_global_candidates(
             filter_expr=filter_expr,
         )
         timings["milvus_hybrid_ms"] = elapsed_ms(stage_start)
-        return CandidateRetrievalResult(candidates=candidates, retrieval_mode="hybrid", trace_patch=trace_patch)
+        return CandidateRetrievalResult(candidates=candidates, retrieval_mode="hybrid", trace_patch=strategy_trace)
     except Exception as exc:
         hybrid_error = str(exc)
         timings["milvus_hybrid_ms"] = elapsed_ms(stage_start)
@@ -1028,6 +1061,7 @@ def retrieve_global_candidates(
                 timings=timings,
                 trace_patch=trace_patch,
                 hybrid_error=hybrid_error,
+                candidate_strategy_fallback_from=candidate_strategy,
             )
             result.stage_errors = [_stage_error("hybrid_retrieve", hybrid_error, "dense_retrieve")] + result.stage_errors
             return result
@@ -1035,7 +1069,7 @@ def retrieve_global_candidates(
             return CandidateRetrievalResult(
                 candidates=[],
                 retrieval_mode="failed",
-                trace_patch=trace_patch,
+                trace_patch=strategy_trace,
                 stage_errors=[
                     _stage_error("hybrid_retrieve", hybrid_error, "dense_retrieve"),
                     _stage_error("dense_retrieve", str(dense_exc)),
@@ -1052,11 +1086,16 @@ def retrieve_scoped_candidates(
     timings: Dict[str, float],
     trace_patch: dict[str, Any],
 ) -> CandidateRetrievalResult:
+    strategy_trace = _with_candidate_strategy(
+        trace_patch,
+        CandidateStrategy.SCOPED_HYBRID,
+        CandidateStrategyFamily.STANDARD,
+    )
     if embeddings.dense is None:
         return CandidateRetrievalResult(
             candidates=[],
             retrieval_mode="failed",
-            trace_patch=trace_patch,
+            trace_patch=strategy_trace,
             stage_errors=[_stage_error("embed_dense", embeddings.dense_error or "dense embedding unavailable")],
         )
     if embeddings.sparse is None:
@@ -1067,6 +1106,7 @@ def retrieve_scoped_candidates(
             timings=timings,
             retrieval_mode="dense_fallback_scoped",
             trace_patch=trace_patch,
+            candidate_strategy_fallback_from=CandidateStrategy.SCOPED_HYBRID,
         )
 
     stage_start = time.perf_counter()
@@ -1118,6 +1158,7 @@ def retrieve_scoped_candidates(
                 timings=timings,
                 retrieval_mode="dense_fallback_scoped",
                 trace_patch=trace_patch,
+                candidate_strategy_fallback_from=CandidateStrategy.SCOPED_HYBRID,
             )
             dense.stage_errors.extend(stage_errors)
             return dense
@@ -1132,6 +1173,7 @@ def retrieve_scoped_candidates(
         rrf_k=MILVUS_RRF_K,
     )
     patch = dict(trace_patch)
+    patch.update(strategy_trace)
     patch["scoped_candidate_count"] = len(scoped)
     patch["global_candidate_count"] = len(global_)
     return CandidateRetrievalResult(merged, "hybrid_scoped", patch, stage_errors)
@@ -1148,11 +1190,16 @@ def retrieve_layered_candidates(
     trace_patch: dict[str, Any],
     retrieval_mode: str,
 ) -> CandidateRetrievalResult:
+    layered_trace = _with_candidate_strategy(
+        trace_patch,
+        CandidateStrategy.LAYERED_SPLIT,
+        CandidateStrategyFamily.LAYERED,
+    )
     if embeddings.dense is None:
         return CandidateRetrievalResult(
             candidates=[],
             retrieval_mode="failed",
-            trace_patch=trace_patch,
+            trace_patch=layered_trace,
             stage_errors=[_stage_error("embed_dense", embeddings.dense_error or "dense embedding unavailable")],
         )
     if embeddings.sparse is None:
@@ -1163,6 +1210,7 @@ def retrieve_layered_candidates(
             timings=timings,
             retrieval_mode="dense_fallback_scoped" if retrieval_mode == "hybrid_scoped" else "dense_fallback",
             trace_patch=trace_patch,
+            candidate_strategy_fallback_from=CandidateStrategy.LAYERED_SPLIT,
         )
 
     stage_errors: list[StageErrorDict] = []
@@ -1202,13 +1250,16 @@ def retrieve_layered_candidates(
         timings["milvus_hybrid_ms"] = elapsed_ms(stage_start)
     except Exception as exc:
         stage_errors.append(_stage_error("layered_retrieve", str(exc), "standard_hybrid"))
+        fallback_strategy = CandidateStrategy.SCOPED_HYBRID if retrieval_mode == "hybrid_scoped" else CandidateStrategy.GLOBAL_HYBRID
         fallback = retrieve_global_candidates(
             embeddings,
             candidate_k=candidate_k,
             filter_expr=filter_expr,
             timings=timings,
             trace_patch=trace_patch,
+            candidate_strategy=fallback_strategy,
         )
+        fallback.trace_patch["candidate_strategy_fallback_from"] = CandidateStrategy.LAYERED_SPLIT.value
         if fallback.retrieval_mode == "hybrid" and retrieval_mode == "hybrid_scoped":
             fallback.retrieval_mode = "hybrid_scoped"
         elif fallback.retrieval_mode == "dense_fallback" and retrieval_mode == "hybrid_scoped":
@@ -1227,11 +1278,9 @@ def retrieve_layered_candidates(
         config=_LAYERED_CONFIG,
     )
     timings["l1_prefilter_ms"] = elapsed_ms(l1_start)
-    patch = dict(trace_patch)
+    patch = dict(layered_trace)
     patch.update({
         "v3_layers": ["query_plan", "layered_split", "l1_prefilter", "rerank", "structure_rerank"],
-        "candidate_strategy": "layered_split",
-        "rerank_strategy": "shared_pipeline",
         "layered_l0_candidate_count": l0_candidate_count,
         "layered_candidate_count": len(candidates),
         "l1_candidate_count": len(candidates),
