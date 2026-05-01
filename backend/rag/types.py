@@ -43,12 +43,18 @@ class RetrievalMeta(TypedDict, total=False):
     deep_executed: bool
     plan_applied: bool
     retrieval_mode: str
-    candidate_strategy: str
-    candidate_strategy_family: str
+    pipeline_stage_model: str
+    candidate_strategy_requested: str
+    candidate_strategy_effective: str
     candidate_strategy_version: str
+    candidate_strategy_detail: str
     candidate_strategy_fallback_from: str
-    rerank_strategy: str
+    candidate_strategy_warnings: list[str]
+    rerank_contract: str
     rerank_contract_version: str
+    rerank_execution_mode: str
+    postprocess_contract: str
+    postprocess_contract_version: str
     candidate_k: int | None
     candidate_count_before_rerank: int
     candidate_count_after_rerank: int

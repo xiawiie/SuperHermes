@@ -1,4 +1,4 @@
-"""Tests for layered rerank: split_retrieve, L1 scoring, file-aware prefilter."""
+﻿"""Tests for layered candidate collection: split retrieval and file-aware L1 selection."""
 from __future__ import annotations
 
 import pytest
@@ -110,13 +110,13 @@ def test_split_retrieve_returns_dual_scores():
 # Task 2: L1 scoring functions
 # ---------------------------------------------------------------------------
 
-from backend.rag.layered_rerank import (
-    build_l1_candidates,
+from backend.rag.layered_candidates import (
+    LayeredCandidatePreset,
+    build_layered_l1_candidates,
     file_aggregate_score,
     l1_chunk_score,
     rank_score,
 )
-from backend.rag.runtime_config import LayeredRerankConfig
 
 
 class TestRankScore:
@@ -196,7 +196,7 @@ class TestBuildL1Candidates:
 
     def test_output_within_min_max(self):
         candidates = self._make_candidates()
-        result = build_l1_candidates(
+        result = build_layered_l1_candidates(
             candidates,
             scope_matched_files=[],
             anchor_chunk_ids=[],
@@ -207,7 +207,7 @@ class TestBuildL1Candidates:
 
     def test_scope_files_always_included(self):
         candidates = self._make_candidates()
-        result = build_l1_candidates(
+        result = build_layered_l1_candidates(
             candidates,
             scope_matched_files=["file2.pdf"],
             anchor_chunk_ids=[],
@@ -220,7 +220,7 @@ class TestBuildL1Candidates:
     def test_anchor_chunks_always_included(self):
         candidates = self._make_candidates()
         candidates[7]["anchor_id"] = "1.2.3"
-        result = build_l1_candidates(
+        result = build_layered_l1_candidates(
             candidates,
             scope_matched_files=[],
             anchor_chunk_ids=["file1::p2"],
@@ -232,7 +232,7 @@ class TestBuildL1Candidates:
 
     def test_explicit_config_controls_scope_cap_without_module_reload(self):
         candidates = self._make_candidates(n_files=2, chunks_per_file=4)
-        config = LayeredRerankConfig(
+        config = LayeredCandidatePreset(
             l1_top_files=0,
             l1_chunks_per_scope_file=1,
             l1_slot_c_max=10,
@@ -240,7 +240,7 @@ class TestBuildL1Candidates:
             l1_max_candidates=10,
         )
 
-        result = build_l1_candidates(
+        result = build_layered_l1_candidates(
             candidates,
             scope_matched_files=["file1.pdf"],
             anchor_chunk_ids=[],

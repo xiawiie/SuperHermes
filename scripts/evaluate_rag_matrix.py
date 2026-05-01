@@ -1338,6 +1338,18 @@ def evaluate_sample(record: dict, variant: str, top_k: int, mode: str = "retriev
 def _summarize_trace(meta: dict) -> dict[str, Any]:
     keys = [
         "retrieval_mode",
+        "pipeline_stage_model",
+        "candidate_strategy_requested",
+        "candidate_strategy_effective",
+        "candidate_strategy_version",
+        "candidate_strategy_detail",
+        "candidate_strategy_fallback_from",
+        "candidate_strategy_warnings",
+        "rerank_contract",
+        "rerank_contract_version",
+        "rerank_execution_mode",
+        "postprocess_contract",
+        "postprocess_contract_version",
         "candidate_k",
         "candidate_count_before_rerank",
         "candidate_count_after_rerank",

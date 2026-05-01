@@ -36,8 +36,9 @@ from backend.rag.rerank import (
     rerank_rrf_score as _rerank_rrf_score_impl,
 )
 from backend.rag.candidate_strategy import (
-    CandidateStrategy,
-    CandidateStrategyFamily,
+    CandidateStrategyDetail,
+    CandidateStrategyId,
+    RerankExecutionMode,
     candidate_strategy_trace,
 )
 from backend.rag.retrieval import (
@@ -48,10 +49,12 @@ from backend.rag.retrieval import (
     dedupe_docs as _retrieval_dedupe_docs,
     weighted_rrf_merge as _retrieval_weighted_rrf_merge,
 )
-from backend.rag.layered_rerank import (
-    build_l1_candidates as _build_l1_candidates,
+from backend.rag.layered_candidates import (
+    DEFAULT_LAYERED_CANDIDATE_PRESET,
+    LayeredCandidatePreset,
+    build_layered_l1_candidates as _build_layered_l1_candidates,
 )
-from backend.rag.runtime_config import LayeredRerankConfig, RagRuntimeConfig, load_runtime_config
+from backend.rag.runtime_config import RagRuntimeConfig, load_runtime_config
 from backend.rag.trace import build_retrieval_meta, candidate_identity, trace_text_hash
 from backend.rag.types import StageError, StageErrorDict
 from backend.rag.profile_naming import resolve_dtype as resolve_dtype
@@ -63,7 +66,7 @@ from backend.config import (
 
 
 _RUNTIME_CONFIG = load_runtime_config()
-_LAYERED_CONFIG = _RUNTIME_CONFIG.layered
+_LAYERED_CANDIDATE_PRESET = DEFAULT_LAYERED_CANDIDATE_PRESET
 
 RERANK_MODEL = _RUNTIME_CONFIG.rerank_model
 RERANK_PROVIDER = _RUNTIME_CONFIG.rerank_provider
@@ -126,8 +129,8 @@ class RetrievalRequest:
     config: RagRuntimeConfig = field(default_factory=lambda: _RUNTIME_CONFIG)
 
     @property
-    def layered_config(self) -> LayeredRerankConfig:
-        return self.config.layered
+    def layered_candidate_preset(self) -> LayeredCandidatePreset:
+        return _LAYERED_CANDIDATE_PRESET
 
 
 @dataclass(frozen=True)
@@ -248,6 +251,16 @@ def _apply_rerank_score_fusion(indexed_scores: list[tuple[int, float]], docs_for
     )
 
 
+def _rerank_execution_mode_from_meta(rerank_meta: dict[str, Any]) -> RerankExecutionMode:
+    if rerank_meta.get("rerank_applied"):
+        return RerankExecutionMode.EXECUTED
+    if not rerank_meta.get("rerank_enabled"):
+        return RerankExecutionMode.DISABLED
+    if rerank_meta.get("rerank_error"):
+        return RerankExecutionMode.FAILED_WITH_RANKED_CANDIDATES
+    return RerankExecutionMode.DISABLED
+
+
 def _finish_retrieval_pipeline(
     query: str,
     search_query: str,
@@ -278,6 +291,14 @@ def _finish_retrieval_pipeline(
         rerank_meta["ce_cache_hit"] = rerank_meta.get("rerank_cache_hit", False)
         rerank_meta["ce_latency_ms"] = rerank_meta.get("ce_predict_ms", timings.get("rerank_ms", 0.0))
         rerank_meta["model_warmup_state"] = "warm" if _local_reranker is not None else "cold"
+        rerank_meta.update(
+            candidate_strategy_trace(
+                requested=CandidateStrategyId(str((extra_trace or {}).get("candidate_strategy_requested") or CandidateStrategyId.STANDARD.value)),
+                effective=CandidateStrategyId(str((extra_trace or {}).get("candidate_strategy_effective") or CandidateStrategyId.STANDARD.value)),
+                detail=CandidateStrategyDetail(str((extra_trace or {}).get("candidate_strategy_detail") or CandidateStrategyDetail.GLOBAL_HYBRID.value)),
+                rerank_execution_mode=_rerank_execution_mode_from_meta(rerank_meta),
+            )
+        )
 
         current_stage = "structure_rerank"
         stage_start = time.perf_counter()
@@ -327,6 +348,16 @@ def _finish_retrieval_pipeline(
                 "rerank_applied": False,
                 "rerank_model": RERANK_MODEL,
                 "rerank_error": str(exc),
+                "rerank_execution_mode": (
+                    RerankExecutionMode.FAILED_BEFORE_RERANK.value
+                    if current_stage == "rerank"
+                    else RerankExecutionMode.FAILED_WITH_RANKED_CANDIDATES.value
+                ),
+                "pipeline_stage_model": "rag-l0-l3-v1",
+                "rerank_contract": "shared_rerank",
+                "rerank_contract_version": "shared-rerank-v2",
+                "postprocess_contract": "shared_retrieval_postprocess",
+                "postprocess_contract_version": "shared-postprocess-v1",
                 "hybrid_error": hybrid_error,
                 "dense_error": None,
                 "retrieval_mode": "failed",
@@ -926,13 +957,25 @@ def _query_plan_trace(
 
 def _with_candidate_strategy(
     trace_patch: dict[str, Any] | None,
-    strategy: CandidateStrategy,
-    family: CandidateStrategyFamily,
     *,
-    fallback_from: CandidateStrategy | None = None,
+    requested: CandidateStrategyId | None = None,
+    effective: CandidateStrategyId,
+    detail: CandidateStrategyDetail,
+    fallback_from: CandidateStrategyId | None = None,
+    rerank_execution_mode: RerankExecutionMode | None = None,
 ) -> dict[str, Any]:
     patch = dict(trace_patch or {})
-    patch.update(candidate_strategy_trace(strategy, family, fallback_from=fallback_from))
+    requested = requested or _RUNTIME_CONFIG.candidate_strategy.strategy
+    patch.update(
+        candidate_strategy_trace(
+            requested=requested,
+            effective=effective,
+            detail=detail,
+            fallback_from=fallback_from,
+            rerank_execution_mode=rerank_execution_mode,
+            warnings=_RUNTIME_CONFIG.candidate_strategy.warnings,
+        )
+    )
     return patch
 
 
@@ -960,14 +1003,14 @@ def _dense_candidate_result(
     retrieval_mode: str = "dense_fallback",
     trace_patch: dict[str, Any] | None = None,
     hybrid_error: str | None = None,
-    candidate_strategy: CandidateStrategy = CandidateStrategy.DENSE_FALLBACK,
-    candidate_strategy_family: CandidateStrategyFamily = CandidateStrategyFamily.STANDARD,
-    candidate_strategy_fallback_from: CandidateStrategy | None = None,
+    candidate_strategy_requested: CandidateStrategyId | None = None,
+    candidate_strategy_fallback_from: CandidateStrategyId | None = None,
 ) -> CandidateRetrievalResult:
     strategy_trace = _with_candidate_strategy(
         trace_patch,
-        candidate_strategy,
-        candidate_strategy_family,
+        requested=candidate_strategy_requested,
+        effective=CandidateStrategyId.DENSE_FALLBACK,
+        detail=CandidateStrategyDetail.DENSE_FALLBACK,
         fallback_from=candidate_strategy_fallback_from,
     )
     if embeddings.dense is None:
@@ -1012,12 +1055,14 @@ def retrieve_global_candidates(
     filter_expr: str,
     timings: Dict[str, float],
     trace_patch: dict[str, Any],
-    candidate_strategy: CandidateStrategy = CandidateStrategy.GLOBAL_HYBRID,
+    candidate_strategy_requested: CandidateStrategyId | None = None,
+    candidate_strategy_detail: CandidateStrategyDetail = CandidateStrategyDetail.GLOBAL_HYBRID,
 ) -> CandidateRetrievalResult:
     strategy_trace = _with_candidate_strategy(
         trace_patch,
-        candidate_strategy,
-        CandidateStrategyFamily.STANDARD,
+        requested=candidate_strategy_requested,
+        effective=CandidateStrategyId.STANDARD,
+        detail=candidate_strategy_detail,
     )
     if embeddings.dense is None:
         return CandidateRetrievalResult(
@@ -1034,7 +1079,8 @@ def retrieve_global_candidates(
             timings=timings,
             retrieval_mode="dense_fallback",
             trace_patch=trace_patch,
-            candidate_strategy_fallback_from=candidate_strategy,
+            candidate_strategy_requested=candidate_strategy_requested,
+            candidate_strategy_fallback_from=CandidateStrategyId.STANDARD,
         )
 
     stage_start = time.perf_counter()
@@ -1061,7 +1107,8 @@ def retrieve_global_candidates(
                 timings=timings,
                 trace_patch=trace_patch,
                 hybrid_error=hybrid_error,
-                candidate_strategy_fallback_from=candidate_strategy,
+                candidate_strategy_requested=candidate_strategy_requested,
+                candidate_strategy_fallback_from=CandidateStrategyId.STANDARD,
             )
             result.stage_errors = [_stage_error("hybrid_retrieve", hybrid_error, "dense_retrieve")] + result.stage_errors
             return result
@@ -1088,8 +1135,8 @@ def retrieve_scoped_candidates(
 ) -> CandidateRetrievalResult:
     strategy_trace = _with_candidate_strategy(
         trace_patch,
-        CandidateStrategy.SCOPED_HYBRID,
-        CandidateStrategyFamily.STANDARD,
+        effective=CandidateStrategyId.STANDARD,
+        detail=CandidateStrategyDetail.SCOPED_HYBRID,
     )
     if embeddings.dense is None:
         return CandidateRetrievalResult(
@@ -1106,7 +1153,7 @@ def retrieve_scoped_candidates(
             timings=timings,
             retrieval_mode="dense_fallback_scoped",
             trace_patch=trace_patch,
-            candidate_strategy_fallback_from=CandidateStrategy.SCOPED_HYBRID,
+            candidate_strategy_fallback_from=CandidateStrategyId.STANDARD,
         )
 
     stage_start = time.perf_counter()
@@ -1158,7 +1205,7 @@ def retrieve_scoped_candidates(
                 timings=timings,
                 retrieval_mode="dense_fallback_scoped",
                 trace_patch=trace_patch,
-                candidate_strategy_fallback_from=CandidateStrategy.SCOPED_HYBRID,
+                candidate_strategy_fallback_from=CandidateStrategyId.STANDARD,
             )
             dense.stage_errors.extend(stage_errors)
             return dense
@@ -1179,7 +1226,7 @@ def retrieve_scoped_candidates(
     return CandidateRetrievalResult(merged, "hybrid_scoped", patch, stage_errors)
 
 
-def retrieve_layered_candidates(
+def retrieve_layered_candidate_pool(
     embeddings: QueryEmbeddings,
     *,
     candidate_k: int,
@@ -1192,8 +1239,9 @@ def retrieve_layered_candidates(
 ) -> CandidateRetrievalResult:
     layered_trace = _with_candidate_strategy(
         trace_patch,
-        CandidateStrategy.LAYERED_SPLIT,
-        CandidateStrategyFamily.LAYERED,
+        requested=CandidateStrategyId.LAYERED,
+        effective=CandidateStrategyId.LAYERED,
+        detail=CandidateStrategyDetail.LAYERED_SPLIT,
     )
     if embeddings.dense is None:
         return CandidateRetrievalResult(
@@ -1210,7 +1258,8 @@ def retrieve_layered_candidates(
             timings=timings,
             retrieval_mode="dense_fallback_scoped" if retrieval_mode == "hybrid_scoped" else "dense_fallback",
             trace_patch=trace_patch,
-            candidate_strategy_fallback_from=CandidateStrategy.LAYERED_SPLIT,
+            candidate_strategy_requested=CandidateStrategyId.LAYERED,
+            candidate_strategy_fallback_from=CandidateStrategyId.LAYERED,
         )
 
     stage_errors: list[StageErrorDict] = []
@@ -1219,28 +1268,28 @@ def retrieve_layered_candidates(
         candidates = _milvus_manager.split_retrieve(
             embeddings.dense,
             embeddings.sparse,
-            dense_top_k=_LAYERED_CONFIG.l0_dense_top_k,
-            sparse_top_k=_LAYERED_CONFIG.l0_sparse_top_k,
+            dense_top_k=_LAYERED_CANDIDATE_PRESET.l0_dense_top_k,
+            sparse_top_k=_LAYERED_CANDIDATE_PRESET.l0_sparse_top_k,
             search_ef=MILVUS_SEARCH_EF,
             sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
             filter_expr=filter_expr,
         )
-        if _LAYERED_CONFIG.l0_hybrid_guarantee_k > 0:
+        if _LAYERED_CANDIDATE_PRESET.l0_hybrid_guarantee_k > 0:
             hybrid = _milvus_manager.hybrid_retrieve(
                 embeddings.dense,
                 embeddings.sparse,
-                top_k=_LAYERED_CONFIG.l0_hybrid_guarantee_k,
+                top_k=_LAYERED_CANDIDATE_PRESET.l0_hybrid_guarantee_k,
                 rrf_k=MILVUS_RRF_K,
                 search_ef=MILVUS_SEARCH_EF,
                 sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
                 filter_expr=filter_expr,
             )
             _append_hybrid_guarantee(candidates, hybrid)
-        if len(candidates) < _LAYERED_CONFIG.l0_fallback_pool_min:
+        if len(candidates) < _LAYERED_CANDIDATE_PRESET.l0_fallback_pool_min:
             hybrid = _milvus_manager.hybrid_retrieve(
                 embeddings.dense,
                 embeddings.sparse,
-                top_k=_LAYERED_CONFIG.l0_dense_top_k,
+                top_k=_LAYERED_CANDIDATE_PRESET.l0_dense_top_k,
                 rrf_k=MILVUS_RRF_K,
                 search_ef=MILVUS_SEARCH_EF,
                 sparse_drop_ratio=MILVUS_SPARSE_DROP_RATIO,
@@ -1250,16 +1299,21 @@ def retrieve_layered_candidates(
         timings["milvus_hybrid_ms"] = elapsed_ms(stage_start)
     except Exception as exc:
         stage_errors.append(_stage_error("layered_retrieve", str(exc), "standard_hybrid"))
-        fallback_strategy = CandidateStrategy.SCOPED_HYBRID if retrieval_mode == "hybrid_scoped" else CandidateStrategy.GLOBAL_HYBRID
+        fallback_detail = (
+            CandidateStrategyDetail.SCOPED_HYBRID
+            if retrieval_mode == "hybrid_scoped"
+            else CandidateStrategyDetail.GLOBAL_HYBRID
+        )
         fallback = retrieve_global_candidates(
             embeddings,
             candidate_k=candidate_k,
             filter_expr=filter_expr,
             timings=timings,
             trace_patch=trace_patch,
-            candidate_strategy=fallback_strategy,
+            candidate_strategy_requested=CandidateStrategyId.LAYERED,
+            candidate_strategy_detail=fallback_detail,
         )
-        fallback.trace_patch["candidate_strategy_fallback_from"] = CandidateStrategy.LAYERED_SPLIT.value
+        fallback.trace_patch["candidate_strategy_fallback_from"] = CandidateStrategyId.LAYERED.value
         if fallback.retrieval_mode == "hybrid" and retrieval_mode == "hybrid_scoped":
             fallback.retrieval_mode = "hybrid_scoped"
         elif fallback.retrieval_mode == "dense_fallback" and retrieval_mode == "hybrid_scoped":
@@ -1271,11 +1325,11 @@ def retrieve_layered_candidates(
         candidates = _retrieval_annotate_scope_scores(candidates, scope_matched_files)
     l1_start = time.perf_counter()
     l0_candidate_count = len(candidates)
-    candidates = _build_l1_candidates(
+    candidates = _build_layered_l1_candidates(
         candidates,
         scope_matched_files=[filename for filename, _ in scope_matched_files],
         anchor_chunk_ids=[doc.get("chunk_id", "") for doc in candidates if doc.get("anchor_id")],
-        config=_LAYERED_CONFIG,
+        config=_LAYERED_CANDIDATE_PRESET,
     )
     timings["l1_prefilter_ms"] = elapsed_ms(l1_start)
     patch = dict(layered_trace)
@@ -1329,6 +1383,12 @@ def _failed_retrieval_response(
             "rerank_applied": False,
             "rerank_model": RERANK_MODEL,
             "rerank_error": "retrieve_failed",
+            "rerank_execution_mode": RerankExecutionMode.FAILED_BEFORE_RERANK.value,
+            "pipeline_stage_model": "rag-l0-l3-v1",
+            "rerank_contract": "shared_rerank",
+            "rerank_contract_version": "shared-rerank-v2",
+            "postprocess_contract": "shared_retrieval_postprocess",
+            "postprocess_contract_version": "shared-postprocess-v1",
             "hybrid_error": hybrid_error,
             "dense_error": dense_error,
             "retrieval_mode": "failed",
@@ -1378,6 +1438,9 @@ def prepare_candidate_retrieval(
     stage_errors: list[StageErrorDict] = []
     request = RetrievalRequest(query=query, top_k=top_k, context_files=list(context_files or []))
     candidate_k = candidate_k_override if candidate_k_override is not None else _effective_candidate_k(top_k)
+    use_layered = request.config.candidate_strategy.strategy == CandidateStrategyId.LAYERED
+    for warning in request.config.candidate_strategy.warnings:
+        stage_errors.append(_stage_error("candidate_strategy_config", warning, "standard_candidate_strategy"))
 
     query_plan = build_query_plan(request, timings, stage_errors)
     search_query = query_plan.semantic_query
@@ -1398,8 +1461,8 @@ def prepare_candidate_retrieval(
             v3_layers=["query_plan", "doc_resolver", "scoped_hybrid", "weighted_rrf", "rerank", "structure_rerank"],
             scope_filter_applied=True,
         )
-        if _LAYERED_CONFIG.enabled:
-            result = retrieve_layered_candidates(
+        if use_layered:
+            result = retrieve_layered_candidate_pool(
                 embeddings,
                 candidate_k=candidate_k,
                 filter_expr=filters.scoped_filter or filters.effective_filter,
@@ -1424,8 +1487,8 @@ def prepare_candidate_retrieval(
             v3_layers=["query_plan", "global_hybrid", "rerank", "structure_rerank"],
             scope_filter_applied=False,
         )
-        if _LAYERED_CONFIG.enabled:
-            result = retrieve_layered_candidates(
+        if use_layered:
+            result = retrieve_layered_candidate_pool(
                 embeddings,
                 candidate_k=candidate_k,
                 filter_expr=filters.effective_filter,
@@ -1504,6 +1567,11 @@ def retrieve_candidate_pool(
             "rerank_applied": False,
             "rerank_model": RERANK_MODEL,
             "rerank_error": None,
+            "rerank_execution_mode": RerankExecutionMode.SKIPPED_CANDIDATE_ONLY.value,
+            "rerank_contract": "shared_rerank",
+            "rerank_contract_version": "shared-rerank-v2",
+            "postprocess_contract": "shared_retrieval_postprocess",
+            "postprocess_contract_version": "shared-postprocess-v1",
             "hybrid_error": prepared.hybrid_error,
             "dense_error": prepared.dense_error,
             "milvus_search_ef": MILVUS_SEARCH_EF,

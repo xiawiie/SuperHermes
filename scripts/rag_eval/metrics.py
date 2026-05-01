@@ -84,6 +84,16 @@ def _percentile_values(values: list[float], percentile: float) -> float | None:
     return values[lower] * (1.0 - weight) + values[upper] * weight
 
 
+def _trace_distribution(rows: list[dict], key: str) -> dict[str, int]:
+    return dict(
+        Counter(
+            str((row.get("trace") or {}).get(key))
+            for row in rows
+            if (row.get("trace") or {}).get(key)
+        )
+    )
+
+
 def _build_pairwise(rows: list[dict], old_variant: str, new_variant: str) -> dict[str, int]:
     by_sample: dict[str, dict[str, dict]] = defaultdict(dict)
     for row in rows:
@@ -192,6 +202,18 @@ def summarize_results(
             "avg_ce_input_count": _average(variant_rows, "ce_input_count"),
             "p50_ce_latency_ms": _percentile_metric(variant_rows, "ce_latency_ms", 0.50),
             "p95_ce_latency_ms": _percentile_metric(variant_rows, "ce_latency_ms", 0.95),
+            "candidate_strategy_requested_distribution": _trace_distribution(
+                variant_rows,
+                "candidate_strategy_requested",
+            ),
+            "candidate_strategy_effective_distribution": _trace_distribution(
+                variant_rows,
+                "candidate_strategy_effective",
+            ),
+            "rerank_execution_mode_distribution": _trace_distribution(
+                variant_rows,
+                "rerank_execution_mode",
+            ),
             "avg_latency_ms": _average_field(variant_rows, "latency_ms"),
             "p50_latency_ms": _percentile_field(variant_rows, "latency_ms", 0.50),
             "p95_latency_ms": _percentile_field(variant_rows, "latency_ms", 0.95),

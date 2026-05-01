@@ -32,6 +32,12 @@ def _variant_label(summary: dict[str, Any], variant: str) -> str:
     return str(label)
 
 
+def _fmt_distribution(value: Any) -> str:
+    if not isinstance(value, dict) or not value:
+        return "-"
+    return ", ".join(f"{key}={value[key]}" for key in sorted(value))
+
+
 def render_summary_markdown(summary: dict[str, Any]) -> str:
     lines = [
         "# RAG Matrix Evaluation Summary",
@@ -176,6 +182,29 @@ def render_summary_markdown(summary: dict[str, Any]) -> str:
                     input_avg=fmt_metric(metrics.get("avg_ce_input_count")),
                     p50=fmt_metric(metrics.get("p50_ce_latency_ms")),
                     p95=fmt_metric(metrics.get("p95_ce_latency_ms")),
+                )
+            )
+
+    if any(
+        metrics.get("candidate_strategy_requested_distribution")
+        or metrics.get("candidate_strategy_effective_distribution")
+        or metrics.get("rerank_execution_mode_distribution")
+        for metrics in summary.get("variants", {}).values()
+    ):
+        lines.extend([
+            "",
+            "## Candidate Strategy",
+            "",
+            "| Variant | Requested | Effective | RerankExecution |",
+            "| --- | --- | --- | --- |",
+        ])
+        for variant, metrics in summary.get("variants", {}).items():
+            lines.append(
+                "| {variant} | {requested} | {effective} | {rerank_mode} |".format(
+                    variant=_variant_label(summary, variant),
+                    requested=_fmt_distribution(metrics.get("candidate_strategy_requested_distribution")),
+                    effective=_fmt_distribution(metrics.get("candidate_strategy_effective_distribution")),
+                    rerank_mode=_fmt_distribution(metrics.get("rerank_execution_mode_distribution")),
                 )
             )
 

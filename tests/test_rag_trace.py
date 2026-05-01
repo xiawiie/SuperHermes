@@ -44,11 +44,16 @@ class RagTraceTests(unittest.TestCase):
                 "timings": {"total_retrieve_ms": 12.0},
                 "stage_errors": [],
                 "fallback_required": False,
-                "candidate_strategy": "layered_split",
-                "candidate_strategy_family": "layered",
-                "candidate_strategy_version": "candidate-strategy-v1",
-                "rerank_strategy": "shared_pipeline",
-                "rerank_contract_version": "shared-rerank-v1",
+                "pipeline_stage_model": "rag-l0-l3-v1",
+                "candidate_strategy_requested": "layered",
+                "candidate_strategy_effective": "layered",
+                "candidate_strategy_version": "candidate-strategy-v2",
+                "candidate_strategy_detail": "layered_split",
+                "rerank_contract": "shared_rerank",
+                "rerank_contract_version": "shared-rerank-v2",
+                "rerank_execution_mode": "executed",
+                "postprocess_contract": "shared_retrieval_postprocess",
+                "postprocess_contract_version": "shared-postprocess-v1",
             }
         )
 
@@ -80,9 +85,11 @@ class RagTraceTests(unittest.TestCase):
 
         self.assertEqual(trace["retrieval_stage"], "expanded")
         self.assertEqual(trace["attached_context_count"], 1)
-        self.assertEqual(trace["candidate_strategy"], "layered_split")
-        self.assertEqual(trace["candidate_strategy_family"], "layered")
-        self.assertEqual(trace["rerank_strategy"], "shared_pipeline")
+        self.assertEqual(trace["candidate_strategy_requested"], "layered")
+        self.assertEqual(trace["candidate_strategy_effective"], "layered")
+        self.assertEqual(trace["candidate_strategy_detail"], "layered_split")
+        self.assertEqual(trace["rerank_contract"], "shared_rerank")
+        self.assertEqual(trace["rerank_execution_mode"], "executed")
         self.assertEqual(trace["timings"]["expanded_retrieve_ms"], 3.0)
         self.assertEqual(trace["stage_errors"][0]["stage"], "rerank")
         self.assertEqual(trace["stage_errors"][0]["fallback_to"], "ranked_candidates")
