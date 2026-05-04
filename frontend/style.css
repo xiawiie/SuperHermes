@@ -1,25 +1,21 @@
 :root {
-    /* ─── 宣纸水墨 · 不羁自由 · 开心 ─── */
-    /* 纸色：暖米宣纸，高明度 → 开阔自由 */
+    /* 宣纸水墨 · 不羁自由 · 开心 */
     --ink-bg: #F4ECD8;
     --ink-bg-soft: #ECE0C4;
     --ink-surface: rgba(255, 249, 235, 0.86);
     --ink-surface-solid: #FBF5E3;
     --ink-panel: rgba(42, 32, 26, 0.055);
 
-    /* 墨色：焦墨/浓墨/淡墨/极淡 → 对比稳重 */
     --paper: #1F1B16;
     --paper-soft: #3F362C;
     --paper-muted: #6E6054;
     --paper-faint: rgba(42, 32, 26, 0.08);
 
-    /* 朱砂：主 CTA + 印章红，文化幸运色 */
     --cinnabar: #C2402C;
     --cinnabar-strong: #D95E3B;
     --cinnabar-soft: rgba(194, 64, 44, 0.16);
     --seal-red: #8E2A1D;
 
-    /* 新增：藤黄（happy 情绪锚点）/ 花青（冷色平衡）/ 石绿（克制生机）*/
     --gamboge: #D9A441;
     --gamboge-soft: rgba(217, 164, 65, 0.18);
     --indigo-ink: #425A78;
@@ -27,7 +23,6 @@
     --bamboo: #6B8F73;
     --bamboo-soft: rgba(107, 143, 115, 0.14);
 
-    /* 分隔线 / 阴影：墨色偏色，替代纯黑，更自然 */
     --line: rgba(42, 32, 26, 0.1);
     --line-strong: rgba(42, 32, 26, 0.18);
     --line-brush: rgba(42, 32, 26, 0.28);
@@ -53,26 +48,29 @@
 html,
 body {
     width: 100%;
-    height: 100%;
-    overflow: hidden;
+    min-height: 100%;
+}
+
+html {
+    overflow-x: hidden;
+    overflow-y: auto;
+    scroll-behavior: smooth;
+    scrollbar-color: rgba(42, 32, 26, 0.38) rgba(255, 249, 235, 0.7);
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
 }
 
 body {
+    min-height: 100%;
+    overflow-x: hidden;
     font-family: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
     background:
-        /* 朱砂印痕·左上 */
         radial-gradient(ellipse 42rem 30rem at 12% 6%, rgba(194, 64, 44, 0.09), transparent 60%),
-        /* 藤黄·右上 阳光锚点 */
         radial-gradient(ellipse 38rem 26rem at 90% 10%, rgba(217, 164, 65, 0.12), transparent 58%),
-        /* 花青·左下 冷色平衡 */
         radial-gradient(ellipse 48rem 34rem at 18% 102%, rgba(66, 90, 120, 0.09), transparent 60%),
-        /* 石绿·右下 生机点缀 */
         radial-gradient(ellipse 34rem 22rem at 92% 96%, rgba(107, 143, 115, 0.08), transparent 60%),
-        /* 宣纸横向纤维 */
         repeating-linear-gradient(95deg, rgba(42, 32, 26, 0.022) 0 1px, transparent 1px 9px),
-        /* 宣纸竖向纤维 */
         repeating-linear-gradient(6deg, rgba(42, 32, 26, 0.012) 0 1px, transparent 1px 14px),
-        /* 暖米纸底渐变 */
         linear-gradient(135deg, #FBF5E3 0%, #F4ECD8 42%, #EDDFBC 100%);
     color: var(--paper);
 }
@@ -99,8 +97,8 @@ select:focus-visible {
 .app-shell {
     position: relative;
     width: 100vw;
-    height: 100vh;
-    overflow: hidden;
+    min-height: 100vh;
+    overflow: visible;
 }
 
 .app-shell::before {
@@ -108,7 +106,6 @@ select:focus-visible {
     position: fixed;
     inset: 0;
     pointer-events: none;
-    /* 顶部朱砂晕染 + 底部水墨沉潜，叠加到宣纸 */
     background:
         linear-gradient(rgba(194, 64, 44, 0.025), rgba(42, 32, 26, 0)),
         radial-gradient(circle at 50% 100%, rgba(42, 32, 26, 0.06), transparent 36rem);
@@ -273,8 +270,8 @@ select:focus-visible {
 .workspace {
     position: relative;
     z-index: 1;
-    height: 100vh;
-    overflow: hidden;
+    min-height: 100vh;
+    overflow: visible;
 }
 
 .upload-status-bar {
@@ -489,10 +486,8 @@ select:focus-visible {
 
 .chat-scroll {
     width: min(var(--content-max), calc(100vw - 40px));
-    height: calc(100vh - 224px);
+    min-height: calc(100vh - 224px);
     margin: 0 auto;
-    overflow-y: auto;
-    scroll-behavior: smooth;
     padding: 18px 8px 36px;
 }
 
@@ -1096,13 +1091,13 @@ select:focus-visible {
 
 .knowledge-view {
     padding: 100px 20px 40px;
-    overflow-y: auto;
 }
 
 .panel-shell {
     width: min(980px, calc(100vw - 40px));
     margin: 0 auto;
     border-radius: 18px;
+    overflow: visible;
 }
 
 .upload-zone {
@@ -1265,12 +1260,14 @@ select:focus-visible {
 }
 
 .document-row {
+    align-items: flex-start;
     padding: 11px;
 }
 
 .document-type {
     width: 38px;
     height: 38px;
+    flex: 0 0 38px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1285,6 +1282,18 @@ select:focus-visible {
     display: flex;
     flex-direction: column;
     gap: 3px;
+}
+
+.document-main strong {
+    max-width: 100%;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    line-height: 1.35;
+}
+
+.document-main small {
+    line-height: 1.45;
 }
 
 .empty-state {
@@ -1315,15 +1324,46 @@ select:focus-visible {
     margin-bottom: 10px;
 }
 
-::-webkit-scrollbar {
-    width: 8px;
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+    width: 12px;
 }
 
-::-webkit-scrollbar-track {
+html::-webkit-scrollbar-track,
+body::-webkit-scrollbar-track {
+    background: rgba(255, 249, 235, 0.7);
+    border-left: 1px solid rgba(42, 32, 26, 0.08);
+}
+
+html::-webkit-scrollbar-thumb,
+body::-webkit-scrollbar-thumb {
+    min-height: 72px;
+    border: 3px solid rgba(255, 249, 235, 0.78);
+    border-radius: 999px;
+    background: rgba(42, 32, 26, 0.34);
+}
+
+html::-webkit-scrollbar-thumb:hover,
+body::-webkit-scrollbar-thumb:hover {
+    background: rgba(42, 32, 26, 0.46);
+}
+
+.history-list::-webkit-scrollbar,
+.bot-content pre::-webkit-scrollbar,
+.top-nav::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.history-list::-webkit-scrollbar-track,
+.bot-content pre::-webkit-scrollbar-track,
+.top-nav::-webkit-scrollbar-track {
     background: transparent;
 }
 
-::-webkit-scrollbar-thumb {
+.history-list::-webkit-scrollbar-thumb,
+.bot-content pre::-webkit-scrollbar-thumb,
+.top-nav::-webkit-scrollbar-thumb {
     border-radius: 999px;
     background: rgba(42, 32, 26, 0.16);
 }
@@ -1419,7 +1459,7 @@ select:focus-visible {
 
     .chat-scroll {
         width: 100%;
-        height: calc(100vh - 198px);
+        min-height: calc(100vh - 198px);
         padding-inline: 6px;
     }
 
@@ -1438,6 +1478,7 @@ select:focus-visible {
 
     .composer-dock {
         bottom: 10px;
+        left: 50%;
         width: calc(100vw - 20px);
     }
 
@@ -1455,6 +1496,7 @@ select:focus-visible {
 
     .upload-status-bar {
         top: 70px;
+        left: 50%;
         width: calc(100vw - 20px);
     }
 

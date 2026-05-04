@@ -756,9 +756,8 @@ createApp({
         },
 
         scrollToBottom() {
-            if (this.$refs.chatContainer) {
-                this.$refs.chatContainer.scrollTop = this.$refs.chatContainer.scrollHeight;
-            }
+            const target = document.scrollingElement || document.documentElement || document.body;
+            target.scrollTop = target.scrollHeight;
         },
 
         handleNewChat() {
@@ -937,6 +936,7 @@ createApp({
             }
             this.activeView = "knowledge";
             this.showHistoryPanel = false;
+            this.$nextTick(() => window.scrollTo?.({ top: 0, behavior: "auto" }));
             this.loadDocuments();
         },
 

@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from backend import api as api_module
 from backend.infra.db.database import init_db
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
 
 

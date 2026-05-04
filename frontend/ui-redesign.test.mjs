@@ -18,6 +18,7 @@ const backendRouterChat = read("../backend/routers/chat.py");
 const backendRouterSessions = read("../backend/routers/sessions.py");
 const backendRouterDocuments = read("../backend/routers/documents.py");
 const backendAgent = read("../backend/chat/agent.py");
+const backendRagExecution = read("../backend/chat/rag_execution.py");
 const backendTools = read("../backend/chat/tools.py");
 const backendRagPipeline = read("../backend/rag/pipeline.py");
 const backendRagUtils = read("../backend/rag/utils.py");
@@ -406,8 +407,8 @@ const checks = [
       assert.match(backendRagRetrieval, /filename in \[/);
       assert.match(backendRagUtils, /retrieve_context_documents/);
       assert.match(backendRagPipeline, /attached_context_chunks/);
-      assert.match(backendAgent, /_with_retrieved_context_instruction/);
-      assert.match(backendAgent, /model_instance\.astream/);
+      assert.match(backendRagExecution, /_with_retrieved_context_instruction/);
+      assert.match(backendRagExecution, /model_instance\.astream/);
       assert.match(backendRagPipeline, /JSON/i);
       assert.match(backendRagPipeline, /grade_error/);
     },

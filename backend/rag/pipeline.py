@@ -298,6 +298,7 @@ def retrieve_initial(state: RAGState) -> RAGState:
         attached_docs=attached_docs,
         attached_meta=attached_meta,
     )
+    rag_trace.setdefault("attached_context_chunks", list(attached_docs or []))
     return {
         "query": query,
         "docs": results,

@@ -5,6 +5,8 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+.ruff_cache/
 
 # Virtual environments
 .venv
@@ -19,6 +21,11 @@ volumes/
 # Runtime data
 data/
 
+# Local-only design, evaluation, and maintenance materials
+docs/
+eval/
+scripts/
+
 # Eval reports (large, regenerated)
 eval/reports/
 
@@ -28,6 +35,10 @@ eval/reports/
 .omx/
 .superpowers/
 .jbeval/
+
+# Frontend dependencies
+node_modules/
+frontend/node_modules/
 
 # BM25 backups
 *.bak-*
